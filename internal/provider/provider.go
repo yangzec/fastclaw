@@ -236,6 +236,21 @@ func (r *StreamReader) Next() (StreamChunk, bool) {
 	return chunk, ok
 }
 
+// NextContext returns the next chunk, or stops waiting when ctx is done.
+// If the stream itself has not already recorded an error, ctx.Err() is
+// stored so callers can distinguish an idle/dead upstream from a clean EOF.
+func (r *StreamReader) NextContext(ctx context.Context) (StreamChunk, bool) {
+	select {
+	case chunk, ok := <-r.ch:
+		return chunk, ok
+	case <-ctx.Done():
+		if r.err == nil {
+			r.err = ctx.Err()
+		}
+		return StreamChunk{}, false
+	}
+}
+
 // Err returns any error that occurred during streaming.
 func (r *StreamReader) Err() error {
 	return r.err

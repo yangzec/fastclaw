@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -16,8 +17,12 @@ const (
 	DefaultTokenThreshold = 80000
 	// PruneTurnAge is the number of recent turns to keep intact; older messages get pruned.
 	PruneTurnAge = 20
+	// maxInlineToolResultBytes caps any single tool result kept in the live LLM prompt.
+	// A giant recent tool output can sit just below the global token threshold but still
+	// make OpenAI-compatible gateways spend too long before response headers.
+	maxInlineToolResultBytes = 20000
 	// truncatedPlaceholder replaces pruned tool results.
-	truncatedPlaceholder = "[Result truncated - see memory logs]"
+	truncatedPlaceholder = "[tool result pruned due to context length - full output archived in session log]"
 )
 
 // EstimateTokens provides a rough token estimate: chars/4.
@@ -45,9 +50,10 @@ type CompactResult struct {
 // Step 2 (Compression): If still over threshold after pruning, summarize older messages
 // using the LLM and write full history to a log file.
 func CompactMessages(messages []provider.Message, workspace string, prov provider.Provider, model string) (*CompactResult, error) {
+	messages, oversizedPruned := pruneOversizedToolResults(messages)
 	tokens := EstimateTokens(messages)
 	if tokens < DefaultTokenThreshold {
-		return &CompactResult{Messages: messages}, nil
+		return &CompactResult{Messages: messages, Pruned: oversizedPruned}, nil
 	}
 
 	slog.Info("context compaction triggered", "tokens", tokens, "threshold", DefaultTokenThreshold, "message_count", len(messages))
@@ -120,6 +126,35 @@ func safeCompactionCutoff(messages []provider.Message, cutoff int) int {
 	return cutoff
 }
 
+// pruneOversizedToolResults caps any individual tool result in the live prompt,
+// including the recent tail that age-based pruning intentionally preserves.
+func pruneOversizedToolResults(messages []provider.Message) ([]provider.Message, bool) {
+	var result []provider.Message
+	pruned := false
+	for i, m := range messages {
+		if m.Role != "tool" || len(m.Content) <= maxInlineToolResultBytes {
+			continue
+		}
+		if result == nil {
+			result = make([]provider.Message, len(messages))
+			copy(result, messages)
+		}
+		result[i] = provider.Message{
+			Role:       "tool",
+			Content:    truncatedPlaceholder,
+			ToolCallID: m.ToolCallID,
+			Name:       m.Name,
+			Timestamp:  m.Timestamp,
+			Metadata:   m.Metadata,
+		}
+		pruned = true
+	}
+	if result == nil {
+		return messages, false
+	}
+	return result, pruned
+}
+
 // pruneOldToolResults strips tool result content from messages older than PruneTurnAge.
 func pruneOldToolResults(messages []provider.Message) []provider.Message {
 	if len(messages) <= PruneTurnAge {
@@ -181,7 +216,7 @@ func compressOlderMessages(messages []provider.Message, prov provider.Provider, 
 		},
 	}
 
-	resp, err := prov.Chat(nil, summaryPrompt, nil, model, 2048, 0.3)
+	resp, err := prov.Chat(context.Background(), summaryPrompt, nil, model, 2048, 0.3)
 	if err != nil {
 		return nil, fmt.Errorf("summarize conversation: %w", err)
 	}

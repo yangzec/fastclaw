@@ -12,6 +12,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	_ "image/gif"
+	"image/jpeg"
+	_ "image/png"
 	"io"
 	"log/slog"
 	"mime"
@@ -79,6 +85,11 @@ const (
 	// + the second sendmessage. Longer than wechatSendTimeout because
 	// the CDN leg can be slow for larger images.
 	wechatMediaSendTimeout = 90 * time.Second
+
+	wechatImageUploadURLEnv    = "FASTCLAW_IMAGE_UPLOAD_URL"
+	wechatImageURLFetchTimeout = 2 * time.Minute
+	wechatImageCDNFetchTimeout = 3 * time.Minute
+	wechatImageUploadTimeout   = 2 * time.Minute
 
 	// Threshold of consecutive empty-buf SessionExpired responses before
 	// we declare the bot token dead and fire onExpired. iLink returns
@@ -396,7 +407,7 @@ func (w *WeChat) dispatchInbound(m wechatMessage) {
 	for _, item := range m.ItemList {
 		switch item.Type {
 		case wechatItemTypeText:
-			if item.TextItem != nil && item.TextItem.Text != "" {
+			if item.TextItem != nil && item.TextItem.Text != "" && text == "" {
 				text = item.TextItem.Text
 			}
 		case wechatItemTypeImage:
@@ -412,29 +423,31 @@ func (w *WeChat) dispatchInbound(m wechatMessage) {
 				"has_media", item.ImageItem.Media != nil,
 				"encrypt_query_param", truncateMediaParam(item.ImageItem.Media),
 				"mid_size", item.ImageItem.MidSize)
-			// Download + decrypt from CDN, encode as data URL.
-			// iLink CDN URLs are encrypted/auth-only — the model cannot
-			// fetch them directly. Must download and decrypt first.
-			if item.ImageItem.Media != nil && item.ImageItem.Media.EncryptQueryParam != "" {
-				if dataURL, err := w.downloadAndDecryptImage(item.ImageItem); err != nil {
-					slog.Warn("wechat image download failed",
-						"account", w.accountID, "from", m.FromUserID, "error", err)
-				} else {
-					imageURLs = append(imageURLs, dataURL)
-				}
+			if dataURL, err := w.wechatImageDataURL(item.ImageItem); err == nil && dataURL != "" {
+				imageURLs = append(imageURLs, dataURL)
 			} else if item.ImageItem.URL != "" {
-				// Fallback: try direct URL if no encrypted media present.
+				// Fall back to the original URL. Providers that can fetch it
+				// directly still get a chance, and the log tells us if iLink
+				// starts returning URLs that require special download handling.
 				imageURLs = append(imageURLs, item.ImageItem.URL)
+				slog.Warn("wechat image data-url conversion failed; forwarding original url",
+					"account", w.accountID, "from", m.FromUserID, "error", err)
+			} else if err != nil {
+				slog.Warn("wechat image data-url conversion failed",
+					"account", w.accountID, "from", m.FromUserID, "error", err)
 			}
 		case wechatItemTypeVoice:
 			// iLink ships speech-to-text transcription alongside the
 			// audio bytes — use it directly so the agent sees the
 			// user's spoken request as text without us having to
 			// download + transcribe ourselves.
-			if item.VoiceItem != nil && item.VoiceItem.Text != "" {
+			if item.VoiceItem != nil && item.VoiceItem.Text != "" && text == "" {
 				text = item.VoiceItem.Text
 			}
 		}
+	}
+	if text == "" && len(imageURLs) > 0 {
+		text = "请识别这张图片。"
 	}
 	if text == "" && len(imageURLs) == 0 {
 		slog.Debug("wechat skipping unsupported message",
@@ -453,7 +466,7 @@ func (w *WeChat) dispatchInbound(m wechatMessage) {
 	// would require parsing room_id which the current iLink response
 	// shape doesn't expose.
 	slog.Info("wechat message received",
-		"account", w.accountID, "from", m.FromUserID, "len", len(text))
+		"account", w.accountID, "from", m.FromUserID, "len", len(text), "images", len(imageURLs))
 
 	// Remember this user's most recent ContextToken so a subsequent
 	// SendTyping(chatID) can mint a typing_ticket without round-trip-
@@ -475,6 +488,347 @@ func (w *WeChat) dispatchInbound(m wechatMessage) {
 		PhotoURLs: imageURLs,
 		PeerKind:  "dm",
 	}
+}
+
+func (w *WeChat) wechatImageDataURL(img *wechatImageItem) (string, error) {
+	if img == nil {
+		return "", fmt.Errorf("missing image item")
+	}
+	if img.URL != "" {
+		if strings.HasPrefix(img.URL, "data:image/") {
+			return img.URL, nil
+		}
+		data, contentType, err := w.wechatImageBytesFromURL(img.URL)
+		if err != nil {
+			return "", err
+		}
+		return w.wechatImageReference(data, contentType)
+	}
+	if img.Media != nil {
+		data, contentType, err := w.wechatImageBytesFromMedia(img.Media)
+		if err != nil {
+			return "", err
+		}
+		return w.wechatImageReference(data, contentType)
+	}
+	return "", fmt.Errorf("image item has neither url nor media")
+}
+
+func (w *WeChat) wechatImageDataURLFromURL(rawURL string) (string, error) {
+	if strings.HasPrefix(rawURL, "data:image/") {
+		return rawURL, nil
+	}
+	data, contentType, err := w.wechatImageBytesFromURL(rawURL)
+	if err != nil {
+		return "", err
+	}
+	return wechatImageDataURLFromBytes(data, contentType)
+}
+
+func (w *WeChat) wechatImageBytesFromURL(rawURL string) ([]byte, string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, "", err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, "", fmt.Errorf("unsupported image url scheme %q", u.Scheme)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), wechatImageURLFetchTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	client := w.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("download image: HTTP %d", resp.StatusCode)
+	}
+
+	const maxImageBytes = 20 << 20
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxImageBytes+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) == 0 {
+		return nil, "", fmt.Errorf("download image: empty body")
+	}
+	if len(data) > maxImageBytes {
+		return nil, "", fmt.Errorf("download image: too large (%d bytes)", len(data))
+	}
+
+	contentType := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
+	if contentType == "" || !strings.HasPrefix(contentType, "image/") {
+		contentType = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(contentType, "image/") {
+		if ext := strings.ToLower(filepath.Ext(u.Path)); ext != "" {
+			if guessed := mime.TypeByExtension(ext); strings.HasPrefix(guessed, "image/") {
+				contentType = strings.TrimSpace(strings.Split(guessed, ";")[0])
+			}
+		}
+	}
+	if !strings.HasPrefix(contentType, "image/") {
+		return nil, "", fmt.Errorf("download image: non-image content-type %q", contentType)
+	}
+	return data, contentType, nil
+}
+
+func (w *WeChat) wechatImageDataURLFromMedia(media *wechatMediaInfo) (string, error) {
+	data, contentType, err := w.wechatImageBytesFromMedia(media)
+	if err != nil {
+		return "", err
+	}
+	return wechatImageDataURLFromBytes(data, contentType)
+}
+
+func (w *WeChat) wechatImageBytesFromMedia(media *wechatMediaInfo) ([]byte, string, error) {
+	if media == nil {
+		return nil, "", fmt.Errorf("missing media")
+	}
+	if media.EncryptQueryParam == "" || media.AESKey == "" {
+		return nil, "", fmt.Errorf("media missing encrypt_query_param or aes_key")
+	}
+	if media.EncryptType != 0 && media.EncryptType != wechatCDNEncryptType {
+		return nil, "", fmt.Errorf("unsupported media encrypt_type %d", media.EncryptType)
+	}
+
+	keyHexBytes, err := base64.StdEncoding.DecodeString(media.AESKey)
+	if err != nil {
+		return nil, "", fmt.Errorf("decode media aes_key base64: %w", err)
+	}
+	key, err := hex.DecodeString(string(keyHexBytes))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode media aes_key hex: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), wechatImageCDNFetchTimeout)
+	defer cancel()
+	downloadURL := fmt.Sprintf("%s/download?encrypted_query_param=%s",
+		wechatCDNBaseURL, url.QueryEscape(media.EncryptQueryParam))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	client := w.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("download media from CDN: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, "", fmt.Errorf("download media from CDN: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	const maxImageBytes = 20 << 20
+	encrypted, err := io.ReadAll(io.LimitReader(resp.Body, int64(wechatAESECBPaddedSize(maxImageBytes)+aes.BlockSize+1)))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(encrypted) == 0 {
+		return nil, "", fmt.Errorf("download media from CDN: empty body")
+	}
+	if len(encrypted) > wechatAESECBPaddedSize(maxImageBytes)+aes.BlockSize {
+		return nil, "", fmt.Errorf("download media from CDN: too large (%d bytes encrypted)", len(encrypted))
+	}
+	data, err := wechatAESECBDecrypt(encrypted, key)
+	if err != nil {
+		return nil, "", fmt.Errorf("decrypt media: %w", err)
+	}
+	return data, "", nil
+}
+
+func (w *WeChat) wechatImageReference(data []byte, contentType string) (string, error) {
+	if endpoint := strings.TrimSpace(os.Getenv(wechatImageUploadURLEnv)); endpoint != "" {
+		publicURL, err := w.uploadWeChatImage(endpoint, data, contentType)
+		if err == nil && publicURL != "" {
+			return publicURL, nil
+		}
+		slog.Warn("wechat image upload failed; falling back to data-url", "error", err)
+	}
+	return wechatImageDataURLFromBytes(data, contentType)
+}
+
+func (w *WeChat) uploadWeChatImage(endpoint string, data []byte, contentType string) (string, error) {
+	if len(data) == 0 {
+		return "", fmt.Errorf("upload image: empty body")
+	}
+	contentType = strings.TrimSpace(strings.Split(contentType, ";")[0])
+	if contentType == "" || !strings.HasPrefix(contentType, "image/") {
+		contentType = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(contentType, "image/") {
+		return "", fmt.Errorf("upload image: non-image content-type %q", contentType)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), wechatImageUploadTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("X-FastClaw-Source", "wechat")
+
+	client := w.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("upload image: %w", err)
+	}
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if readErr != nil {
+		return "", fmt.Errorf("upload image: read response: %w", readErr)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("upload image: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	var payload struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", fmt.Errorf("upload image: decode response: %w", err)
+	}
+	if !strings.HasPrefix(payload.URL, "http://") && !strings.HasPrefix(payload.URL, "https://") {
+		return "", fmt.Errorf("upload image: missing http url")
+	}
+	return payload.URL, nil
+}
+
+func wechatImageDataURLFromBytes(data []byte, contentType string) (string, error) {
+	if len(data) == 0 {
+		return "", fmt.Errorf("download image: empty body")
+	}
+	const maxImageBytes = 20 << 20
+	if len(data) > maxImageBytes {
+		return "", fmt.Errorf("download image: too large (%d bytes)", len(data))
+	}
+	contentType = strings.TrimSpace(strings.Split(contentType, ";")[0])
+	if contentType == "" || !strings.HasPrefix(contentType, "image/") {
+		contentType = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(contentType, "image/") {
+		return "", fmt.Errorf("download image: non-image content-type %q", contentType)
+	}
+
+	const maxDataURLBytes = 1_500_000
+	bounds, _, cfgErr := image.DecodeConfig(bytes.NewReader(data))
+	if cfgErr == nil && (len(data) > 1_000_000 || bounds.Width > 1600 || bounds.Height > 1600) {
+		if compressed, err := wechatCompressImageForVision(data); err == nil && len(compressed) > 0 {
+			data = compressed
+			contentType = "image/jpeg"
+		} else {
+			slog.Warn("wechat image compression failed; using original image", "error", err)
+		}
+	}
+	encoded := base64.StdEncoding.EncodeToString(data)
+	if len("data:"+contentType+";base64,")+len(encoded) > maxDataURLBytes && contentType != "image/jpeg" {
+		if compressed, err := wechatCompressImageForVision(data); err == nil && len(compressed) > 0 {
+			data = compressed
+			contentType = "image/jpeg"
+			encoded = base64.StdEncoding.EncodeToString(data)
+		}
+	}
+	return "data:" + contentType + ";base64," + encoded, nil
+}
+
+func wechatCompressImageForVision(data []byte) ([]byte, error) {
+	src, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	for _, opt := range []struct {
+		maxDim  int
+		quality int
+	}{
+		{1024, 80},
+		{768, 72},
+		{512, 68},
+	} {
+		resized := wechatResizeImage(src, opt.maxDim)
+		var out bytes.Buffer
+		if err := jpeg.Encode(&out, resized, &jpeg.Options{Quality: opt.quality}); err != nil {
+			return nil, err
+		}
+		if out.Len() <= 1_100_000 || opt.maxDim == 512 {
+			return out.Bytes(), nil
+		}
+	}
+	return nil, fmt.Errorf("compression failed")
+}
+
+func wechatResizeImage(src image.Image, maxDim int) image.Image {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= 0 || h <= 0 {
+		return src
+	}
+	newW, newH := w, h
+	if w > h && w > maxDim {
+		newW = maxDim
+		newH = h * maxDim / w
+	} else if h >= w && h > maxDim {
+		newH = maxDim
+		newW = w * maxDim / h
+	}
+	if newW <= 0 {
+		newW = 1
+	}
+	if newH <= 0 {
+		newH = 1
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
+	draw.Draw(dst, dst.Bounds(), &image.Uniform{C: color.White}, image.Point{}, draw.Src)
+	for y := 0; y < newH; y++ {
+		sy := b.Min.Y + y*h/newH
+		for x := 0; x < newW; x++ {
+			sx := b.Min.X + x*w/newW
+			dst.Set(x, y, src.At(sx, sy))
+		}
+	}
+	return dst
+}
+
+func wechatAESECBDecrypt(ciphertext, key []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(ciphertext)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("ciphertext is not a multiple of block size")
+	}
+	plaintext := make([]byte, len(ciphertext))
+	for i := 0; i < len(ciphertext); i += aes.BlockSize {
+		block.Decrypt(plaintext[i:i+aes.BlockSize], ciphertext[i:i+aes.BlockSize])
+	}
+	if len(plaintext) == 0 {
+		return plaintext, nil
+	}
+	padLen := int(plaintext[len(plaintext)-1])
+	if padLen == 0 || padLen > aes.BlockSize || padLen > len(plaintext) {
+		return nil, fmt.Errorf("invalid PKCS7 padding")
+	}
+	for _, b := range plaintext[len(plaintext)-padLen:] {
+		if int(b) != padLen {
+			return nil, fmt.Errorf("invalid PKCS7 padding")
+		}
+	}
+	return plaintext[:len(plaintext)-padLen], nil
 }
 
 // Send sends a plain text message — the simple form. Used by tools
@@ -942,6 +1296,7 @@ type wechatUploadedFile struct {
 // audio as a file still plays back inline in WeChat). Mirrors the
 // dispatcher in upstream weclaw/messaging/media.go.
 func (w *WeChat) sendMedia(chatID string, item bus.MediaItem) error {
+	item = prepareWeChatOutboundMedia(item)
 	cdnMediaType, itemType := classifyWeChatMedia(item)
 
 	ctx, cancel := context.WithTimeout(context.Background(), wechatMediaSendTimeout)
@@ -1018,6 +1373,45 @@ func (w *WeChat) sendMedia(chatID string, item bus.MediaItem) error {
 		"account", w.accountID, "chat", chatID,
 		"filename", item.Filename, "kind", itemType, "bytes", len(item.Bytes))
 	return nil
+}
+
+// prepareWeChatOutboundMedia normalizes generated images before the iLink CDN
+// upload leg. GPT image tools commonly return 2-3 MiB PNGs; real WeChat CDN
+// uploads have been observed to fail with HTTP 500 for those payloads. Compress
+// large outbound images to JPEG first so the CDN upload is smaller and more
+// consistently accepted, while leaving non-image files untouched.
+func prepareWeChatOutboundMedia(item bus.MediaItem) bus.MediaItem {
+	if len(item.Bytes) == 0 {
+		return item
+	}
+	ct := strings.ToLower(strings.TrimSpace(strings.Split(item.ContentType, ";")[0]))
+	if ct == "" {
+		ct = strings.ToLower(http.DetectContentType(item.Bytes))
+	}
+	isImage := strings.HasPrefix(ct, "image/") || isWeChatImageExt(item.Filename)
+	if !isImage {
+		return item
+	}
+	if len(item.Bytes) <= 900_000 && (ct == "image/jpeg" || ct == "image/jpg") {
+		return item
+	}
+	originalLen := len(item.Bytes)
+	compressed, err := wechatCompressImageForVision(item.Bytes)
+	if err != nil || len(compressed) == 0 || len(compressed) >= originalLen {
+		if err != nil {
+			slog.Warn("wechat outbound image compression failed; uploading original", "filename", item.Filename, "bytes", originalLen, "error", err)
+		}
+		return item
+	}
+	item.Bytes = compressed
+	item.ContentType = "image/jpeg"
+	base := strings.TrimSuffix(item.Filename, filepath.Ext(item.Filename))
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = "image"
+	}
+	item.Filename = base + ".jpg"
+	slog.Info("wechat outbound image compressed", "filename", item.Filename, "original_bytes", originalLen, "compressed_bytes", len(item.Bytes))
+	return item
 }
 
 // classifyWeChatMedia decides how to send a MediaItem on iLink: image,
@@ -1163,81 +1557,6 @@ func wechatAESECBEncrypt(plaintext, key []byte) ([]byte, error) {
 		block.Encrypt(encrypted[i:i+aes.BlockSize], padded[i:i+aes.BlockSize])
 	}
 	return encrypted, nil
-}
-
-// downloadAndDecryptImage fetches an AES-128-ECB encrypted image from
-// the iLink CDN and returns a base64 data URL the vision model can read.
-func (w *WeChat) downloadAndDecryptImage(img *wechatImageItem) (string, error) {
-	if img.Media == nil || img.Media.EncryptQueryParam == "" {
-		return "", fmt.Errorf("no media info")
-	}
-	// Reconstruct the CDN download URL from the encrypt_query_param.
-	cdnURL := fmt.Sprintf("%s/download?encrypted_query_param=%s",
-		wechatCDNBaseURL, url.QueryEscape(img.Media.EncryptQueryParam))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cdnURL, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := w.httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("CDN HTTP %d", resp.StatusCode)
-	}
-	ciphertext, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	// Decode the AES key. Wire format: base64(hex_string).
-	aesKeyB64 := img.Media.AESKey
-	aesKeyHex, err := base64.StdEncoding.DecodeString(aesKeyB64)
-	if err != nil {
-		return "", fmt.Errorf("decode aes key base64: %w", err)
-	}
-	aesKey, err := hex.DecodeString(string(aesKeyHex))
-	if err != nil {
-		return "", fmt.Errorf("decode aes key hex: %w", err)
-	}
-
-	plaintext, err := wechatAESECBDecrypt(ciphertext, aesKey)
-	if err != nil {
-		return "", fmt.Errorf("decrypt: %w", err)
-	}
-
-	// Detect content type and encode as data URL.
-	ct := http.DetectContentType(plaintext)
-	b64 := base64.StdEncoding.EncodeToString(plaintext)
-	return fmt.Sprintf("data:%s;base64,%s", ct, b64), nil
-}
-
-// wechatAESECBDecrypt is the inverse of wechatAESECBEncrypt — PKCS7 unpad.
-func wechatAESECBDecrypt(ciphertext, key []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	if len(ciphertext)%aes.BlockSize != 0 {
-		return nil, fmt.Errorf("ciphertext not aligned to block size")
-	}
-	plaintext := make([]byte, len(ciphertext))
-	for i := 0; i < len(ciphertext); i += aes.BlockSize {
-		block.Decrypt(plaintext[i:i+aes.BlockSize], ciphertext[i:i+aes.BlockSize])
-	}
-	// PKCS7 unpad.
-	if len(plaintext) == 0 {
-		return plaintext, nil
-	}
-	padLen := int(plaintext[len(plaintext)-1])
-	if padLen > aes.BlockSize || padLen == 0 {
-		return plaintext, nil // not padded or invalid — return as-is
-	}
-	return plaintext[:len(plaintext)-padLen], nil
 }
 
 func truncate(s string, n int) string {

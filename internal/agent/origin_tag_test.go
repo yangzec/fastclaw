@@ -114,8 +114,31 @@ func TestBuildUserMessageMergesPhotoURLAndPhotoURLs(t *testing.T) {
 	}
 }
 
-// Goal-context turn with body: Origin AND audit prompt text both
-// have to survive — the load-bearing combination.
+func TestStripHistoricImagesForModelKeepsOnlyLatestTurnImages(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: "user", ContentParts: []provider.ContentPart{
+			{Type: "text", Text: "old image"},
+			{Type: "image_url", ImageURL: &provider.ImageURL{URL: "data:image/png;base64,OLD"}},
+		}},
+		{Role: "assistant", Content: "old answer"},
+		{Role: "user", ContentParts: []provider.ContentPart{
+			{Type: "text", Text: "new image"},
+			{Type: "image_url", ImageURL: &provider.ImageURL{URL: "data:image/png;base64,NEW"}},
+		}},
+	}
+
+	got := stripHistoricImagesForModel(msgs)
+	if got[0].Content != "old image" || len(got[0].ContentParts) != 0 {
+		t.Fatalf("old image parts not stripped to text-only message: content=%q parts=%+v", got[0].Content, got[0].ContentParts)
+	}
+	if len(got[2].ContentParts) != 2 || got[2].ContentParts[1].ImageURL.URL != "data:image/png;base64,NEW" {
+		t.Fatalf("latest image should be preserved: %+v", got[2].ContentParts)
+	}
+	if len(msgs[0].ContentParts) != 2 {
+		t.Fatalf("original history mutated")
+	}
+}
+
 func TestBuildUserMessageGoalContextWithText(t *testing.T) {
 	got := buildUserMessage(bus.InboundMessage{
 		Source: bus.SourceGoalContext,

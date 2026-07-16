@@ -10,6 +10,7 @@ import { fileUrl, getAgent, getAgentKnowledgeFile, getChangedFiles, getChatHisto
 import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, Folder, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal, ExternalLink, MoreHorizontal, PanelLeftClose, PanelLeftOpen, BookOpen } from "lucide-react";
 import Link from "next/link";
 import { ChatMarkdown } from "@/components/chat-markdown";
+import { parseAgentRoute } from "@/lib/agent-route";
 
 // Split a string on `![alt](data:image/...;base64,...)` markdown.
 //
@@ -348,15 +349,6 @@ function isPendingPlanContent(content: string): boolean {
   return false;
 }
 
-// Parse the per-route ids out of the pathname. ChatScreen is mounted
-// once at the agent layout level and stays alive across these routes:
-//
-//   /agents/<aid>/                         — fresh loose chat
-//   /agents/<aid>/chat/                    — fresh loose chat
-//   /agents/<aid>/chat/<session>           — open existing chat by id
-//   /agents/<aid>/project/<pid>            — fresh chat in a project
-//
-// Reading from `usePathname()` (instead of accepting props from the
 // TodoPanel renders the per-session todo.md the agent maintains as a
 // live progress checklist above the conversation. "Current step" is
 // the first unchecked item — we surface it as a single line with a
@@ -454,25 +446,6 @@ function TodoPanel({ items, active }: { items: TodoItem[]; active: boolean }) {
 // page tree) is what lets the component instance survive sidebar
 // navigations — sessionId / projectId become reactive values that
 // update in place rather than gating a remount.
-function parseAgentRoute(pathname: string): {
-  sessionId: string;
-  projectId: string;
-} {
-  const sessMatch = pathname.match(/^\/agents\/[^/]+\/chat\/([^/]+)/);
-  if (sessMatch) {
-    const sid = sessMatch[1];
-    // "_" is the build-time placeholder Next emits under output:'export'
-    // for the dynamic [session] segment. Treat it as "no session".
-    return { sessionId: sid === "_" ? "" : sid, projectId: "" };
-  }
-  const projMatch = pathname.match(/^\/agents\/[^/]+\/project\/([^/]+)/);
-  if (projMatch) {
-    const pid = projMatch[1];
-    return { sessionId: "", projectId: pid === "_" ? "" : pid };
-  }
-  return { sessionId: "", projectId: "" };
-}
-
 export function ChatScreen() {
   const router = useRouter();
   const pathname = usePathname();
@@ -919,10 +892,12 @@ export function ChatScreen() {
             if (data.data?.phase === "done") {
               setSubagentProgress(null);
             } else {
+              const phase = data.data?.phase;
+              if (phase !== "thinking" && phase !== "running" && phase !== "final-delivery") break;
               setSubagentProgress({
                 iteration: data.data?.iteration,
                 max: data.data?.max,
-                phase: data.data?.phase,
+                phase,
                 tools: data.data?.tools,
               });
             }
@@ -1627,10 +1602,12 @@ export function ChatScreen() {
             if (evt.data?.phase === "done") {
               setSubagentProgress(null);
             } else {
+              const phase = evt.data?.phase;
+              if (phase !== "thinking" && phase !== "running" && phase !== "final-delivery") break;
               setSubagentProgress({
                 iteration: evt.data?.iteration,
                 max: evt.data?.max,
-                phase: evt.data?.phase,
+                phase,
                 tools: evt.data?.tools,
               });
             }

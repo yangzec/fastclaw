@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Save, Check, Loader2, RotateCcw } from "lucide-react";
+import { Save, Check, Loader2, RotateCcw, AlertCircle } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
@@ -33,7 +33,7 @@ const CUSTOMIZE_FILES = [
 //   - "fs":      legacy filesystem default. Kept for back-compat.
 //   - "default": neither caller nor owner row exists; tab is empty.
 type FileSource = "db" | "owner" | "fs" | "default";
-type FileState = { content: string; source: FileSource; baseContent?: string };
+type FileState = { content: string; source: FileSource; baseContent?: string; dirty?: boolean };
 
 export default function AgentCustomizePage() {
   const agentId = useAgentIdFromURL();
@@ -43,6 +43,7 @@ export default function AgentCustomizePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const loadAll = async () => {
     const entries = await Promise.all(
@@ -76,18 +77,37 @@ export default function AgentCustomizePage() {
 
   const handleSave = async () => {
     setSaving(true);
+    setError(null);
     try {
-      await apiFetch(`/api/agents/${agentId}/system-files/${activeTab}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: active?.content || "" }),
-      });
+      const dirtyFiles = Object.entries(files).filter(([, state]) => state.dirty);
+      const targets: Array<[string, FileState]> =
+        dirtyFiles.length > 0 ? dirtyFiles : [[activeTab, active || { content: "", source: "default" }]];
+
+      for (const [name, state] of targets) {
+        const res = await apiFetch(`/api/agents/${agentId}/system-files/${name}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: state.content || "" }),
+        });
+        if (!res.ok) {
+          let message = `${name}: HTTP ${res.status}`;
+          try {
+            const data = await res.json();
+            if (data?.error) message = `${name}: ${data.error}`;
+          } catch {}
+          throw new Error(message);
+        }
+      }
+
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-      // Reload so source/baseContent stay accurate after save.
-      loadAll();
-    } catch {}
-    setSaving(false);
+      // Reload so source/baseContent stay accurate after save and dirty flags reset.
+      await loadAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
   };
 
   // Revert deletes the DB override so the runtime falls back to the FS base
@@ -200,12 +220,24 @@ export default function AgentCustomizePage() {
       {(active?.source === "db" || active?.source === "fs") && (
         <div className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
           {sourceBadge(active?.source)}
+          {Object.values(files).some((file) => file.dirty) && (
+            <span className="text-amber-600">Unsaved changes — Save writes all edited tabs.</span>
+          )}
           {active?.source === "db" && active.baseContent && (
             <span>Override active — repo base is {active.baseContent.length} chars.</span>
           )}
           {active?.source === "fs" && (
             <span>Loaded from <code>{`<agent home>/${activeTab}`}</code>. Editing creates a per-agent override.</span>
           )}
+        </div>
+      )}
+      {!(active?.source === "db" || active?.source === "fs") && Object.values(files).some((file) => file.dirty) && (
+        <div className="mb-2 text-xs text-amber-600">Unsaved changes — Save writes all edited tabs.</div>
+      )}
+      {error && (
+        <div className="flex items-center gap-2 mb-2 text-xs text-destructive">
+          <AlertCircle className="h-3.5 w-3.5" />
+          <span>{error}</span>
         </div>
       )}
 
@@ -215,7 +247,7 @@ export default function AgentCustomizePage() {
         onChange={(e) =>
           setFiles((prev) => ({
             ...prev,
-            [activeTab]: { ...(prev[activeTab] || { source: "default" }), content: e.target.value },
+            [activeTab]: { ...(prev[activeTab] || { source: "default" }), content: e.target.value, dirty: true },
           }))
         }
         spellCheck={false}

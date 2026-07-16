@@ -1119,6 +1119,9 @@ export interface ChatStreamEvent {
     | "steer"
     | "error"
     | "done"
+    | "heartbeat"
+    | "status"
+    | "tool_progress"
     | "subagent_progress";
   // Per-session monotonic sequence assigned by chat_events. Lets the
   // chat page dedupe events arriving on both the active POST stream
@@ -1140,11 +1143,13 @@ export interface ChatStreamEvent {
     arguments?: string;
     result?: string;
     message?: string;
+    error?: string;
     metadata?: ToolResultMetadata;
     // subagent_progress payload — only populated when type === "subagent_progress".
     iteration?: number;
     max?: number;
-    phase?: "thinking" | "running" | "final-delivery" | "done";
+    phase?: "thinking" | "running" | "final-delivery" | "done" | "error";
+    count?: number;
     tools?: string[];
   };
 }

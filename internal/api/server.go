@@ -72,6 +72,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	if s.gatewayCfg == nil || s.gatewayCfg.HTTP.Endpoints.ChatCompletions.Enabled {
 		mux.HandleFunc("POST /v1/chat/completions",
 			s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleChatCompletions)))
+		mux.HandleFunc("POST /v1/chat/completions-v1",
+			s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleChatCompletionsV1)))
+		mux.HandleFunc("GET /v1/chat/session-id",
+			s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleResolveChatSessionID)))
 	}
 	if s.gatewayCfg == nil || s.gatewayCfg.HTTP.Endpoints.Agents.Enabled {
 		mux.HandleFunc("GET /v1/agents",
@@ -112,7 +116,7 @@ func (s *Server) RegisterAdminRoutes(mux *http.ServeMux) {}
 func (s *Server) handleCORS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, x-fastclaw-agent-id, x-fastclaw-session-key")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, x-fastclaw-agent-id, x-fastclaw-session-key, x-fastclaw-channel")
 	w.Header().Set("Access-Control-Max-Age", "86400")
 	w.WriteHeader(http.StatusNoContent)
 }

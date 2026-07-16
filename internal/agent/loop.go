@@ -727,11 +727,21 @@ func (a *Agent) streamChatToResponseQuiet(ctx context.Context, messages []provid
 	return a.streamChatToResponseWithOptions(ctx, messages, tools, false)
 }
 
+var modelFirstChunkIdleTimeout = 90 * time.Second
+var toolExecutionTimeout = 30 * time.Minute
+
 func (a *Agent) streamChatToResponseWithOptions(ctx context.Context, messages []provider.Message, tools []provider.Tool, emitDeltas bool) (*provider.Response, error) {
+	emitEvent(ctx, ChatEvent{Type: "status", Data: map[string]any{
+		"phase":   "thinking",
+		"message": "waiting for model response",
+	}})
 	sr, err := a.provider.ChatStream(ctx, messages, tools, a.model, a.maxTokens, a.temperature)
 	if err != nil {
 		return nil, err
 	}
+	firstChunkCtx, cancelFirstChunk := context.WithTimeout(ctx, modelFirstChunkIdleTimeout)
+	defer cancelFirstChunk()
+	firstChunk := true
 	var (
 		contentBuilder strings.Builder
 		toolCalls      []provider.ToolCall
@@ -741,7 +751,16 @@ func (a *Agent) streamChatToResponseWithOptions(ctx context.Context, messages []
 		streamUsage    provider.Usage
 	)
 	for {
-		chunk, ok := sr.Next()
+		var (
+			chunk provider.StreamChunk
+			ok    bool
+		)
+		if firstChunk {
+			chunk, ok = sr.NextContext(firstChunkCtx)
+			firstChunk = false
+		} else {
+			chunk, ok = sr.NextContext(ctx)
+		}
 		if !ok {
 			break
 		}
@@ -948,6 +967,41 @@ func buildUserMessage(msg bus.InboundMessage) provider.Message {
 	}
 	userMsg.ContentParts = parts
 	return userMsg
+}
+
+func stripHistoricImagesForModel(msgs []provider.Message) []provider.Message {
+	lastImageMsg := -1
+	for i, m := range msgs {
+		for _, p := range m.ContentParts {
+			if p.Type == "image_url" && p.ImageURL != nil && p.ImageURL.URL != "" {
+				lastImageMsg = i
+				break
+			}
+		}
+	}
+	if lastImageMsg <= 0 {
+		return msgs
+	}
+	out := make([]provider.Message, len(msgs))
+	copy(out, msgs)
+	for i := 0; i < lastImageMsg; i++ {
+		if len(out[i].ContentParts) == 0 {
+			continue
+		}
+		parts := make([]provider.ContentPart, 0, len(out[i].ContentParts))
+		for _, p := range out[i].ContentParts {
+			if p.Type == "image_url" {
+				continue
+			}
+			parts = append(parts, p)
+		}
+		out[i].ContentParts = parts
+		if out[i].Content == "" && len(parts) == 1 && parts[0].Type == "text" {
+			out[i].Content = parts[0].Text
+			out[i].ContentParts = nil
+		}
+	}
+	return out
 }
 
 // RegisterWebSearchChain exposes the web_search tool to this agent using a
@@ -1827,6 +1881,24 @@ func llmRetry(ctx context.Context, label string, fn func(context.Context) (*prov
 	return nil, lastErr
 }
 
+// NativeSessionKey resolves or creates the durable FastClaw session id for
+// an inbound message's (channel, account, chat) triple. External API callers
+// may supply their own stable ChatID/session key; this returns the native
+// `s-...` key used by FastClaw history/session lookup APIs.
+func (a *Agent) NativeSessionKey(msg bus.InboundMessage) string {
+	if a == nil || a.sessions == nil {
+		return ""
+	}
+	sess := a.sessions.Get(sessionTriple(msg, msg.ProjectID))
+	if sess == nil {
+		return ""
+	}
+	if err := sess.EnsurePersisted(); err != nil {
+		slog.Warn("failed to persist native session before response headers", "agent", a.name, "session_key", sess.SessionKey(), "error", err)
+	}
+	return sess.SessionKey()
+}
+
 // HandleMessage processes an inbound message through the ReAct loop.
 func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) string {
 	// Check for slash commands first. Empty reply means "handled but
@@ -2015,7 +2087,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	if reminder := renderChatbotPersistenceReminder(a.promptMode, a.displayName, chatterMem.LoadUserFile(), chatterMem.LoadMemory()); reminder != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: reminder})
 	}
-	messages = append(messages, withConversationGapContext(sessionMsgs)...)
+	messages = append(messages, withConversationGapContext(a.withMessageTimestampsForChatter(stripHistoricImagesForModel(sessionMsgs), chatterUID))...)
 
 	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 
@@ -2248,7 +2320,21 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			"agent", a.name,
 			"count", len(executeCalls),
 		)
-		results := a.engine.executeToolsConcurrently(ctx, a.registry, executeCalls, a.workspacePath)
+		if len(executeCalls) > 0 {
+			emitEvent(ctx, ChatEvent{Type: "tool_progress", Data: map[string]any{
+				"phase": "running",
+				"count": len(executeCalls),
+			}})
+		}
+		toolCtx := ctx
+		var cancelTools context.CancelFunc
+		if len(executeCalls) > 0 && toolExecutionTimeout > 0 {
+			toolCtx, cancelTools = context.WithTimeout(ctx, toolExecutionTimeout)
+		}
+		results := a.engine.executeToolsConcurrently(toolCtx, a.registry, executeCalls, a.workspacePath)
+		if cancelTools != nil {
+			cancelTools()
+		}
 		// Append synthetic deferred results so every original tool_use
 		// id has a paired tool_result. The deferred message tells the
 		// model exactly why it didn't run — it can re-issue next
@@ -2322,6 +2408,18 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 					"name", r.toolName,
 					"error", r.err,
 				)
+				emitEvent(ctx, ChatEvent{Type: "tool_progress", Data: map[string]any{
+					"id":    tc.ID,
+					"name":  r.toolName,
+					"phase": "error",
+					"error": r.err.Error(),
+				}})
+			} else {
+				emitEvent(ctx, ChatEvent{Type: "tool_progress", Data: map[string]any{
+					"id":    tc.ID,
+					"name":  r.toolName,
+					"phase": "done",
+				}})
 			}
 
 			// Classify the result: did this single call fail? Records
@@ -2740,7 +2838,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	if reminder := renderChatbotPersistenceReminder(a.promptMode, a.displayName, chatterMem.LoadUserFile(), chatterMem.LoadMemory()); reminder != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: reminder})
 	}
-	messages = append(messages, withConversationGapContext(sessionMsgs)...)
+	messages = append(messages, withConversationGapContext(a.withMessageTimestampsForChatter(stripHistoricImagesForModel(sessionMsgs), chatterUID))...)
 
 	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 
@@ -2754,10 +2852,29 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 
 	// ReAct loop - use Chat for tool iterations
 	for i := 0; i < a.maxToolIterations; i++ {
+		if err := ctx.Err(); err != nil {
+			slog.Warn("streaming turn context done before model call",
+				"agent", a.name,
+				"channel", msg.Channel,
+				"chat_id", msg.ChatID,
+				"iteration", i+1,
+				"error", err,
+			)
+			return a.stringStream("Sorry, the request was cancelled before I could finish the response.")
+		}
 		hcBefore := &HookContext{AgentName: a.name, Point: BeforeModelCall, Messages: messages, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID}
 		a.hooks.Run(ctx, hcBefore)
 
 		dumpLLMRequest(a.name, a.model, messages, toolDefs)
+		callStart := time.Now()
+		slog.Info("streaming turn model call start",
+			"agent", a.name,
+			"channel", msg.Channel,
+			"chat_id", msg.ChatID,
+			"iteration", i+1,
+			"message_count", len(messages),
+			"tool_def_count", len(toolDefs),
+		)
 		resp, err := llmRetry(ctx, a.name, func(ctx context.Context) (*provider.Response, error) {
 			return a.provider.Chat(ctx, messages, toolDefs, a.model, a.maxTokens, a.temperature)
 		})
@@ -2766,14 +2883,36 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		a.hooks.Run(ctx, hcAfter)
 
 		if err != nil {
-			slog.Error("LLM chat failed after retries", "agent", a.name, "error", err)
+			slog.Error("LLM chat failed after retries", "agent", a.name, "channel", msg.Channel, "chat_id", msg.ChatID, "iteration", i+1, "duration", time.Since(callStart).String(), "error", err)
 			return a.stringStream("Sorry, I encountered an error processing your request.")
 		}
 		a.meterTokens(ctx, sess.Key(), resp.Usage, 0)
 		a.maybeRecoverToolCalls(resp)
 
+		toolNames := make([]string, 0, len(resp.ToolCalls))
+		for _, tc := range resp.ToolCalls {
+			toolNames = append(toolNames, tc.Function.Name)
+		}
+		slog.Info("streaming turn model call complete",
+			"agent", a.name,
+			"channel", msg.Channel,
+			"chat_id", msg.ChatID,
+			"iteration", i+1,
+			"duration", time.Since(callStart).String(),
+			"has_tool_calls", resp.HasToolCalls(),
+			"tool_names", strings.Join(toolNames, ","),
+			"content_len", len(resp.Content),
+		)
+
 		if !resp.HasToolCalls() {
 			// Final response - use streaming
+			slog.Info("streaming turn final synthesis start",
+				"agent", a.name,
+				"channel", msg.Channel,
+				"chat_id", msg.ChatID,
+				"iteration", i+1,
+				"tool_call_count", totalToolCalls,
+			)
 			sr, err := a.provider.ChatStream(ctx, messages, toolDefs, a.model, a.maxTokens, a.temperature)
 			if err != nil {
 				slog.Error("LLM stream failed, falling back", "agent", a.name, "error", err)
@@ -2905,16 +3044,44 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		}
 
 		// Execute tools concurrently via SDK engine
+		toolStart := time.Now()
+		emitEvent(ctx, ChatEvent{Type: "tool_progress", Data: map[string]any{
+			"phase": "running",
+			"count": len(resp.ToolCalls),
+			"tools": strings.Join(toolNames, ","),
+		}})
+		slog.Info("streaming turn tool round start",
+			"agent", a.name,
+			"channel", msg.Channel,
+			"chat_id", msg.ChatID,
+			"iteration", i+1,
+			"tool_count", len(resp.ToolCalls),
+			"tool_names", strings.Join(toolNames, ","),
+		)
 		results := a.engine.executeToolsConcurrently(ctx, a.registry, resp.ToolCalls, a.workspacePath)
 		totalToolCalls += len(results)
 
+		failedTools := 0
 		for idx, r := range results {
 			tc := resp.ToolCalls[idx]
 			resultContent, meta := extractToolMeta(r.result)
 			a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: AfterToolCall, ToolName: r.toolName, ToolResult: resultContent, Error: r.err, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID, GoalSessionKey: a.registry.GoalSessionKey(), IsPlanMode: isPlanMode(msg.Params), Source: msg.Source})
 
 			if r.err != nil {
-				slog.Warn("tool execution error", "agent", a.name, "name", r.toolName, "error", r.err)
+				failedTools++
+				emitEvent(ctx, ChatEvent{Type: "tool_progress", Data: map[string]any{
+					"id":    tc.ID,
+					"name":  r.toolName,
+					"phase": "error",
+					"error": r.err.Error(),
+				}})
+				slog.Warn("tool execution error", "agent", a.name, "channel", msg.Channel, "chat_id", msg.ChatID, "iteration", i+1, "name", r.toolName, "error", r.err)
+			} else {
+				emitEvent(ctx, ChatEvent{Type: "tool_progress", Data: map[string]any{
+					"id":    tc.ID,
+					"name":  r.toolName,
+					"phase": "done",
+				}})
 			}
 
 			if mediaPaths := extractMediaPaths(resultContent); len(mediaPaths) > 0 {
@@ -2925,6 +3092,15 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			sess.Append(toolMsg)
 			messages = append(messages, toolMsg)
 		}
+		slog.Info("streaming turn tool round complete",
+			"agent", a.name,
+			"channel", msg.Channel,
+			"chat_id", msg.ChatID,
+			"iteration", i+1,
+			"duration", time.Since(toolStart).String(),
+			"tool_count", len(results),
+			"failed_tool_count", failedTools,
+		)
 	}
 
 	slog.Warn("max tool iterations reached — streaming forced final delivery", "agent", a.name, "max", a.maxToolIterations)
@@ -3271,6 +3447,30 @@ func formatConversationGap(gap time.Duration) string {
 		return fmt.Sprintf("about %d days", days)
 	}
 	return "more than a day"
+}
+
+// withMessageTimestamps returns a COPY of msgs where each user message is
+// prefixed with its send time in the chatter's timezone, e.g.
+// "[2026-06-13 22:15 Fri] …". This is what lets the model reason about
+// time across a conversation — tell today from earlier days, and not say
+// "good night" at midday. The originals are never mutated (the prefix is
+// a read-time view for the LLM, not stored history), so the session store
+// stays clean and the next turn doesn't double-prefix. The system prompt
+// (context.go dateLine) tells the model what the bracketed prefix means.
+func (a *Agent) withMessageTimestampsForChatter(msgs []provider.Message, chatterUID string) []provider.Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	loc := a.chatterLocation(chatterUID)
+	out := make([]provider.Message, len(msgs))
+	for i, m := range msgs {
+		if m.Role == "user" && m.Timestamp > 0 && m.Content != "" {
+			t := time.UnixMilli(m.Timestamp).In(loc)
+			m.Content = "[" + t.Format("2006-01-02 15:04 Mon") + "] " + m.Content
+		}
+		out[i] = m
+	}
+	return out
 }
 
 // UpdateConfig updates the agent's runtime config (model, temperature, etc.)

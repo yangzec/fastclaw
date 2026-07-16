@@ -14,9 +14,13 @@ import (
 // about the summary content, only the input.
 type fakeSummarizer struct {
 	gotSummaryRequest string
+	gotNilContext     bool
 }
 
-func (f *fakeSummarizer) Chat(_ context.Context, msgs []provider.Message, _ []provider.Tool, _ string, _ int, _ float64) (*provider.Response, error) {
+func (f *fakeSummarizer) Chat(ctx context.Context, msgs []provider.Message, _ []provider.Tool, _ string, _ int, _ float64) (*provider.Response, error) {
+	if ctx == nil {
+		f.gotNilContext = true
+	}
 	// compressOlderMessages builds the user-role prompt as the
 	// second message; the older-history text lives in its Content
 	// after the "Summarize this conversation:\n\n" prefix.
@@ -52,6 +56,9 @@ func TestCompactionDropsGoalContextFromSummary(t *testing.T) {
 	out, err := compressOlderMessages(msgs, f, "fake-model")
 	if err != nil {
 		t.Fatalf("compress: %v", err)
+	}
+	if f.gotNilContext {
+		t.Fatal("compressOlderMessages called provider.Chat with nil context")
 	}
 	if !strings.Contains(f.gotSummaryRequest, "real user message") {
 		t.Errorf("summary input lost real user content: %s", f.gotSummaryRequest)
@@ -89,6 +96,34 @@ func TestCompactionPreservesContentWhenShortCircuits(t *testing.T) {
 	}
 	if len(out) != 2 {
 		t.Errorf("short input should pass through; got %d messages", len(out))
+	}
+}
+
+func TestCompactMessagesPrunesOversizedRecentToolOutputBelowThreshold(t *testing.T) {
+	bigToolResult := strings.Repeat("x", maxInlineToolResultBytes+1)
+	in := []provider.Message{
+		{Role: "user", Content: "build me a page"},
+		{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "call_1", Function: provider.FunctionCall{Name: "terminal"}}}},
+		{Role: "tool", ToolCallID: "call_1", Name: "terminal", Content: bigToolResult},
+		{Role: "user", Content: "继续"},
+	}
+
+	result, err := CompactMessages(in, "", nil, "")
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if result == nil || !result.Pruned {
+		t.Fatalf("oversized recent tool output should force pruning even below global threshold: %+v", result)
+	}
+	got := result.Messages[2]
+	if got.Role != "tool" || got.ToolCallID != "call_1" || got.Name != "terminal" {
+		t.Fatalf("tool metadata was not preserved: %+v", got)
+	}
+	if len(got.Content) >= len(bigToolResult) {
+		t.Fatalf("tool content was not pruned: got %d bytes, want less than %d", len(got.Content), len(bigToolResult))
+	}
+	if !strings.Contains(got.Content, "tool result pruned") {
+		t.Fatalf("tool content should explain pruning, got: %q", got.Content)
 	}
 }
 

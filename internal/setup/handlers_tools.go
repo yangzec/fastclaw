@@ -15,17 +15,17 @@ import (
 // (once the new providers exist in the toolproviders package) makes them
 // appear in the UI automatically.
 type categoryCatalog struct {
-	Name      string           `json:"name"`  // e.g. "web_search"
-	Label     string           `json:"label"` // human-friendly name
+	Name      string            `json:"name"`  // e.g. "web_search"
+	Label     string            `json:"label"` // human-friendly name
 	Providers []providerCatalog `json:"providers"`
 }
 
 type providerCatalog struct {
-	Name      string   `json:"name"`         // "exa"
-	Label     string   `json:"label"`        // "Exa"
-	NeedsKey  bool     `json:"needsKey"`     // API key required?
-	NeedsURL  bool     `json:"needsUrl"`     // endpoint required (self-hosted)?
-	Models    []string `json:"models"`       // suggested "<provider>/<model>" suffixes
+	Name     string   `json:"name"`     // "exa"
+	Label    string   `json:"label"`    // "Exa"
+	NeedsKey bool     `json:"needsKey"` // API key required?
+	NeedsURL bool     `json:"needsUrl"` // endpoint required (self-hosted)?
+	Models   []string `json:"models"`   // suggested "<provider>/<model>" suffixes
 }
 
 // builtinCatalog lists every tool category + provider pair that the binary
@@ -63,7 +63,7 @@ var builtinCatalog = []categoryCatalog{
 		Name:  "image_gen",
 		Label: "Image Generation",
 		Providers: []providerCatalog{
-			{Name: "openai", Label: "OpenAI", NeedsKey: true, Models: []string{"gpt-image-1", "dall-e-3"}},
+			{Name: "openai", Label: "OpenAI", NeedsKey: true, NeedsURL: true, Models: []string{"gpt-image-1", "gpt-image-2", "dall-e-3"}},
 			{Name: "replicate", Label: "Replicate", NeedsKey: true, Models: []string{"flux-schnell", "flux-dev", "flux-pro", "sdxl", "ideogram"}},
 			{Name: "fal", Label: "Fal", NeedsKey: true, Models: []string{"flux-dev", "flux-schnell", "flux-pro"}},
 			// "none" is a sentinel: when picked, image_gen is not exposed

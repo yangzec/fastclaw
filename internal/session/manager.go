@@ -451,6 +451,21 @@ func (m *Manager) getByKey(key, channel, accountID, chatID, projectID string) *S
 // reach into the struct.
 func (s *Session) Key() string { return s.sessionKey }
 
+// EnsurePersisted creates or refreshes the backing session row without
+// adding a message. This is useful for API protocols that must surface the
+// native session id in response headers before writing the first body chunk.
+func (s *Session) EnsurePersisted() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.store == nil {
+		return nil
+	}
+	return s.store.SaveSession(s.ctx(), s.agentID, s.sessionKey, s.channel, s.accountID, s.chatID, s.projectID, s.Messages)
+}
+
 func (s *Session) Append(msg provider.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

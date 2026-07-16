@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -11,7 +12,12 @@ import (
 	"github.com/fastclaw-ai/fastclaw/internal/agent"
 	"github.com/fastclaw-ai/fastclaw/internal/auth"
 	"github.com/fastclaw-ai/fastclaw/internal/bus"
+	"github.com/fastclaw-ai/fastclaw/internal/provider"
 )
+
+const apiAgentTurnTimeout = 45 * time.Minute
+
+var apiStreamProgressInterval = 10 * time.Second
 
 // chatCompletionRequest mirrors the OpenAI chat completion request.
 //
@@ -160,8 +166,24 @@ type completionUsage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+type chatCompletionOptions struct {
+	returnSessionHeaders bool
+}
+
 // HandleChatCompletions handles POST /v1/chat/completions.
 func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	s.handleChatCompletions(w, r, chatCompletionOptions{})
+}
+
+// HandleChatCompletionsV1 handles POST /v1/chat/completions-v1.
+// It is wire-compatible with /v1/chat/completions, but additionally
+// surfaces the FastClaw native session id in response headers so upstream
+// product clients can call history/files APIs without reverse lookup.
+func (s *Server) HandleChatCompletionsV1(w http.ResponseWriter, r *http.Request) {
+	s.handleChatCompletions(w, r, chatCompletionOptions{returnSessionHeaders: true})
+}
+
+func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request, opts chatCompletionOptions) {
 	var req chatCompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -295,6 +317,16 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		PhotoURLs: req.inlineImageURLs(),
 	}
 
+	nativeSessionID := ""
+	if opts.returnSessionHeaders {
+		nativeSessionID = ag.NativeSessionKey(msg)
+		if nativeSessionID != "" {
+			w.Header().Set("X-Fastclaw-Session-Id", nativeSessionID)
+		}
+		w.Header().Set("X-Fastclaw-Session-Key", sessionKey)
+		w.Header().Set("Access-Control-Expose-Headers", "X-Fastclaw-Session-Id, X-Fastclaw-Session-Key")
+	}
+
 	slog.Info("chat completion request",
 		"agent", ag.Name(),
 		"session", sessionKey,
@@ -309,13 +341,197 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().Unix()
 
 	isStream := req.Stream != nil && *req.Stream
+	agentCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), apiAgentTurnTimeout)
+	defer cancel()
+	started := time.Now()
+	defer func() {
+		if err := agentCtx.Err(); err != nil {
+			slog.Warn("chat completion agent turn ended with context error",
+				"agent", ag.Name(),
+				"session", sessionKey,
+				"channel", channel,
+				"stream", isStream,
+				"duration", time.Since(started).String(),
+				"error", err,
+			)
+		} else {
+			slog.Info("chat completion agent turn completed",
+				"agent", ag.Name(),
+				"session", sessionKey,
+				"channel", channel,
+				"stream", isStream,
+				"duration", time.Since(started).String(),
+			)
+		}
+	}()
 	if isStream {
-		s.streamResponseFromAgent(w, r, ag, msg, chatID, model, now)
+		if opts.returnSessionHeaders {
+			s.streamResponseFromAgentV1(w, r.WithContext(agentCtx), ag, msg, chatID, model, now, nativeSessionID, sessionKey)
+		} else {
+			s.streamResponseFromAgent(w, r.WithContext(agentCtx), ag, msg, chatID, model, now)
+		}
 	} else {
-		// Get reply from agent
-		reply := ag.HandleMessage(r.Context(), msg)
+		// Get reply from agent. Use the detached turn context so a caller-side
+		// 60s HTTP timeout does not kill the agent between tool execution and
+		// final synthesis; the hard cap above is the server-side bound.
+		reply := ag.HandleMessage(agentCtx, msg)
 		s.fullResponse(w, reply, chatID, model, now)
 	}
+}
+
+// HandleResolveChatSessionID resolves an external FastClaw session key to the
+// native s-* session id used by history/files APIs.
+func (s *Server) HandleResolveChatSessionID(w http.ResponseWriter, r *http.Request) {
+	space, err := s.userSpaceFor(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": map[string]string{"message": err.Error(), "type": "authentication_error"}})
+		return
+	}
+	agentID := r.URL.Query().Get("agent_id")
+	if agentID == "" {
+		agentID = r.URL.Query().Get("agentId")
+	}
+	if agentID == "" {
+		agentID = r.Header.Get("x-fastclaw-agent-id")
+	}
+	if agentID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]string{"message": "agent_id is required", "type": "invalid_request_error"}})
+		return
+	}
+	ag := space.Agents.AgentByID(agentID)
+	if ag == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": map[string]string{"message": "agent not found", "type": "invalid_request_error"}})
+		return
+	}
+	sessionKey := r.URL.Query().Get("session_key")
+	if sessionKey == "" {
+		sessionKey = r.URL.Query().Get("sessionKey")
+	}
+	if sessionKey == "" {
+		sessionKey = r.Header.Get("x-fastclaw-session-key")
+	}
+	if sessionKey == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]string{"message": "session_key is required", "type": "invalid_request_error"}})
+		return
+	}
+	channel := r.URL.Query().Get("channel")
+	if channel == "" {
+		channel = r.Header.Get("x-fastclaw-channel")
+	}
+	if channel == "" {
+		channel = "api"
+	}
+	native := ag.NativeSessionKey(bus.InboundMessage{Channel: channel, ChatID: sessionKey, UserID: "api-user", PeerKind: "dm"})
+	if native == "" {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": map[string]string{"message": "session not found", "type": "invalid_request_error"}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessionId": native, "sessionKey": sessionKey})
+}
+
+func (s *Server) streamResponseFromAgentV1(w http.ResponseWriter, r *http.Request, ag *agent.Agent, msg bus.InboundMessage, chatID, model string, created int64, sessionID, sessionKey string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.WriteHeader(http.StatusOK)
+
+	flusher, ok := w.(http.Flusher)
+	flush := func() {
+		if ok {
+			flusher.Flush()
+		}
+	}
+
+	s.writeNamedSSE(w, "ready", map[string]string{"sessionId": sessionID, "sessionKey": sessionKey})
+	flush()
+
+	events := make(chan agent.ChatEvent, 64)
+	agentCtx := agent.ContextWithChatEvents(r.Context(), events)
+	srCh := make(chan *provider.StreamReader, 1)
+	go func() {
+		srCh <- ag.HandleMessageStream(agentCtx, msg)
+	}()
+
+	ticker := time.NewTicker(apiStreamProgressInterval)
+	defer ticker.Stop()
+
+	var sr *provider.StreamReader
+	for sr == nil {
+		select {
+		case sr = <-srCh:
+		case evt := <-events:
+			s.writeAgentEventSSE(w, evt)
+			flush()
+		case <-ticker.C:
+			s.writeNamedSSE(w, "heartbeat", map[string]any{"type": "heartbeat"})
+			flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+
+	// Send the OpenAI-compatible role chunk after the native ready/status phase.
+	s.writeSSEChunk(w, chatID, model, created, "assistant", "", nil)
+	flush()
+
+	chunkCh := make(chan provider.StreamChunk, 1)
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		for {
+			chunk, more := sr.Next()
+			select {
+			case chunkCh <- chunk:
+			case <-r.Context().Done():
+				return
+			}
+			if chunk.Done || !more {
+				return
+			}
+		}
+	}()
+
+	streamDone := false
+	for !streamDone {
+		select {
+		case chunk := <-chunkCh:
+			if chunk.Content != "" {
+				s.writeSSEChunk(w, chatID, model, created, "", chunk.Content, nil)
+				flush()
+			}
+			if chunk.Done {
+				streamDone = true
+			}
+		case evt := <-events:
+			s.writeAgentEventSSE(w, evt)
+			flush()
+		case <-ticker.C:
+			s.writeNamedSSE(w, "heartbeat", map[string]any{"type": "heartbeat"})
+			flush()
+		case <-doneCh:
+			streamDone = true
+		case <-r.Context().Done():
+			return
+		}
+	}
+
+	done := "stop"
+	s.writeSSEChunk(w, chatID, model, created, "", "", &done)
+	fmt.Fprint(w, "data: [DONE]\n\n")
+	flush()
+}
+
+func (s *Server) writeAgentEventSSE(w http.ResponseWriter, evt agent.ChatEvent) {
+	switch evt.Type {
+	case "status", "tool_call", "tool_call_delta", "tool_result", "tool_progress", "heartbeat":
+		s.writeNamedSSE(w, evt.Type, map[string]any{"type": evt.Type, "data": evt.Data})
+	}
+}
+
+func (s *Server) writeNamedSSE(w http.ResponseWriter, event string, data any) {
+	blob, _ := json.Marshal(data)
+	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, blob)
 }
 
 func (s *Server) streamResponseFromAgent(w http.ResponseWriter, r *http.Request, ag *agent.Agent, msg bus.InboundMessage, chatID, model string, created int64) {
@@ -420,4 +636,3 @@ func resolveAgent(space *UserSpaceView, agentID string) *agent.Agent {
 	}
 	return nil
 }
-

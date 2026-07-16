@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"mime"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -889,6 +890,11 @@ var imgRefRegex = regexp.MustCompile(`!\[([^\]]*)\]\(([^)]+)\)`)
 // splitMediaFromReply before this matcher runs.
 var fileRefRegex = regexp.MustCompile(`\[([^\]]*)\]\((/workspace/[^)]+)\)`)
 
+const (
+	remoteImageMediaHostsEnv = "FASTCLAW_REMOTE_IMAGE_MEDIA_HOSTS"
+	remoteImageFetchTimeout  = 45 * time.Second
+)
+
 // splitFilesFromReply resolves explicitly linked workspace documents into
 // outbound attachments and removes the raw markdown link from IM text.
 func splitFilesFromReply(ctx context.Context, ws workspace.Store, agentID, projectID, sessionID, reply string) (string, []bus.MediaItem) {
@@ -935,7 +941,7 @@ func splitFilesFromReply(ctx context.Context, ws workspace.Store, agentID, proje
 //
 //   - data:image/...;base64,…   → decode bytes inline, strip from text
 //   - /workspace/foo or foo     → fetch via workspace.Store, strip from text
-//   - http:// or https://       → left in place (some IMs auto-embed URLs)
+//   - allowed http(s) image URL → download bytes, strip from text
 //
 // Refs whose bytes can't be resolved still get **stripped** from the
 // output (otherwise a 200KB base64 data URL or a broken
@@ -958,16 +964,24 @@ func splitMediaFromReply(ctx context.Context, ws workspace.Store, agentID, proje
 	for _, m := range matches {
 		path := reply[m[4]:m[5]]
 
-		// Remote URLs: keep the markdown ref intact so the IM client
-		// can render its own preview. Don't strip, don't fetch.
-		if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
-			continue
-		}
-
 		var bytes []byte
 		var filename string
+		var contentType string
+		stripRef := true
 
-		if strings.HasPrefix(path, "data:") {
+		if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+			data, name, ct, err := readAllowedRemoteMediaURL(ctx, path)
+			if err != nil {
+				// Keep the markdown in the text as a clickable fallback.
+				// We only download from an explicit allowlist to avoid SSRF.
+				slog.Warn("split media: remote image fetch skipped", "agent", agentID, "url", path, "error", err)
+				stripRef = false
+			} else {
+				bytes = data
+				filename = name
+				contentType = ct
+			}
+		} else if strings.HasPrefix(path, "data:") {
 			b, name, err := decodeDataURL(path)
 			if err != nil {
 				// Common case: LLM hallucinates a data URL with a
@@ -984,6 +998,15 @@ func splitMediaFromReply(ctx context.Context, ws workspace.Store, agentID, proje
 			} else {
 				bytes = b
 				filename = name
+			}
+		} else if filepath.IsAbs(path) {
+			data, name, ct, err := readLocalMediaFile(path)
+			if err != nil {
+				slog.Warn("split media: local file read failed", "agent", agentID, "path", path, "error", err)
+			} else {
+				bytes = data
+				filename = name
+				contentType = ct
 			}
 		} else if ws != nil {
 			key := strings.TrimPrefix(path, "/workspace/")
@@ -1012,27 +1035,147 @@ func splitMediaFromReply(ctx context.Context, ws workspace.Store, agentID, proje
 					"agent", agentID, "session", sessionID,
 					"filename", filename, "size", len(bytes), "cap", maxAttachmentBytes)
 			} else {
+				if contentType == "" {
+					contentType = mime.TypeByExtension(filepath.Ext(filename))
+				}
 				items = append(items, bus.MediaItem{
 					Filename:    filename,
-					ContentType: mime.TypeByExtension(filepath.Ext(filename)),
+					ContentType: contentType,
 					Bytes:       bytes,
 				})
 			}
 		}
 
-		// Strip the `![alt](src)` either way — leaving an unresolvable
-		// ref in the chat body just shows raw markdown / a base64 blob.
-		out.WriteString(reply[cursor:m[0]])
-		cursor = m[1]
-		// Drop the trailing newline after the image ref if one
-		// follows — keeps the body tidy when the LLM put the ref on
-		// its own line.
-		if cursor < len(reply) && reply[cursor] == '\n' {
-			cursor++
+		if stripRef {
+			// Strip the `![alt](src)` either way — leaving an unresolvable
+			// ref in the chat body just shows raw markdown / a base64 blob.
+			out.WriteString(reply[cursor:m[0]])
+			cursor = m[1]
+			// Drop the trailing newline after the image ref if one
+			// follows — keeps the body tidy when the LLM put the ref on
+			// its own line.
+			if cursor < len(reply) && reply[cursor] == '\n' {
+				cursor++
+			}
 		}
 	}
 	out.WriteString(reply[cursor:])
 	return strings.TrimSpace(out.String()), items
+}
+
+func readAllowedRemoteMediaURL(ctx context.Context, rawURL string) ([]byte, string, string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, "", "", fmt.Errorf("unsupported remote media scheme %q", u.Scheme)
+	}
+	if !isAllowedRemoteImageHost(u.Hostname()) {
+		return nil, "", "", fmt.Errorf("remote media host %q is not allowlisted", u.Hostname())
+	}
+
+	fetchCtx, cancel := context.WithTimeout(ctx, remoteImageFetchTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, "", "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", "", fmt.Errorf("remote media HTTP %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAttachmentBytes+1))
+	if err != nil {
+		return nil, "", "", err
+	}
+	if len(data) == 0 {
+		return nil, "", "", fmt.Errorf("remote media empty body")
+	}
+	if len(data) > maxAttachmentBytes {
+		return nil, "", "", fmt.Errorf("remote media too large: %d bytes", len(data))
+	}
+
+	contentType := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
+	if contentType == "" || !strings.HasPrefix(contentType, "image/") {
+		contentType = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(contentType, "image/") {
+		return nil, "", "", fmt.Errorf("remote media non-image content-type %q", contentType)
+	}
+
+	filename := filepath.Base(u.Path)
+	if filename == "." || filename == "/" || filename == "" {
+		filename = "remote-image"
+	}
+	if filepath.Ext(filename) == "" {
+		if exts, err := mime.ExtensionsByType(contentType); err == nil && len(exts) > 0 {
+			filename += exts[0]
+		}
+	}
+	return data, filename, contentType, nil
+}
+
+func isAllowedRemoteImageHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	for _, raw := range strings.Split(os.Getenv(remoteImageMediaHostsEnv), ",") {
+		allowed := strings.ToLower(strings.TrimSpace(raw))
+		if allowed == "" {
+			continue
+		}
+		if host == allowed {
+			return true
+		}
+		if strings.HasPrefix(allowed, ".") && strings.HasSuffix(host, allowed) && host != strings.TrimPrefix(allowed, ".") {
+			return true
+		}
+	}
+	return false
+}
+
+func readLocalMediaFile(path string) ([]byte, string, string, error) {
+	clean := filepath.Clean(path)
+	st, err := os.Stat(clean)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, "", "", fmt.Errorf("not a regular file")
+	}
+	if st.Size() > maxAttachmentBytes {
+		return nil, "", "", fmt.Errorf("file too large: %d bytes", st.Size())
+	}
+	f, err := os.Open(clean)
+	if err != nil {
+		return nil, "", "", err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxAttachmentBytes+1))
+	if err != nil {
+		return nil, "", "", err
+	}
+	if len(data) == 0 {
+		return nil, "", "", fmt.Errorf("empty file")
+	}
+	if len(data) > maxAttachmentBytes {
+		return nil, "", "", fmt.Errorf("file too large: %d bytes", len(data))
+	}
+	ct := mime.TypeByExtension(filepath.Ext(clean))
+	if ct == "" || !strings.HasPrefix(ct, "image/") {
+		ct = http.DetectContentType(data)
+	}
+	if !strings.HasPrefix(ct, "image/") {
+		return nil, "", "", fmt.Errorf("non-image content-type %q", ct)
+	}
+	return data, filepath.Base(clean), ct, nil
 }
 
 // decodeDataURL parses `data:image/png;base64,...` style URLs into raw

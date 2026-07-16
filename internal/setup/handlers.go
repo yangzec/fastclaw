@@ -1215,8 +1215,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 			// ever arrives.
 			return
 		case <-keepalive.C:
-			fmt.Fprintf(w, ": ping\n\n")
-			flusher.Flush()
+			forwardHeartbeatEvent(w, flusher)
 		case env, ok := <-sub:
 			if !ok {
 				return
@@ -1257,6 +1256,10 @@ func forwardEvent(w http.ResponseWriter, flusher http.Flusher, env agent.EventEn
 
 func forwardSyntheticEvent(w http.ResponseWriter, flusher http.Flusher, evt agent.ChatEvent) {
 	forwardEvent(w, flusher, agent.EventEnvelope{Seq: -1, Event: evt})
+}
+
+func forwardHeartbeatEvent(w http.ResponseWriter, flusher http.Flusher) {
+	forwardSyntheticEvent(w, flusher, agent.ChatEvent{Type: "heartbeat"})
 }
 
 // handleChatSubscribe holds an SSE connection open for one (agent,
@@ -1371,8 +1374,7 @@ func (s *Server) handleChatSubscribe(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case <-keepalive.C:
-			fmt.Fprintf(w, ": ping\n\n")
-			flusher.Flush()
+			forwardHeartbeatEvent(w, flusher)
 		case env, ok := <-live:
 			if !ok {
 				return
