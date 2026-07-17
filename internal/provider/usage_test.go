@@ -1,6 +1,10 @@
 package provider
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -65,33 +69,95 @@ func TestOpenAIParseSSENoUsage(t *testing.T) {
 // usage rides on message_start (prompt + cache fields) and the final
 // output_tokens count lands on message_delta.
 func TestAnthropicParseSSEUsage(t *testing.T) {
-	sse := strings.Join([]string{
-		`data: {"type":"message_start","message":{"usage":{"input_tokens":50,"output_tokens":1,"cache_read_input_tokens":30,"cache_creation_input_tokens":10}}}`,
-		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
-		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
-		`data: {"type":"message_delta","usage":{"input_tokens":50,"output_tokens":42}}`,
-		`data: {"type":"message_stop"}`,
-		``,
-	}, "\n")
+	sse := strings.Join(anthropicSSELines("data: "), "\n")
 
 	p := &AnthropicProvider{}
 	resp, err := p.parseSSE(strings.NewReader(sse))
 	if err != nil {
 		t.Fatalf("parseSSE: %v", err)
 	}
-	if resp.Content != "hi" {
-		t.Errorf("content = %q, want %q", resp.Content, "hi")
+	assertAnthropicSSEParsed(t, resp, "hi")
+}
+
+func TestAnthropicParseSSEAcceptsDataLineWithoutSpace(t *testing.T) {
+	sse := strings.Join(anthropicSSELines("data:"), "\n")
+
+	p := &AnthropicProvider{}
+	resp, err := p.parseSSE(strings.NewReader(sse))
+	if err != nil {
+		t.Fatalf("parseSSE: %v", err)
 	}
-	if resp.Usage.InputTokens != 50 {
-		t.Errorf("InputTokens = %d, want 50", resp.Usage.InputTokens)
+	assertAnthropicSSEParsed(t, resp, "hi")
+}
+
+func TestAnthropicChatStreamAcceptsDataLineWithoutSpace(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, line := range anthropicSSELines("data:") {
+			fmt.Fprintln(w, line)
+		}
+	}))
+	defer srv.Close()
+
+	p := NewAnthropic("test-key", srv.URL)
+	sr, err := p.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, "claude-test", 1024, 0)
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
 	}
-	if resp.Usage.OutputTokens != 42 {
-		t.Errorf("OutputTokens = %d, want 42 (from message_delta)", resp.Usage.OutputTokens)
+
+	var content string
+	var usage Usage
+	var sawDone bool
+	for chunk, ok := sr.Next(); ok; chunk, ok = sr.Next() {
+		content += chunk.Content
+		if chunk.Done {
+			sawDone = true
+			usage = chunk.Usage
+		}
 	}
-	if resp.Usage.CacheReadTokens != 30 {
-		t.Errorf("CacheReadTokens = %d, want 30 (from message_start)", resp.Usage.CacheReadTokens)
+	if err := sr.Err(); err != nil {
+		t.Fatalf("stream error: %v", err)
 	}
-	if resp.Usage.CacheCreationTokens != 10 {
-		t.Errorf("CacheCreationTokens = %d, want 10 (from message_start)", resp.Usage.CacheCreationTokens)
+	if content != "hi" {
+		t.Fatalf("stream content = %q, want %q", content, "hi")
+	}
+	if !sawDone {
+		t.Fatalf("stream did not emit done chunk")
+	}
+	assertAnthropicUsage(t, usage)
+}
+
+func anthropicSSELines(prefix string) []string {
+	return []string{
+		prefix + `{"type":"message_start","message":{"usage":{"input_tokens":50,"output_tokens":1,"cache_read_input_tokens":30,"cache_creation_input_tokens":10}}}`,
+		prefix + `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		prefix + `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+		prefix + `{"type":"message_delta","usage":{"input_tokens":50,"output_tokens":42}}`,
+		prefix + `{"type":"message_stop"}`,
+		``,
+	}
+}
+
+func assertAnthropicSSEParsed(t *testing.T, resp *Response, wantContent string) {
+	t.Helper()
+	if resp.Content != wantContent {
+		t.Errorf("content = %q, want %q", resp.Content, wantContent)
+	}
+	assertAnthropicUsage(t, resp.Usage)
+}
+
+func assertAnthropicUsage(t *testing.T, usage Usage) {
+	t.Helper()
+	if usage.InputTokens != 50 {
+		t.Errorf("InputTokens = %d, want 50", usage.InputTokens)
+	}
+	if usage.OutputTokens != 42 {
+		t.Errorf("OutputTokens = %d, want 42 (from message_delta)", usage.OutputTokens)
+	}
+	if usage.CacheReadTokens != 30 {
+		t.Errorf("CacheReadTokens = %d, want 30 (from message_start)", usage.CacheReadTokens)
+	}
+	if usage.CacheCreationTokens != 10 {
+		t.Errorf("CacheCreationTokens = %d, want 10 (from message_start)", usage.CacheCreationTokens)
 	}
 }
