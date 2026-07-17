@@ -254,6 +254,8 @@ func initialOpenAIRequestMode(model string) openAIRequestMode {
 		return openAIRequestMode{maxCompletionTokens: true, omitTemperature: true}
 	case strings.HasPrefix(model, "o1"), strings.HasPrefix(model, "o3"), strings.HasPrefix(model, "o4"):
 		return openAIRequestMode{maxCompletionTokens: true, omitTemperature: true}
+	case strings.HasPrefix(model, "kimi-"), strings.Contains(model, "/kimi-"):
+		return openAIRequestMode{omitTemperature: true}
 	default:
 		return openAIRequestMode{}
 	}

@@ -87,6 +87,52 @@ func TestOpenAIRetriesWithoutTemperature(t *testing.T) {
 	}
 }
 
+func TestOpenAIOmitsTemperatureForKimiModels(t *testing.T) {
+	models := []string{
+		"kimi/kimi-k2.5",
+		"kimi/kimi-for-coding",
+		"openrouter/moonshotai/kimi-k2.5",
+	}
+
+	for _, model := range models {
+		t.Run(model, func(t *testing.T) {
+			var calls int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&calls, 1)
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				if _, ok := body["temperature"]; ok {
+					t.Fatalf("request sent temperature for Kimi model: %#v", body)
+				}
+				if _, ok := body["max_tokens"]; !ok {
+					t.Fatalf("request missing max_tokens for Kimi model: %#v", body)
+				}
+				if _, ok := body["max_completion_tokens"]; ok {
+					t.Fatalf("request sent max_completion_tokens for Kimi model: %#v", body)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n")
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			defer srv.Close()
+
+			p := NewOpenAI("test-key", srv.URL)
+			resp, err := p.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, model, 123, 0.7)
+			if err != nil {
+				t.Fatalf("Chat: %v", err)
+			}
+			if resp.Content != "ok" {
+				t.Fatalf("content = %q, want ok", resp.Content)
+			}
+			if calls != 1 {
+				t.Fatalf("calls = %d, want 1", calls)
+			}
+		})
+	}
+}
+
 func TestOpenAIUsesNewerModelChatParametersWithoutRetry(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
