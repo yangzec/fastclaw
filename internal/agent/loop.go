@@ -2913,87 +2913,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 				"iteration", i+1,
 				"tool_call_count", totalToolCalls,
 			)
-			sr, err := a.provider.ChatStream(ctx, messages, toolDefs, a.model, a.maxTokens, a.temperature)
-			if err != nil {
-				slog.Error("LLM stream failed, falling back", "agent", a.name, "error", err)
-				fallbackMsg := provider.Message{Role: "assistant", Content: resp.Content, Metadata: knowledgeMeta}
-				sess.Append(fallbackMsg)
-				a.runPostTurn(ctx, msg, append(messages, fallbackMsg), totalToolCalls, chatterMem)
-				return a.stringStream(resp.Content)
-			}
-
-			// Collect content in background for session storage.
-			// Capture inbound msg + per-turn state out here — the goroutine
-			// below shadows `msg` with the local assistant Message, and
-			// runPostTurn needs the inbound (channel / chat_id / source).
-			inboundMsg := msg
-			messagesAtTurnStart := messages
-			capturedToolCalls := totalToolCalls
-			capturedChatterMem := chatterMem
-			outCh := make(chan provider.StreamChunk, 64)
-			outReader := provider.NewStreamReader(outCh)
-			go func() {
-				defer close(outCh)
-				var full strings.Builder
-				var thinking, thinkingSig string
-				var rawAssistant json.RawMessage
-				var streamUsage provider.Usage
-				for {
-					chunk, ok := sr.Next()
-					if !ok {
-						break
-					}
-					if chunk.Content != "" {
-						full.WriteString(chunk.Content)
-					}
-					if chunk.Thinking != "" {
-						thinking = chunk.Thinking
-					}
-					if chunk.ThinkingSignature != "" {
-						thinkingSig = chunk.ThinkingSignature
-					}
-					if len(chunk.RawAssistant) > 0 {
-						rawAssistant = chunk.RawAssistant
-					}
-					if chunk.Usage.InputTokens > 0 || chunk.Usage.OutputTokens > 0 ||
-						chunk.Usage.CacheReadTokens > 0 || chunk.Usage.CacheCreationTokens > 0 {
-						streamUsage = chunk.Usage
-					}
-					select {
-					case outCh <- chunk:
-					case <-ctx.Done():
-						return
-					}
-				}
-				a.meterTokens(ctx, sess.Key(), streamUsage, 0)
-				msg := provider.Message{Role: "assistant", Content: full.String(), Thinking: thinking, Metadata: knowledgeMeta}
-				switch {
-				case len(rawAssistant) > 0:
-					// Provider already serialized the assistant message
-					// in its wire format (e.g. OpenAI/DeepSeek with
-					// reasoning_content). Persist verbatim so the next
-					// turn replays it byte-identically — required for
-					// DeepSeek thinking mode.
-					msg.RawAssistant = rawAssistant
-				case thinking != "":
-					// Anthropic extended thinking: pack {thinking, signature}
-					// as a content-block so the next turn can echo it back.
-					if raw, err := json.Marshal(map[string]string{
-						"type":      "thinking",
-						"thinking":  thinking,
-						"signature": thinkingSig,
-					}); err == nil {
-						msg.RawAssistant = raw
-					}
-				}
-				sess.Append(msg)
-				// Fire PostTurn now that the assistant message is
-				// persisted. Auto-persist (memory.go) lives behind
-				// runPostTurn; without this call the streaming path
-				// silently skipped it — see the FIXME at runPostTurn.
-				a.runPostTurn(ctx, inboundMsg, append(messagesAtTurnStart, msg), capturedToolCalls, capturedChatterMem)
-			}()
-			return outReader
+			return a.streamFinalSynthesis(ctx, msg, messages, toolDefs, sess, totalToolCalls, chatterMem, knowledgeMeta, resp.Content)
 		}
 
 		// Tool calls - process concurrently via SDK engine
@@ -3105,6 +3025,151 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 
 	slog.Warn("max tool iterations reached — streaming forced final delivery", "agent", a.name, "max", a.maxToolIterations)
 	return a.streamFinalDeliveryAfterCap(ctx, msg, messages, sess, totalToolCalls, chatterMem)
+}
+
+func (a *Agent) streamFinalSynthesis(ctx context.Context, inboundMsg bus.InboundMessage, messages []provider.Message, toolDefs []provider.Tool, sess *session.Session, toolCallCount int, chatterMem *Memory, metadata map[string]any, fallbackContent string) *provider.StreamReader {
+	outCh := make(chan provider.StreamChunk, 64)
+	outReader := provider.NewStreamReader(outCh)
+	go func() {
+		defer close(outCh)
+		currentMessages := append([]provider.Message(nil), messages...)
+		totalToolCalls := toolCallCount
+		for round := 0; round <= a.maxToolIterations; round++ {
+			sr, err := a.provider.ChatStream(ctx, currentMessages, toolDefs, a.model, a.maxTokens, a.temperature)
+			if err != nil {
+				slog.Error("LLM stream failed, falling back", "agent", a.name, "error", err)
+				fallbackMsg := provider.Message{Role: "assistant", Content: fallbackContent, Metadata: metadata, Timestamp: time.Now().UnixMilli()}
+				sess.Append(fallbackMsg)
+				a.runPostTurn(ctx, inboundMsg, append(currentMessages, fallbackMsg), totalToolCalls, chatterMem)
+				select {
+				case outCh <- provider.StreamChunk{Content: fallbackContent, Done: true}:
+				case <-ctx.Done():
+					outReader.SetErr(ctx.Err())
+				}
+				return
+			}
+
+			var full strings.Builder
+			var thinking, thinkingSig string
+			var rawAssistant json.RawMessage
+			var streamUsage provider.Usage
+			var finalToolCalls []provider.ToolCall
+			var buffered []provider.StreamChunk
+			for {
+				chunk, ok := sr.Next()
+				if !ok {
+					break
+				}
+				buffered = append(buffered, chunk)
+				if chunk.Content != "" {
+					full.WriteString(chunk.Content)
+				}
+				if chunk.Thinking != "" {
+					thinking = chunk.Thinking
+				}
+				if chunk.ThinkingSignature != "" {
+					thinkingSig = chunk.ThinkingSignature
+				}
+				if len(chunk.RawAssistant) > 0 {
+					rawAssistant = chunk.RawAssistant
+				}
+				if len(chunk.ToolCalls) > 0 {
+					finalToolCalls = chunk.ToolCalls
+				}
+				if chunk.Usage.InputTokens > 0 || chunk.Usage.OutputTokens > 0 ||
+					chunk.Usage.CacheReadTokens > 0 || chunk.Usage.CacheCreationTokens > 0 {
+					streamUsage = chunk.Usage
+				}
+			}
+			if err := sr.Err(); err != nil {
+				outReader.SetErr(err)
+				return
+			}
+			a.meterTokens(ctx, sess.Key(), streamUsage, 0)
+
+			assistantMsg := provider.Message{Role: "assistant", Content: full.String(), Thinking: thinking, Metadata: metadata, Timestamp: time.Now().UnixMilli()}
+			switch {
+			case len(rawAssistant) > 0:
+				assistantMsg.RawAssistant = rawAssistant
+			case thinking != "":
+				if raw, err := json.Marshal(map[string]string{
+					"type":      "thinking",
+					"thinking":  thinking,
+					"signature": thinkingSig,
+				}); err == nil {
+					assistantMsg.RawAssistant = raw
+				}
+			}
+
+			if len(finalToolCalls) == 0 {
+				sess.Append(assistantMsg)
+				for _, chunk := range buffered {
+					select {
+					case outCh <- chunk:
+					case <-ctx.Done():
+						outReader.SetErr(ctx.Err())
+						return
+					}
+				}
+				a.runPostTurn(ctx, inboundMsg, append(currentMessages, assistantMsg), totalToolCalls, chatterMem)
+				return
+			}
+
+			assistantMsg.ToolCalls = finalToolCalls
+			sess.Append(assistantMsg)
+			currentMessages = append(currentMessages, assistantMsg)
+
+			toolNames := make([]string, 0, len(finalToolCalls))
+			for _, tc := range finalToolCalls {
+				toolNames = append(toolNames, tc.Function.Name)
+				a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: BeforeToolCall, ToolName: tc.Function.Name, ToolArgs: tc.Function.Arguments, Channel: inboundMsg.Channel, AccountID: inboundMsg.AccountID, ChatID: inboundMsg.ChatID, UserID: a.ownerUserID})
+			}
+			slog.Warn("streaming final synthesis returned tool calls; executing before final reply", "agent", a.name, "channel", inboundMsg.Channel, "chat_id", inboundMsg.ChatID, "round", round+1, "tool_names", strings.Join(toolNames, ","))
+			emitEvent(ctx, ChatEvent{Type: "tool_progress", Data: map[string]any{
+				"phase": "running",
+				"count": len(finalToolCalls),
+				"tools": strings.Join(toolNames, ","),
+			}})
+			results := a.engine.executeToolsConcurrently(ctx, a.registry, finalToolCalls, a.workspacePath)
+			totalToolCalls += len(results)
+			for idx, r := range results {
+				tc := finalToolCalls[idx]
+				resultContent, meta := extractToolMeta(r.result)
+				a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: AfterToolCall, ToolName: r.toolName, ToolResult: resultContent, Error: r.err, Channel: inboundMsg.Channel, AccountID: inboundMsg.AccountID, ChatID: inboundMsg.ChatID, UserID: a.ownerUserID, GoalSessionKey: a.registry.GoalSessionKey(), Source: inboundMsg.Source})
+				if r.err != nil {
+					emitEvent(ctx, ChatEvent{Type: "tool_progress", Data: map[string]any{
+						"id":    tc.ID,
+						"name":  r.toolName,
+						"phase": "error",
+						"error": r.err.Error(),
+					}})
+				} else {
+					emitEvent(ctx, ChatEvent{Type: "tool_progress", Data: map[string]any{
+						"id":    tc.ID,
+						"name":  r.toolName,
+						"phase": "done",
+					}})
+				}
+				if mediaPaths := extractMediaPaths(resultContent); len(mediaPaths) > 0 {
+					a.sendMediaFiles(inboundMsg, mediaPaths)
+				}
+				toolMsg := provider.Message{Role: "tool", Content: resultContent, ToolCallID: tc.ID, Name: r.toolName, Metadata: meta}
+				sess.Append(toolMsg)
+				currentMessages = append(currentMessages, toolMsg)
+			}
+		}
+
+		fallback := fmt.Sprintf("I ran into repeated tool calls while preparing the final response and stopped after %d attempts. Please try again or narrow the request.", a.maxToolIterations)
+		fallbackMsg := provider.Message{Role: "assistant", Content: fallback, Metadata: metadata, Timestamp: time.Now().UnixMilli()}
+		sess.Append(fallbackMsg)
+		a.runPostTurn(ctx, inboundMsg, append(currentMessages, fallbackMsg), totalToolCalls, chatterMem)
+		select {
+		case outCh <- provider.StreamChunk{Content: fallback, Done: true}:
+		case <-ctx.Done():
+			outReader.SetErr(ctx.Err())
+		}
+	}()
+	return outReader
 }
 
 // streamFinalDeliveryAfterCap runs one extra ChatStream with tools
