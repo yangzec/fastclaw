@@ -26,6 +26,7 @@ import AgentCustomizePage from "@/app/agents/[id]/customize/page";
 import AgentModelsPage from "@/app/agents/[id]/models/page";
 import AgentContextPage from "@/app/agents/[id]/context/page";
 import AgentKnowledgePage from "@/app/agents/[id]/knowledge/page";
+import AgentStoragePage from "@/app/agents/[id]/storage/page";
 import AgentSkillsPage from "@/app/agents/[id]/skills/page";
 import AgentPluginsPage from "@/app/agents/[id]/plugins/page";
 import AgentChannelsPage from "@/app/agents/[id]/channels/page";
@@ -35,6 +36,7 @@ import AgentUsagePage from "@/app/agents/[id]/usage/page";
 import AccountSettingsPage from "@/app/settings/account/page";
 import GeneralSettingsPage from "@/app/settings/general/page";
 import UserModelsPage from "@/app/models/page";
+import UserStoragePage from "@/app/settings/storage/page";
 import AboutSettingsPage from "@/app/settings/about/page";
 
 export type AgentSettingsTab =
@@ -43,6 +45,7 @@ export type AgentSettingsTab =
   | "models"
   | "context"
   | "knowledge"
+  | "storage"
   | "skills"
   | "mcp"
   | "plugins"
@@ -51,6 +54,7 @@ export type AgentSettingsTab =
   | "usage"
   | "account"
   | "general"
+  | "user-storage"
   | "about";
 
 type TabIcon = React.ComponentType<{ className?: string }>;
@@ -61,6 +65,7 @@ const AGENT_TABS: Array<{ id: AgentSettingsTab; label: string; icon: TabIcon }> 
   { id: "models", label: "Models", icon: BrainIcon },
   { id: "context", label: "Context", icon: LayersIcon },
   { id: "knowledge", label: "Knowledge", icon: BookOpenIcon },
+  { id: "storage", label: "Storage", icon: ServerIcon },
   { id: "skills", label: "Skills", icon: SparklesIcon },
   { id: "mcp", label: "MCP", icon: ServerIcon },
   { id: "plugins", label: "Plugins", icon: Plug },
@@ -75,6 +80,7 @@ const AGENT_TABS: Array<{ id: AgentSettingsTab; label: string; icon: TabIcon }> 
 const USER_TABS: Array<{ id: AgentSettingsTab; label: string; icon: TabIcon }> = [
   { id: "account", label: "Account", icon: UserCog },
   { id: "general", label: "General", icon: Palette },
+  { id: "user-storage", label: "Storage", icon: ServerIcon },
   // About surfaces the gateway version + upgrade hint — only useful
   // to operators (super_admin), filtered out below for regular users.
   { id: "about", label: "About", icon: InfoIcon },
@@ -177,6 +183,7 @@ export function AgentSettingsDialog({
             (role === "viewer" ? <UserModelsPage /> : <AgentModelsPage />)}
           {tab === "context" && <AgentContextPage />}
           {tab === "knowledge" && <AgentKnowledgePage />}
+          {tab === "storage" && <AgentStoragePage />}
           {tab === "skills" && <AgentSkillsPage />}
           {tab === "mcp" && <AgentMCPPage />}
           {tab === "plugins" && <AgentPluginsPage />}
@@ -193,6 +200,7 @@ export function AgentSettingsDialog({
               <GeneralSettingsPage />
             </div>
           )}
+          {tab === "user-storage" && <UserStoragePage />}
           {tab === "about" && (
             <div className="p-6 max-w-3xl">
               <AboutSettingsPage />

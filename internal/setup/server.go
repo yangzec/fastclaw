@@ -257,6 +257,10 @@ func (s *Server) Run(ctx context.Context) error {
 	// Per-user config (system_settings + scoped providers/channels).
 	mux.HandleFunc("GET /api/config", auth(s.handleGetConfig))
 	mux.HandleFunc("POST /api/config", auth(s.handleUpdateConfig))
+	mux.HandleFunc("GET /api/me/objectstore", auth(s.handleGetUserObjectStore))
+	mux.HandleFunc("POST /api/me/objectstore/test", auth(s.handleTestUserObjectStore))
+	mux.HandleFunc("PUT /api/me/objectstore", auth(s.handlePutUserObjectStore))
+	mux.HandleFunc("DELETE /api/me/objectstore", auth(s.handleDeleteUserObjectStore))
 
 	// Chat
 	mux.HandleFunc("POST /api/chat", auth(s.handleChat))
@@ -280,6 +284,10 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /api/agents/{id}", auth(s.handleGetAgent))
 	mux.HandleFunc("PUT /api/agents/{id}", auth(s.handleUpdateAgent))
 	mux.HandleFunc("GET /api/agents/{id}/config", auth(s.handleGetAgentConfig))
+	mux.HandleFunc("GET /api/agents/{id}/objectstore", auth(s.handleGetAgentObjectStore))
+	mux.HandleFunc("POST /api/agents/{id}/objectstore/test", auth(s.handleTestAgentObjectStore))
+	mux.HandleFunc("PUT /api/agents/{id}/objectstore", auth(s.handlePutAgentObjectStore))
+	mux.HandleFunc("DELETE /api/agents/{id}/objectstore", auth(s.handleDeleteAgentObjectStore))
 	mux.HandleFunc("GET /api/agents/{id}/tools/registered", auth(s.handleListAgentRegisteredTools))
 	mux.HandleFunc("DELETE /api/agents/{id}", auth(s.handleDeleteAgent))
 

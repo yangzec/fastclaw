@@ -135,7 +135,11 @@ func (s *Server) saveUserConfig(r *http.Request, cfg *config.Config) error {
 	} else if ok {
 		uid = ident.UserID
 	}
+	canWriteSystemObjectStore := ok && ident.Role == "super_admin" && !ident.IsActingAs()
 	for _, ns := range settingNamespaces {
+		if ns.namespace == "objectstore" && !canWriteSystemObjectStore {
+			continue
+		}
 		data := ns.collect(cfg)
 		if err := scope.SaveSetting(r.Context(), s.dataStore, uid, "", ns.namespace, data); err != nil {
 			return err
@@ -477,6 +481,8 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	masked := *cfg
+	masked.ObjectStore.S3.AccessKey = ""
+	masked.ObjectStore.S3.SecretKey = ""
 	masked.Providers = make(map[string]config.ProviderConfig)
 	for k, v := range cfg.Providers {
 		v.APIKey = maskAPIKey(v.APIKey)
@@ -540,13 +546,18 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var raw struct {
-		Prefs   *config.PrefsCfg `json:"prefs"`
-		Sandbox *json.RawMessage `json:"sandbox"`
-		Skills  *struct {
+		Prefs       *config.PrefsCfg `json:"prefs"`
+		Sandbox     *json.RawMessage `json:"sandbox"`
+		ObjectStore *json.RawMessage `json:"objectStore"`
+		Skills      *struct {
 			AgentEntries map[string]map[string]config.SkillEntryCfg `json:"agentEntries"`
 		} `json:"skills"`
 	}
 	_ = json.Unmarshal(buf, &raw)
+	if raw.ObjectStore != nil && !(ident.Role == "super_admin" && !ident.IsActingAs()) {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "use /api/me/objectstore to manage user storage"})
+		return
+	}
 	if raw.Prefs != nil {
 		raw.Prefs.Timezone = strings.TrimSpace(raw.Prefs.Timezone)
 		if raw.Prefs.Timezone != "" {
