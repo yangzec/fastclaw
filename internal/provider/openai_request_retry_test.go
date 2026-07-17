@@ -91,6 +91,7 @@ func TestOpenAIOmitsTemperatureForKimiModels(t *testing.T) {
 	models := []string{
 		"kimi/kimi-k2.5",
 		"kimi/kimi-for-coding",
+		"kimi/k3[1m]",
 		"openrouter/moonshotai/kimi-k2.5",
 	}
 

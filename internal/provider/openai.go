@@ -248,13 +248,14 @@ type openAIRequestMode struct {
 }
 
 func initialOpenAIRequestMode(model string) openAIRequestMode {
+	fullModel := strings.ToLower(model)
 	model = strings.ToLower(StripProviderPrefix(model))
 	switch {
 	case strings.HasPrefix(model, "gpt-5"):
 		return openAIRequestMode{maxCompletionTokens: true, omitTemperature: true}
 	case strings.HasPrefix(model, "o1"), strings.HasPrefix(model, "o3"), strings.HasPrefix(model, "o4"):
 		return openAIRequestMode{maxCompletionTokens: true, omitTemperature: true}
-	case strings.HasPrefix(model, "kimi-"), strings.Contains(model, "/kimi-"):
+	case strings.HasPrefix(fullModel, "kimi/"), strings.HasPrefix(model, "kimi-"), strings.Contains(model, "/kimi-"):
 		return openAIRequestMode{omitTemperature: true}
 	default:
 		return openAIRequestMode{}
