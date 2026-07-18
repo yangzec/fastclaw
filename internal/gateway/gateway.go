@@ -303,19 +303,21 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		AccountID:    osCfg.AccountID,
 		AliyunIntern: osCfg.AliyunIntern,
 		S3: workspace.S3Config{
-			Endpoint:  osCfg.S3.Endpoint,
-			Region:    osCfg.S3.Region,
-			Bucket:    osCfg.S3.Bucket,
-			Prefix:    osCfg.S3.Prefix,
-			AccessKey: osCfg.S3.AccessKey,
-			SecretKey: osCfg.S3.SecretKey,
-			UseSSL:    osCfg.S3.UseSSL,
+			Endpoint:      osCfg.S3.Endpoint,
+			Region:        osCfg.S3.Region,
+			Bucket:        osCfg.S3.Bucket,
+			Prefix:        osCfg.S3.Prefix,
+			PublicBaseURL: osCfg.S3.PublicBaseURL,
+			AccessKey:     osCfg.S3.AccessKey,
+			SecretKey:     osCfg.S3.SecretKey,
+			UseSSL:        osCfg.S3.UseSSL,
 		},
 	}.New(filepath.Join(homeDir, "workspaces"))
 	if err != nil {
 		return nil, fmt.Errorf("open object store: %w", err)
 	}
 	slog.Info("object store", "type", defaultStr(osCfg.Type, "local"))
+	wsInner = newAgentStoreRouter(wsInner, st, nil)
 
 	// LLM token metering: SQLMeter UPSERTs into token_usage_daily on the
 	// same DB the Store opened, so admin reports survive restart. Falls

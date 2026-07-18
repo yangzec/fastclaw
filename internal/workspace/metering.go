@@ -85,6 +85,10 @@ func (m *Metered) SignedURL(ctx context.Context, agentID, projectID, sessionID, 
 	return m.inner.SignedURL(ctx, agentID, projectID, sessionID, path, ttl)
 }
 
+func (m *Metered) PublicURL(ctx context.Context, agentID, projectID, sessionID, path string) (string, error) {
+	return m.inner.PublicURL(ctx, agentID, projectID, sessionID, path)
+}
+
 // LocalScopeDir forwards to the inner store when it implements
 // LocalScoper (LocalFS does, S3 doesn't). Lets the workspace-reveal
 // handler ask the public Store interface for an on-disk path

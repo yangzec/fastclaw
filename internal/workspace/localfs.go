@@ -278,3 +278,7 @@ func (f *LocalFS) Delete(ctx context.Context, agentID, projectID, sessionID, pat
 func (f *LocalFS) SignedURL(ctx context.Context, agentID, projectID, sessionID, path string, ttl time.Duration) (string, error) {
 	return "", ErrSignedURLUnsupported
 }
+
+func (f *LocalFS) PublicURL(ctx context.Context, agentID, projectID, sessionID, path string) (string, error) {
+	return "", ErrSignedURLUnsupported
+}

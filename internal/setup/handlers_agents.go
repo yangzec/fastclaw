@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/fastclaw-ai/fastclaw/internal/agent/tools"
 	"github.com/fastclaw-ai/fastclaw/internal/auth"
@@ -1366,6 +1367,15 @@ func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveFileFromWorkspaceStore(w http.ResponseWriter, r *http.Request, agentID, path string) {
+	if shouldRedirectWorkspaceFileToSignedURL(path) {
+		if signed, err := s.workspaceStore.SignedURL(r.Context(), agentID, "", "", path, 10*time.Minute); err == nil && signed != "" {
+			http.Redirect(w, r, signed, http.StatusFound)
+			return
+		} else if err != nil && !errors.Is(err, workspace.ErrSignedURLUnsupported) {
+			slog.Debug("workspace signed URL unavailable; proxying through gateway", "agent", agentID, "path", path, "error", err)
+		}
+	}
+
 	rc, err := s.workspaceStore.Get(r.Context(), agentID, "", "", path)
 	if err != nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": err.Error()})
@@ -1374,6 +1384,14 @@ func (s *Server) serveFileFromWorkspaceStore(w http.ResponseWriter, r *http.Requ
 	defer rc.Close()
 	setFileResponseHeaders(w, path)
 	io.Copy(w, rc)
+}
+
+func shouldRedirectWorkspaceFileToSignedURL(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	// Keep user-generated HTML same-origin so setFileResponseHeaders can apply
+	// CSP sandboxing. Images/PDFs/downloads may use the object store's signed URL
+	// directly, so R2-backed agents don't appear to serve media from the host.
+	return ext != ".html" && ext != ".htm"
 }
 
 // setFileResponseHeaders picks the right Content-Type for a user-produced

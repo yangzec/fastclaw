@@ -27,6 +27,7 @@ func TestAgentObjectStoreGetDoesNotLeakSecretsAndOwnerOnly(t *testing.T) {
 	}
 	cfg := config.ObjectStoreCfg{Type: "cloudflare-r2", AccountID: "acct"}
 	cfg.S3.Bucket = "bucket"
+	cfg.S3.PublicBaseURL = "https://cdn.example.test/assets"
 	cfg.S3.AccessKey = "ak-secret"
 	cfg.S3.SecretKey = "sk-secret"
 	cfg.S3.UseSSL = true
@@ -46,6 +47,9 @@ func TestAgentObjectStoreGetDoesNotLeakSecretsAndOwnerOnly(t *testing.T) {
 	}
 	if !strings.Contains(body, "hasAccessKey") || !strings.Contains(body, "hasSecretKey") {
 		t.Fatalf("GET did not include key presence booleans: %s", body)
+	}
+	if !strings.Contains(body, `"publicBaseURL":"https://cdn.example.test/assets"`) {
+		t.Fatalf("GET did not include publicBaseURL: %s", body)
 	}
 
 	rr = httptest.NewRecorder()
@@ -80,7 +84,7 @@ func TestAgentObjectStorePutKeepsBlankSecretsAndTestFailureDoesNotSave(t *testin
 		}
 		return time.Millisecond, nil
 	}
-	body := `{"accountId":"acct","bucket":"new","accessKey":"","secretKey":""}`
+	body := `{"accountId":"acct","bucket":"new","publicBaseURL":"https://cdn.example.test/base/","accessKey":"","secretKey":""}`
 	rr := httptest.NewRecorder()
 	req := agentReq(http.MethodPut, agentID, owner, bytes.NewBufferString(body))
 	s.handlePutAgentObjectStore(rr, req)
@@ -91,7 +95,7 @@ func TestAgentObjectStorePutKeepsBlankSecretsAndTestFailureDoesNotSave(t *testin
 	if err != nil || !ok {
 		t.Fatalf("load saved: %v ok=%v", err, ok)
 	}
-	if got.S3.Bucket != "new" || got.S3.AccessKey != "old-ak" || got.S3.SecretKey != "old-sk" {
+	if got.S3.Bucket != "new" || got.S3.PublicBaseURL != "https://cdn.example.test/base" || got.S3.AccessKey != "old-ak" || got.S3.SecretKey != "old-sk" {
 		t.Fatalf("saved config mismatch: %#v", got.S3)
 	}
 

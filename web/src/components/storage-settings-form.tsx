@@ -18,9 +18,22 @@ import {
 } from "@/lib/agent-storage-api";
 
 type StorageScope = "agent" | "user";
+const SAVED_SECRET_MASK = "••••••••";
+
+function displaySecret(saved: boolean) {
+  return saved ? SAVED_SECRET_MASK : "";
+}
+
+function payloadForSubmit(form: ObjectStoreInput): ObjectStoreInput {
+  return {
+    ...form,
+    accessKey: form.accessKey === SAVED_SECRET_MASK ? "" : form.accessKey,
+    secretKey: form.secretKey === SAVED_SECRET_MASK ? "" : form.secretKey,
+  };
+}
 
 export function StorageSettingsForm({ scope, agentId }: { scope: StorageScope; agentId?: string }) {
-  const [form, setForm] = useState<ObjectStoreInput>({ accountId: "", bucket: "", prefix: "", endpoint: "", accessKey: "", secretKey: "" });
+  const [form, setForm] = useState<ObjectStoreInput>({ accountId: "", bucket: "", prefix: "", endpoint: "", publicBaseURL: "", accessKey: "", secretKey: "" });
   const [hasKeys, setHasKeys] = useState({ access: false, secret: false });
   const [source, setSource] = useState<ObjectStoreConfig["source"]>(scope === "agent" ? "global" : "global");
   const [status, setStatus] = useState<string>("");
@@ -34,8 +47,9 @@ export function StorageSettingsForm({ scope, agentId }: { scope: StorageScope; a
     load
       .then((cfg) => {
         if (cancelled) return;
-        setForm({ accountId: cfg.accountId || "", bucket: cfg.bucket || "", prefix: cfg.prefix || "", endpoint: cfg.endpoint || "", accessKey: "", secretKey: "" });
-        setHasKeys({ access: !!cfg.hasAccessKey, secret: !!cfg.hasSecretKey });
+        const savedKeys = { access: !!cfg.hasAccessKey, secret: !!cfg.hasSecretKey };
+        setForm({ accountId: cfg.accountId || "", bucket: cfg.bucket || "", prefix: cfg.prefix || "", endpoint: cfg.endpoint || "", publicBaseURL: cfg.publicBaseURL || "", accessKey: displaySecret(savedKeys.access), secretKey: displaySecret(savedKeys.secret) });
+        setHasKeys(savedKeys);
         setSource(cfg.source || "global");
       })
       .catch((err) => setStatus(err.message || "Failed to load storage settings"));
@@ -47,11 +61,15 @@ export function StorageSettingsForm({ scope, agentId }: { scope: StorageScope; a
     setTested(false);
     setForm((f) => ({ ...f, [key]: e.target.value }));
   };
+  const clearMaskOnFocus = (key: "accessKey" | "secretKey") => () => {
+    setForm((f) => f[key] === SAVED_SECRET_MASK ? { ...f, [key]: "" } : f);
+  };
 
   async function onTest() {
     setTesting(true); setStatus("");
     try {
-      const res = scope === "agent" ? await testAgentObjectStore(agentId || "", form) : await testUserObjectStore(form);
+      const payload = payloadForSubmit(form);
+      const res = scope === "agent" ? await testAgentObjectStore(agentId || "", payload) : await testUserObjectStore(payload);
       setTested(true);
       setStatus(`Connection OK (${res.latencyMs} ms). You can save now.`);
     } catch (err) {
@@ -63,10 +81,12 @@ export function StorageSettingsForm({ scope, agentId }: { scope: StorageScope; a
   async function onSave() {
     setSaving(true); setStatus("");
     try {
-      const res = scope === "agent" ? await saveAgentObjectStore(agentId || "", form) : await saveUserObjectStore(form);
-      setHasKeys({ access: res.objectstore.hasAccessKey, secret: res.objectstore.hasSecretKey });
+      const payload = payloadForSubmit(form);
+      const res = scope === "agent" ? await saveAgentObjectStore(agentId || "", payload) : await saveUserObjectStore(payload);
+      const savedKeys = { access: res.objectstore.hasAccessKey, secret: res.objectstore.hasSecretKey };
+      setHasKeys(savedKeys);
       setSource(res.objectstore.source || scope);
-      setForm((f) => ({ ...f, accessKey: "", secretKey: "" }));
+      setForm((f) => ({ ...f, accessKey: displaySecret(savedKeys.access), secretKey: displaySecret(savedKeys.secret) }));
       setTested(false);
       setStatus(`Saved. Verified in ${res.latencyMs} ms.`);
     } catch (err) { setStatus(err instanceof Error ? err.message : "Save failed"); }
@@ -102,8 +122,9 @@ export function StorageSettingsForm({ scope, agentId }: { scope: StorageScope; a
         <Field label="Bucket" value={form.bucket} onChange={update("bucket")} />
         <Field label="Prefix (optional)" value={form.prefix || ""} onChange={update("prefix")} />
         <Field label="Endpoint (optional)" value={form.endpoint || ""} onChange={update("endpoint")} placeholder="https://<account>.r2.cloudflarestorage.com" />
-        <Field label={`Access Key ID${hasKeys.access ? keyHint : ""}`} value={form.accessKey || ""} onChange={update("accessKey")} />
-        <Field label={`Secret Access Key${hasKeys.secret ? keyHint : ""}`} type="password" value={form.secretKey || ""} onChange={update("secretKey")} />
+        <Field label="Public Base URL (optional)" value={form.publicBaseURL || ""} onChange={update("publicBaseURL")} placeholder="https://cdn.example.com/fastclaw" />
+        <Field label={`Access Key ID${hasKeys.access ? keyHint : ""}`} value={form.accessKey || ""} onChange={update("accessKey")} onFocus={clearMaskOnFocus("accessKey")} />
+        <Field label={`Secret Access Key${hasKeys.secret ? keyHint : ""}`} type="password" value={form.secretKey || ""} onChange={update("secretKey")} onFocus={clearMaskOnFocus("secretKey")} />
       </div>
       <div className="flex gap-2">
         <Button variant="outline" onClick={onTest} disabled={testing || saving}>{testing ? "Testing…" : "Test connection"}</Button>
@@ -121,6 +142,6 @@ function sourceLabel(source?: ObjectStoreConfig["source"]) {
   return "Global storage";
 }
 
-function Field(props: { label: string; value: string; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void; type?: string; placeholder?: string }) {
-  return <div className="space-y-2"><Label>{props.label}</Label><Input type={props.type || "text"} value={props.value} onChange={props.onChange} placeholder={props.placeholder} /></div>;
+function Field(props: { label: string; value: string; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void; onFocus?: () => void; type?: string; placeholder?: string }) {
+  return <div className="space-y-2"><Label>{props.label}</Label><Input type={props.type || "text"} value={props.value} onChange={props.onChange} onFocus={props.onFocus} placeholder={props.placeholder} /></div>;
 }

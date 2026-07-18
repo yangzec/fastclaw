@@ -163,6 +163,9 @@ func applyObjectStoreEnv(cfg *Config) {
 	if v := read("PREFIX"); v != "" {
 		cfg.ObjectStore.S3.Prefix = v
 	}
+	if v := read("PUBLICBASEURL"); v != "" {
+		cfg.ObjectStore.S3.PublicBaseURL = v
+	}
 	if v := read("ACCESSKEY"); v != "" {
 		cfg.ObjectStore.S3.AccessKey = v
 	}
@@ -216,6 +219,7 @@ func ScrubBootSecrets() {
 		"FASTCLAW_OBJECT_STORE_REGION",
 		"FASTCLAW_OBJECT_STORE_BUCKET",
 		"FASTCLAW_OBJECT_STORE_PREFIX",
+		"FASTCLAW_OBJECT_STORE_PUBLICBASEURL",
 		"FASTCLAW_OBJECT_STORE_ACCESSKEY",
 		"FASTCLAW_OBJECT_STORE_SECRETKEY",
 		"FASTCLAW_OBJECT_STORE_ACCOUNTID",

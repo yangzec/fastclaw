@@ -25,26 +25,28 @@ import (
 const agentObjectStoreNamespace = "objectstore"
 
 type agentObjectStoreReq struct {
-	AccountID string `json:"accountId"`
-	Bucket    string `json:"bucket"`
-	Prefix    string `json:"prefix"`
-	Endpoint  string `json:"endpoint"`
-	AccessKey string `json:"accessKey"`
-	SecretKey string `json:"secretKey"`
+	AccountID     string `json:"accountId"`
+	Bucket        string `json:"bucket"`
+	Prefix        string `json:"prefix"`
+	Endpoint      string `json:"endpoint"`
+	PublicBaseURL string `json:"publicBaseURL"`
+	AccessKey     string `json:"accessKey"`
+	SecretKey     string `json:"secretKey"`
 }
 
 type agentObjectStoreResp struct {
-	Configured   bool   `json:"configured"`
-	Enabled      bool   `json:"enabled"`
-	Source       string `json:"source"`
-	Type         string `json:"type,omitempty"`
-	AccountID    string `json:"accountId,omitempty"`
-	Bucket       string `json:"bucket,omitempty"`
-	Prefix       string `json:"prefix,omitempty"`
-	Endpoint     string `json:"endpoint,omitempty"`
-	UseSSL       bool   `json:"useSSL"`
-	HasAccessKey bool   `json:"hasAccessKey"`
-	HasSecretKey bool   `json:"hasSecretKey"`
+	Configured    bool   `json:"configured"`
+	Enabled       bool   `json:"enabled"`
+	Source        string `json:"source"`
+	Type          string `json:"type,omitempty"`
+	AccountID     string `json:"accountId,omitempty"`
+	Bucket        string `json:"bucket,omitempty"`
+	Prefix        string `json:"prefix,omitempty"`
+	Endpoint      string `json:"endpoint,omitempty"`
+	PublicBaseURL string `json:"publicBaseURL,omitempty"`
+	UseSSL        bool   `json:"useSSL"`
+	HasAccessKey  bool   `json:"hasAccessKey"`
+	HasSecretKey  bool   `json:"hasSecretKey"`
 }
 
 type agentStoreCacheInvalidator interface{ ClearAgentStoreCache(agentID string) }
@@ -265,10 +267,15 @@ func (s *Server) objectStoreConfigFromRequest(ctx context.Context, userID, agent
 	if err != nil {
 		return config.ObjectStoreCfg{}, err
 	}
+	publicBaseURL, err := normalizePublicBaseURL(req.PublicBaseURL)
+	if err != nil {
+		return config.ObjectStoreCfg{}, err
+	}
 	cfg := config.ObjectStoreCfg{Type: "cloudflare-r2", AccountID: strings.TrimSpace(req.AccountID)}
 	cfg.S3.Bucket = strings.TrimSpace(req.Bucket)
 	cfg.S3.Prefix = strings.Trim(strings.TrimSpace(req.Prefix), "/")
 	cfg.S3.Endpoint = endpoint
+	cfg.S3.PublicBaseURL = publicBaseURL
 	cfg.S3.AccessKey = accessKey
 	cfg.S3.SecretKey = secretKey
 	cfg.S3.UseSSL = true
@@ -345,6 +352,7 @@ func objectStoreResponse(cfg config.ObjectStoreCfg, ok bool, source string, expo
 	resp.Bucket = cfg.S3.Bucket
 	resp.Prefix = cfg.S3.Prefix
 	resp.Endpoint = cfg.S3.Endpoint
+	resp.PublicBaseURL = cfg.S3.PublicBaseURL
 	if exposeKeyPresence {
 		resp.HasAccessKey = cfg.S3.AccessKey != ""
 		resp.HasSecretKey = cfg.S3.SecretKey != ""
@@ -374,9 +382,25 @@ func normalizeR2Endpoint(raw string) (string, error) {
 	return u.Host, nil
 }
 
+func normalizePublicBaseURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("publicBaseURL must be an HTTPS URL without credentials, query, or fragment")
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	return u.String(), nil
+}
+
 var testObjectStoreConnection = func(ctx context.Context, agentID string, cfg config.ObjectStoreCfg) (time.Duration, error) {
 	start := time.Now()
-	ws, err := workspace.Factory{Type: cfg.Type, AccountID: cfg.AccountID, S3: workspace.S3Config{Endpoint: cfg.S3.Endpoint, Bucket: cfg.S3.Bucket, Prefix: cfg.S3.Prefix, AccessKey: cfg.S3.AccessKey, SecretKey: cfg.S3.SecretKey, UseSSL: true}}.New("")
+	ws, err := workspace.Factory{Type: cfg.Type, AccountID: cfg.AccountID, S3: workspace.S3Config{Endpoint: cfg.S3.Endpoint, Bucket: cfg.S3.Bucket, Prefix: cfg.S3.Prefix, PublicBaseURL: cfg.S3.PublicBaseURL, AccessKey: cfg.S3.AccessKey, SecretKey: cfg.S3.SecretKey, UseSSL: true}}.New("")
 	if err != nil {
 		return 0, err
 	}

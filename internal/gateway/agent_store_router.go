@@ -50,13 +50,14 @@ func defaultAgentStoreFactory(cfg config.ObjectStoreCfg) (workspace.Store, error
 		AccountID:    cfg.AccountID,
 		AliyunIntern: cfg.AliyunIntern,
 		S3: workspace.S3Config{
-			Endpoint:  cfg.S3.Endpoint,
-			Region:    cfg.S3.Region,
-			Bucket:    cfg.S3.Bucket,
-			Prefix:    cfg.S3.Prefix,
-			AccessKey: cfg.S3.AccessKey,
-			SecretKey: cfg.S3.SecretKey,
-			UseSSL:    true,
+			Endpoint:      cfg.S3.Endpoint,
+			Region:        cfg.S3.Region,
+			Bucket:        cfg.S3.Bucket,
+			Prefix:        cfg.S3.Prefix,
+			PublicBaseURL: cfg.S3.PublicBaseURL,
+			AccessKey:     cfg.S3.AccessKey,
+			SecretKey:     cfg.S3.SecretKey,
+			UseSSL:        true,
 		},
 	}.New("")
 }
@@ -202,4 +203,11 @@ func (r *agentStoreRouter) SignedURL(ctx context.Context, agentID, projectID, se
 		return "", err
 	}
 	return ws.SignedURL(ctx, agentID, projectID, sessionID, path, ttl)
+}
+func (r *agentStoreRouter) PublicURL(ctx context.Context, agentID, projectID, sessionID, path string) (string, error) {
+	ws, err := r.storeFor(ctx, agentID)
+	if err != nil {
+		return "", err
+	}
+	return ws.PublicURL(ctx, agentID, projectID, sessionID, path)
 }

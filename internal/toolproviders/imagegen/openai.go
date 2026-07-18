@@ -89,10 +89,10 @@ func (o *OpenAI) Execute(ctx context.Context, req toolproviders.Request) (toolpr
 		}
 	}
 	if len(urls) > 0 {
-		return toolproviders.Response{Text: renderURLs(a.Prompt, urls)}, nil
+		return urlResponse(a.Prompt, urls), nil
 	}
 	if len(b64s) > 0 {
-		return toolproviders.Response{Text: renderB64(a.Prompt, b64s)}, nil
+		return base64Response(a.Prompt, b64s), nil
 	}
 	return toolproviders.Response{}, toolproviders.ErrNoResults
 }

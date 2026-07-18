@@ -54,6 +54,23 @@ func parseArgs(raw map[string]any) (args, error) {
 	return a, nil
 }
 
+// Output is the structured image result retained in toolproviders.Response.Raw.
+// Slices are copied by helpers so callers cannot mutate provider-owned data.
+type Output struct {
+	URLs   []string
+	Base64 []string
+}
+
+func urlResponse(prompt string, urls []string) toolproviders.Response {
+	cp := append([]string(nil), urls...)
+	return toolproviders.Response{Text: renderURLs(prompt, cp), Raw: Output{URLs: cp}}
+}
+
+func base64Response(prompt string, b64s []string) toolproviders.Response {
+	cp := append([]string(nil), b64s...)
+	return toolproviders.Response{Text: renderB64(prompt, cp), Raw: Output{Base64: cp}}
+}
+
 // renderURLs builds a LLM-visible response from a list of image URLs. Each
 // URL is emitted as a markdown image tag so the chat UI renders it inline
 // without the model having to know about markdown quirks.

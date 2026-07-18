@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/fastclaw-ai/fastclaw/internal/toolproviders"
+	"github.com/fastclaw-ai/fastclaw/internal/toolproviders/imagegen"
 )
 
 // RegisterImageGenChain registers the image_gen tool against a provider
@@ -59,6 +60,10 @@ func RegisterImageGenChain(r *Registry, chain *toolproviders.Chain) {
 		if err != nil {
 			return "", err
 		}
-		return resp.Text, nil
+		out, ok := resp.Raw.(imagegen.Output)
+		if !ok {
+			return "", fmt.Errorf("image_gen provider returned no structured output")
+		}
+		return r.archiveImageGenOutput(ctx, out)
 	})
 }

@@ -11,6 +11,7 @@ export interface ObjectStoreConfig {
   bucket?: string;
   prefix?: string;
   endpoint?: string;
+  publicBaseURL?: string;
   useSSL?: boolean;
   hasAccessKey: boolean;
   hasSecretKey: boolean;
@@ -24,6 +25,7 @@ export interface ObjectStoreInput {
   bucket: string;
   prefix?: string;
   endpoint?: string;
+  publicBaseURL?: string;
   accessKey?: string;
   secretKey?: string;
 }

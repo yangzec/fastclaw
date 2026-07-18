@@ -42,6 +42,9 @@ func (s *recordingStore) Move(ctx context.Context, agentID, fromProjectID, fromS
 func (s *recordingStore) SignedURL(ctx context.Context, agentID, projectID, sessionID, path string, ttl time.Duration) (string, error) {
 	return "", nil
 }
+func (s *recordingStore) PublicURL(ctx context.Context, agentID, projectID, sessionID, path string) (string, error) {
+	return "", workspace.ErrSignedURLUnsupported
+}
 
 func newRouterTestStore(t *testing.T) store.Store {
 	t.Helper()
