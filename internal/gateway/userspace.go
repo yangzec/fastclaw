@@ -186,6 +186,11 @@ func attachSandboxToAgents(
 		for _, ag := range agentMgr.All() {
 			ag.SetSandboxPool(systemPool)
 		}
+		if buildinfo.IsSandboxEnforced() {
+			slog.Info("sandbox attached (enforced): all exec routed into sandbox", "user", userID)
+		} else {
+			slog.Info("sandbox attached (optional): host exec stays default, exec(sandbox:true) opts in per call", "user", userID)
+		}
 		return systemPool
 	}
 	if pathSandboxRequired() {
@@ -271,6 +276,9 @@ func assembleConfig(ctx context.Context, st store.Store, userID, agentID string)
 		}
 	}
 	if err := scope.SettingInto(ctx, st, NSMemory, userID, agentID, &cfg.Memory); err != nil {
+		return nil, err
+	}
+	if err := scope.SettingInto(ctx, st, NSWorkspaceHistory, userID, agentID, &cfg.WorkspaceHistory); err != nil {
 		return nil, err
 	}
 	if err := scope.SettingInto(ctx, st, NSPrivacy, userID, agentID, &cfg.Privacy); err != nil {
@@ -733,6 +741,10 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 			if agentOverride.AutoPersist != nil {
 				v := *agentOverride.AutoPersist
 				rc.AutoPersist = &v
+			}
+			if agentOverride.WorkspaceHistory != nil {
+				v := *agentOverride.WorkspaceHistory
+				rc.WorkspaceHistory = &v
 			}
 		}
 		// Same story for providers: assembleConfig was called with
