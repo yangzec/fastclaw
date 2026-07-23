@@ -43,6 +43,21 @@ func (p chatCompletionsV1Provider) ChatStream(ctx context.Context, messages []pr
 	return provider.NewStreamReader(ch), nil
 }
 
+type chunkedChatCompletionsProvider struct{}
+
+func (p chunkedChatCompletionsProvider) Chat(ctx context.Context, messages []provider.Message, tools []provider.Tool, model string, maxTokens int, temperature float64) (*provider.Response, error) {
+	return &provider.Response{Content: "ok"}, nil
+}
+
+func (p chunkedChatCompletionsProvider) ChatStream(ctx context.Context, messages []provider.Message, tools []provider.Tool, model string, maxTokens int, temperature float64) (*provider.StreamReader, error) {
+	ch := make(chan provider.StreamChunk, 3)
+	ch <- provider.StreamChunk{Content: "first"}
+	ch <- provider.StreamChunk{Content: "second"}
+	ch <- provider.StreamChunk{Done: true}
+	close(ch)
+	return provider.NewStreamReader(ch), nil
+}
+
 type chatCompletionsV1SessionStore struct {
 	sessions map[string][]provider.Message
 	triples  map[string][3]string
@@ -258,6 +273,50 @@ func TestOriginalChatCompletionsDoesNotReturnNativeSessionHeaders(t *testing.T) 
 	}
 	if got := rr.Header().Get("X-Fastclaw-Session-Key"); got != "" {
 		t.Fatalf("original endpoint unexpectedly set X-Fastclaw-Session-Key=%q", got)
+	}
+}
+
+func TestChatCompletionStreamsForwardEachContentChunk(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler func(*Server, http.ResponseWriter, *http.Request)
+		target  string
+	}{
+		{
+			name: "v1 session endpoint",
+			handler: func(s *Server, w http.ResponseWriter, r *http.Request) {
+				s.HandleChatCompletionsV1(w, r)
+			},
+			target: "/v1/chat/completions-v1",
+		},
+		{
+			name: "original endpoint",
+			handler: func(s *Server, w http.ResponseWriter, r *http.Request) {
+				s.HandleChatCompletions(w, r)
+			},
+			target: "/v1/chat/completions",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newChatCompletionsV1TestServerWithProvider(t, chunkedChatCompletionsProvider{})
+			req := authedRequest(http.MethodPost, tt.target, `{"model":"test-model","agent_id":"agent-1","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+			req.Header.Set("X-Fastclaw-Session-Key", "sales-agent:user-1:stream-chunks")
+			rr := httptest.NewRecorder()
+
+			tt.handler(srv, rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+			}
+			body := rr.Body.String()
+			for _, content := range []string{"first", "second"} {
+				if !strings.Contains(body, `"content":"`+content+`"`) {
+					t.Fatalf("stream did not forward %q as its own content chunk: %s", content, body)
+				}
+			}
+		})
 	}
 }
 

@@ -46,3 +46,19 @@ func TestRewriteWorkspaceURLsToPublicRewritesRelativeAndAbsolutizedWorkspaceLink
 		t.Fatalf("workspace URL leaked after rewrite: %q", got)
 	}
 }
+
+func TestWorkspaceURLStreamRewriterRewritesSplitWorkspaceURL(t *testing.T) {
+	rewriter := newWorkspaceURLStreamRewriter(context.Background(), apiPublicURLStore{}, "agt_123", "", "chat-456")
+
+	if got := rewriter.Write("已完成：[打开](/work"); got != "已完成：[打开](" {
+		t.Fatalf("first streamed content = %q", got)
+	}
+
+	const publicURL = "https://r2.www-agents.com/fastclaw/agt_123/sessions/chat-456/peppa_family_minecraft_intro.html"
+	if got := rewriter.Write("space/peppa_family_minecraft_intro.html)\n"); got != publicURL+")\n" {
+		t.Fatalf("rewritten streamed content = %q, want %q", got, publicURL+")\n")
+	}
+	if got := rewriter.Flush(); got != "" {
+		t.Fatalf("flush = %q, want empty", got)
+	}
+}

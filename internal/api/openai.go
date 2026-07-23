@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/fastclaw-ai/fastclaw/internal/agent"
 	"github.com/fastclaw-ai/fastclaw/internal/auth"
@@ -508,12 +509,15 @@ func (s *Server) streamResponseFromAgentV1(w http.ResponseWriter, r *http.Reques
 	}()
 
 	streamDone := false
-	var content strings.Builder
+	rewriter := newWorkspaceURLStreamRewriter(r.Context(), ws, ag.Name(), msg.ProjectID, msg.ChatID)
 	for !streamDone {
 		select {
 		case chunk := <-chunkCh:
 			if chunk.Content != "" {
-				content.WriteString(chunk.Content)
+				if content := rewriter.Write(chunk.Content); content != "" {
+					s.writeSSEChunk(w, chatID, model, created, "", content, nil)
+					flush()
+				}
 			}
 			if chunk.Done {
 				streamDone = true
@@ -531,7 +535,7 @@ func (s *Server) streamResponseFromAgentV1(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	finalContent := rewriteWorkspaceURLsToPublic(r.Context(), ws, ag.Name(), msg.ProjectID, msg.ChatID, content.String())
+	finalContent := rewriter.Flush()
 	if finalContent != "" {
 		s.writeSSEChunk(w, chatID, model, created, "", finalContent, nil)
 		flush()
@@ -572,19 +576,24 @@ func (s *Server) streamResponseFromAgent(w http.ResponseWriter, r *http.Request,
 		flusher.Flush()
 	}
 
-	// Forward chunks from StreamReader. Buffer content so workspace links that
-	// span model chunks can be rewritten to the configured public object-store URL.
-	var content strings.Builder
+	// Forward chunks as they arrive. The rewriter only retains an unfinished
+	// workspace URL, so normal text remains a true token stream.
+	rewriter := newWorkspaceURLStreamRewriter(r.Context(), ws, ag.Name(), msg.ProjectID, msg.ChatID)
 	for {
 		chunk, more := sr.Next()
 		if chunk.Content != "" {
-			content.WriteString(chunk.Content)
+			if content := rewriter.Write(chunk.Content); content != "" {
+				s.writeSSEChunk(w, chatID, model, created, "", content, nil)
+				if ok {
+					flusher.Flush()
+				}
+			}
 		}
 		if chunk.Done || !more {
 			break
 		}
 	}
-	finalContent := rewriteWorkspaceURLsToPublic(r.Context(), ws, ag.Name(), msg.ProjectID, msg.ChatID, content.String())
+	finalContent := rewriter.Flush()
 	if finalContent != "" {
 		s.writeSSEChunk(w, chatID, model, created, "", finalContent, nil)
 		if ok {
@@ -704,4 +713,123 @@ func rewriteWorkspaceURLsToPublic(ctx context.Context, ws workspace.Store, agent
 		}
 		return raw
 	})
+}
+
+type workspaceURLStreamRewriter struct {
+	ctx       context.Context
+	ws        workspace.Store
+	agentID   string
+	projectID string
+	sessionID string
+	pending   string
+}
+
+func newWorkspaceURLStreamRewriter(ctx context.Context, ws workspace.Store, agentID, projectID, sessionID string) *workspaceURLStreamRewriter {
+	return &workspaceURLStreamRewriter{
+		ctx:       ctx,
+		ws:        ws,
+		agentID:   agentID,
+		projectID: projectID,
+		sessionID: sessionID,
+	}
+}
+
+func (r *workspaceURLStreamRewriter) Write(content string) string {
+	if content == "" {
+		return ""
+	}
+	if r.ws == nil || r.agentID == "" {
+		return content
+	}
+
+	r.pending += content
+	start := workspaceURLStreamPendingStart(r.pending)
+	if start == 0 {
+		return ""
+	}
+	if start < 0 {
+		content, r.pending = r.pending, ""
+	} else {
+		content, r.pending = r.pending[:start], r.pending[start:]
+	}
+	return rewriteWorkspaceURLsToPublic(r.ctx, r.ws, r.agentID, r.projectID, r.sessionID, content)
+}
+
+func (r *workspaceURLStreamRewriter) Flush() string {
+	if r.pending == "" {
+		return ""
+	}
+	content := r.pending
+	r.pending = ""
+	return rewriteWorkspaceURLsToPublic(r.ctx, r.ws, r.agentID, r.projectID, r.sessionID, content)
+}
+
+func workspaceURLStreamPendingStart(text string) int {
+	if text == "" {
+		return -1
+	}
+
+	const workspaceMarker = "/workspace/"
+	if marker := strings.LastIndex(text, workspaceMarker); marker >= 0 {
+		tail := text[marker+len(workspaceMarker):]
+		if !workspaceURLTokenTerminated(tail) {
+			return workspaceURLTokenStart(text, marker)
+		}
+	} else if n := longestSuffixPrefix(text, workspaceMarker); n > 0 {
+		return workspaceURLTokenStart(text, len(text)-n)
+	}
+
+	if start := lastUnterminatedHTTPURLStart(text); start >= 0 {
+		return start
+	}
+	return -1
+}
+
+func workspaceURLTokenStart(text string, workspaceMarkerStart int) int {
+	prefix := text[:workspaceMarkerStart]
+	httpsStart := strings.LastIndex(prefix, "https://")
+	httpStart := strings.LastIndex(prefix, "http://")
+	if httpStart > httpsStart {
+		httpsStart = httpStart
+	}
+	if httpsStart >= 0 && !workspaceURLTokenTerminated(prefix[httpsStart:]) {
+		return httpsStart
+	}
+	return workspaceMarkerStart
+}
+
+func lastUnterminatedHTTPURLStart(text string) int {
+	httpsStart := strings.LastIndex(text, "https://")
+	httpStart := strings.LastIndex(text, "http://")
+	if httpStart > httpsStart {
+		httpsStart = httpStart
+	}
+	if httpsStart >= 0 && !workspaceURLTokenTerminated(text[httpsStart:]) {
+		return httpsStart
+	}
+	for _, prefix := range []string{"https://", "http://"} {
+		if n := longestSuffixPrefix(text, prefix); n > 0 {
+			return len(text) - n
+		}
+	}
+	return -1
+}
+
+func workspaceURLTokenTerminated(text string) bool {
+	return strings.IndexFunc(text, func(r rune) bool {
+		return unicode.IsSpace(r) || r == ')'
+	}) >= 0
+}
+
+func longestSuffixPrefix(text, prefix string) int {
+	limit := len(text)
+	if limit >= len(prefix) {
+		limit = len(prefix) - 1
+	}
+	for n := limit; n > 0; n-- {
+		if strings.HasSuffix(text, prefix[:n]) {
+			return n
+		}
+	}
+	return 0
 }
