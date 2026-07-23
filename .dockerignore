@@ -6,5 +6,8 @@ web/.next/
 web/out/
 internal/setup/web/
 .git/
+.env
+.env.*
+node_modules/
 *.tar.gz
 *.zip

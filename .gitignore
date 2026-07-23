@@ -68,6 +68,13 @@ openclaw.json
 env.toml
 
 # Local data
+data/*.db
 web/node_modules/
 web/pnpm-lock.yaml
 fastclaw-patched
+
+# Generated web framework artifacts
+.output/
+.nitro/
+src/paraglide/
+src/routeTree.gen.ts
