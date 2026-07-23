@@ -608,14 +608,15 @@ func makeWriteFile(r *Registry) ToolFunc {
 		// filesystem because the memory store already covers their
 		// durability via a separate path.
 		if r.workspaceStore != nil && r.agentID != "" && r.isWorkspacePath(args.Path) {
-			if err := r.workspaceStore.Put(ctx, r.agentID, r.projectID, r.scopeSessionID(), r.wsPath(args.Path),
+			rel := r.wsPath(args.Path)
+			if err := r.workspaceStore.Put(ctx, r.agentID, r.projectID, r.scopeSessionID(), rel,
 				strings.NewReader(args.Content), int64(len(args.Content)), ""); err != nil {
 				if friendly := asIsDirToolError("write_file", args.Path, err); friendly != nil {
 					return "", friendly
 				}
 				return "", fmt.Errorf("workspace put: %w", err)
 			}
-			return fmt.Sprintf("Written %d bytes to %s", len(args.Content), args.Path), nil
+			return fmt.Sprintf("Written %d bytes to %s\nWorkspace path: /workspace/%s\nURL: %s", len(args.Content), args.Path, rel, r.archiveDisplayURL(ctx, rel)), nil
 		}
 
 		// Identity files (SOUL.md / IDENTITY.md / ...) need to land in the

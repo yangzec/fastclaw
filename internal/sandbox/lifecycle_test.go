@@ -40,7 +40,7 @@ func (f *fakeExecutor) WriteFile(ctx context.Context, p, c string) (string, erro
 	return "", nil
 }
 func (f *fakeExecutor) ListDir(ctx context.Context, path string) (string, error) { return "", nil }
-func (f *fakeExecutor) Backend() string                                           { return "fake" }
+func (f *fakeExecutor) Backend() string                                          { return "fake" }
 func (f *fakeExecutor) Close() error {
 	atomic.AddInt32(&f.closed, 1)
 	return nil
@@ -247,6 +247,10 @@ func (w *fakeWorkspace) SignedURL(ctx context.Context, agentID, projectID, sessi
 	return "", workspace.ErrSignedURLUnsupported
 }
 
+func (w *fakeWorkspace) PublicURL(ctx context.Context, agentID, projectID, sessionID, p string) (string, error) {
+	return "", workspace.ErrSignedURLUnsupported
+}
+
 // scopeForKey collapses the (project, session) tuple to a single string
 // the test fakes can use as a map sub-key. Project wins so all chats in
 // one project share a slot, mirroring production scopeDir logic.
@@ -311,6 +315,34 @@ func mapKeys(m map[string]string) []string {
 	return out
 }
 
+func TestLifecycle_WriteFileMirrorsDockerBindMountToWorkspaceStore(t *testing.T) {
+	inner := newFakePool()
+	ws := newFakeWorkspace()
+	lp := NewLifecyclePool(inner, 0, 0)
+	lp.SetWorkspace(ws)
+	lp.Start()
+	defer lp.CloseAll()
+
+	const sessionID = "www-agents:chat:scope"
+	ex, err := lp.Get(context.Background(), "agt_files", "", sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ex.WriteFile(context.Background(), "/workspace/us_market_analysis.html", "<html>ok</html>"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ws.Get(context.Background(), "agt_files", "", sessionID, "us_market_analysis.html")
+	if err != nil {
+		t.Fatalf("expected sandbox write to be mirrored to workspace store: %v", err)
+	}
+	data, _ := io.ReadAll(got)
+	got.Close()
+	if string(data) != "<html>ok</html>" {
+		t.Fatalf("mirrored content mismatch: got %q", data)
+	}
+}
+
 // snapshottingExecutor is a fakeExecutor that also implements
 // WorkspaceSnapshotter so we can verify flush-on-evict copies the right
 // bytes to the store.
@@ -351,6 +383,38 @@ func (p *snappingPool) Get(ctx context.Context, agentID, projectID, sessionID st
 		p.fakePool.live[key] = &p.current.fakeExecutor
 	}
 	return p.current, nil
+}
+
+func TestLifecycle_ExecMirrorsSnapshotterWorkspaceToStoreImmediately(t *testing.T) {
+	ws := newFakeWorkspace()
+	files := map[string][]byte{
+		"architecture_review_workflow.png": []byte("png-bytes-from-exec"),
+	}
+	pool := newSnappingPool(files)
+
+	lp := NewLifecyclePool(pool, 0, 0)
+	lp.SetWorkspace(ws)
+	lp.Start()
+	defer lp.CloseAll()
+
+	const sessionID = "www-agents:chat:scope"
+	ex, err := lp.Get(context.Background(), "agt_files", "", sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ex.Exec(context.Background(), "python draw.py", time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ws.Get(context.Background(), "agt_files", "", sessionID, "architecture_review_workflow.png")
+	if err != nil {
+		t.Fatalf("expected exec-generated /workspace file to be mirrored immediately: %v", err)
+	}
+	data, _ := io.ReadAll(got)
+	got.Close()
+	if string(data) != "png-bytes-from-exec" {
+		t.Fatalf("mirrored exec content mismatch: got %q", data)
+	}
 }
 
 // TestLifecycle_FlushOnEvict proves that files the sandbox wrote (but

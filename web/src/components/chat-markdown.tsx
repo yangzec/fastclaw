@@ -12,7 +12,7 @@ import { mermaid } from "@streamdown/mermaid";
 import { math } from "@streamdown/math";
 import { cjk } from "@streamdown/cjk";
 import remarkBreaks from "remark-breaks";
-import { fileUrl } from "@/lib/api";
+import { workspaceFileUrl } from "@/lib/api";
 import type { KnowledgeSource } from "@/lib/api";
 import { ExternalAnchor } from "@/components/markdown-link";
 
@@ -127,12 +127,13 @@ export function ChatMarkdown({
       // Inline base64 images pass through (the default transform strips data:).
       if (key === "src" && url.startsWith("data:image/")) return url;
       // Remap sandbox `/workspace/<name>` (image src + link href) to the
-      // authenticated file API. The docker bind-mount is session-scoped, so
-      // prepend sessions/<sid>/ or the file API resolves against the agent root
-      // and 404s.
+      // authenticated file API. Keep the model-visible path as a virtual
+      // workspace path; send the URL token as `?sessionId=` so the backend
+      // resolves session_key -> chat_id/scope instead of the frontend guessing
+      // `sessions/<sessionId>/...`.
       if (agentId && (key === "src" || key === "href") && url.startsWith("/workspace/")) {
         const rel = url.slice("/workspace/".length);
-        return fileUrl(agentId, sessionId ? `sessions/${sessionId}/${rel}` : rel);
+        return workspaceFileUrl(agentId, rel, sessionId);
       }
       return defaultUrlTransform(url, key, node);
     };

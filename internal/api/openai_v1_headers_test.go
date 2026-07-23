@@ -228,6 +228,19 @@ func TestChatCompletionsV1ReturnsNativeSessionHeaders(t *testing.T) {
 	}
 }
 
+func TestAgentIDsToInjectAfterUserSwitch(t *testing.T) {
+	ident := auth.Identity{AuthMethod: "apikey", APIKeyType: "agent", APIKeyAgents: []string{"agent-1", "agent-2", "agent-1", ""}}
+	if got := agentIDsToInjectAfterUserSwitch(ident, "agent-2"); len(got) != 1 || got[0] != "agent-2" {
+		t.Fatalf("explicit authorized ids = %#v", got)
+	}
+	if got := agentIDsToInjectAfterUserSwitch(ident, "agent-3"); len(got) != 0 {
+		t.Fatalf("explicit unauthorized ids = %#v", got)
+	}
+	if got := agentIDsToInjectAfterUserSwitch(ident, ""); len(got) != 2 || got[0] != "agent-1" || got[1] != "agent-2" {
+		t.Fatalf("implicit ids = %#v", got)
+	}
+}
+
 func TestOriginalChatCompletionsDoesNotReturnNativeSessionHeaders(t *testing.T) {
 	srv := newChatCompletionsV1TestServer(t)
 	body := `{"model":"test-model","agent_id":"agent-1","messages":[{"role":"user","content":"hello"}]}`

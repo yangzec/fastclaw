@@ -1338,6 +1338,20 @@ func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusForbidden, map[string]any{"error": "refused: skill manifests are not downloadable"})
 		return
 	}
+	if rawSession := strings.TrimSpace(r.URL.Query().Get("sessionId")); rawSession != "" {
+		chatID := s.workspaceSessionScope(r.Context(), id, rawSession)
+		if chatID == "" {
+			jsonResponse(w, http.StatusNotFound, map[string]any{"error": "workspace: session not found"})
+			return
+		}
+		projectID := strings.TrimSpace(r.URL.Query().Get("projectId"))
+		if projectID == "" {
+			projectID = s.resolveSessionProject(r.Context(), r, id, rawSession)
+		}
+		rel = scopedWorkspaceFilePath(rel, projectID, chatID)
+	} else if projectID := strings.TrimSpace(r.URL.Query().Get("projectId")); projectID != "" {
+		rel = scopedWorkspaceFilePath(rel, projectID, "")
+	}
 	if s.workspaceStore != nil {
 		s.serveFileFromWorkspaceStore(w, r, id, rel)
 		return
@@ -1366,8 +1380,29 @@ func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, abs)
 }
 
+func scopedWorkspaceFilePath(rel, projectID, sessionScope string) string {
+	cleanRel := strings.TrimPrefix(filepath.ToSlash(filepath.Clean("/"+rel)), "/")
+	if projectID != "" {
+		if sessionScope != "" {
+			return "projects/" + projectID + "/" + sessionScope + "/" + cleanRel
+		}
+		return "projects/" + projectID + "/" + cleanRel
+	}
+	if sessionScope != "" {
+		return "sessions/" + sessionScope + "/" + cleanRel
+	}
+	return cleanRel
+}
+
 func (s *Server) serveFileFromWorkspaceStore(w http.ResponseWriter, r *http.Request, agentID, path string) {
 	if shouldRedirectWorkspaceFileToSignedURL(path) {
+		if public, err := s.workspaceStore.PublicURL(r.Context(), agentID, "", "", path); err == nil && strings.TrimSpace(public) != "" {
+			http.Redirect(w, r, public, http.StatusFound)
+			return
+		} else if err != nil && !errors.Is(err, workspace.ErrSignedURLUnsupported) {
+			slog.Debug("workspace public URL unavailable; falling back", "agent", agentID, "path", path, "error", err)
+		}
+
 		if signed, err := s.workspaceStore.SignedURL(r.Context(), agentID, "", "", path, 10*time.Minute); err == nil && signed != "" {
 			http.Redirect(w, r, signed, http.StatusFound)
 			return

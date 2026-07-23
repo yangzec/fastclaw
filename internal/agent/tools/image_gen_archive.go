@@ -154,6 +154,21 @@ func (r *Registry) archiveDisplayURL(ctx context.Context, path string) string {
 func (r *Registry) archiveURL(path string) string {
 	agent := url.PathEscape(r.agentID)
 	p := strings.TrimPrefix(filepath.ToSlash(path), "/")
+	encodedPath := strings.Split(p, "/")
+	for i := range encodedPath {
+		encodedPath[i] = url.PathEscape(encodedPath[i])
+	}
+	base := "/api/agents/" + agent + "/files/" + strings.Join(encodedPath, "/")
+	params := url.Values{}
+	if r.projectID != "" {
+		params.Set("projectId", r.projectID)
+	}
+	if key := strings.TrimSpace(r.goalSessionKey); key != "" && !r.codingRootScope {
+		params.Set("sessionId", key)
+	}
+	if qs := params.Encode(); qs != "" {
+		return base + "?" + qs
+	}
 	if r.projectID != "" {
 		return "/api/agents/" + agent + "/files/projects/" + url.PathEscape(r.projectID) + "/" + url.PathEscape(r.scopeSessionID()) + "/" + p
 	}

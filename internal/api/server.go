@@ -10,6 +10,7 @@ import (
 	"github.com/fastclaw-ai/fastclaw/internal/auth"
 	"github.com/fastclaw-ai/fastclaw/internal/config"
 	"github.com/fastclaw-ai/fastclaw/internal/usage"
+	"github.com/fastclaw-ai/fastclaw/internal/workspace"
 )
 
 // UserResolver looks up a user space by user ID.
@@ -32,9 +33,10 @@ type AgentInjector interface {
 
 // UserSpaceView is the subset of gateway.UserSpace that the API layer needs.
 type UserSpaceView struct {
-	UserID string
-	Agents *agent.Manager
-	Config *config.Config
+	UserID    string
+	Agents    *agent.Manager
+	Config    *config.Config
+	Workspace workspace.Store
 }
 
 // Server handles the OpenAI-compatible API and WebSocket gateway.

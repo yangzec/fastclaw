@@ -33,9 +33,10 @@ func (a *apiResolver) UserSpaceFor(userID string) (*api.UserSpaceView, error) {
 		return nil, err
 	}
 	return &api.UserSpaceView{
-		UserID: sp.UserID,
-		Agents: sp.Agents,
-		Config: sp.Config,
+		UserID:    sp.UserID,
+		Agents:    sp.Agents,
+		Config:    sp.Config,
+		Workspace: a.gw.Workspace(),
 	}, nil
 }
 

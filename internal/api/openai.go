@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/fastclaw-ai/fastclaw/internal/auth"
 	"github.com/fastclaw-ai/fastclaw/internal/bus"
 	"github.com/fastclaw-ai/fastclaw/internal/provider"
+	"github.com/fastclaw-ai/fastclaw/internal/workspace"
 )
 
 const apiAgentTurnTimeout = 45 * time.Minute
@@ -199,6 +201,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request, o
 		return
 	}
 
+	// Body field beats header — same precedence as `user`. Lets app
+	// callers send everything in one JSON without juggling headers.
+	requestedAgentID := r.Header.Get("x-fastclaw-agent-id")
+	if req.AgentID != "" {
+		requestedAgentID = req.AgentID
+	}
+
 	// OpenAI's `user` body field, when present on an api_key call,
 	// rebinds the identity to the corresponding app_user (lazy mint).
 	// Header X-Fastclaw-End-User does the same job pre-handler in the
@@ -209,6 +218,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request, o
 	if req.User != "" && s.authResolver != nil {
 		if ident, ok := auth.FromContext(r.Context()); ok {
 			if next, swErr := s.authResolver.SwitchToAppUser(r.Context(), ident, req.User); swErr == nil {
+				for _, id := range agentIDsToInjectAfterUserSwitch(next, requestedAgentID) {
+					if injector, ok := s.resolver.(AgentInjector); ok {
+						if err := injector.EnsureAgent(r.Context(), next.UserID, id); err != nil {
+							slog.Warn("app_user agent injection failed", "user", next.UserID, "agent", id, "error", err)
+						}
+					}
+				}
 				r = r.WithContext(auth.WithIdentity(r.Context(), next))
 			}
 		}
@@ -224,13 +240,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request, o
 		return
 	}
 
-	// Body field beats header — same precedence as `user`. Lets app
-	// callers send everything in one JSON without juggling headers.
-	agentID := r.Header.Get("x-fastclaw-agent-id")
-	if req.AgentID != "" {
-		agentID = req.AgentID
-	}
-	ag := resolveAgent(space, agentID)
+	ag := resolveAgent(space, requestedAgentID)
 	if ag == nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{
 			"error": map[string]string{"message": "agent not found", "type": "not_found_error"},
@@ -366,15 +376,20 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request, o
 	}()
 	if isStream {
 		if opts.returnSessionHeaders {
-			s.streamResponseFromAgentV1(w, r.WithContext(agentCtx), ag, msg, chatID, model, now, nativeSessionID, sessionKey)
+			s.streamResponseFromAgentV1(w, r.WithContext(agentCtx), ag, msg, chatID, model, now, nativeSessionID, sessionKey, space.Workspace)
 		} else {
-			s.streamResponseFromAgent(w, r.WithContext(agentCtx), ag, msg, chatID, model, now)
+			s.streamResponseFromAgent(w, r.WithContext(agentCtx), ag, msg, chatID, model, now, space.Workspace)
 		}
 	} else {
 		// Get reply from agent. Use the detached turn context so a caller-side
 		// 60s HTTP timeout does not kill the agent between tool execution and
 		// final synthesis; the hard cap above is the server-side bound.
 		reply := ag.HandleMessage(agentCtx, msg)
+		sessionScope := sessionKey
+		if native := ag.NativeSessionKey(msg); native != "" {
+			sessionScope = native
+		}
+		reply = rewriteWorkspaceURLsToPublic(agentCtx, space.Workspace, ag.Name(), "", sessionScope, reply)
 		s.fullResponse(w, reply, chatID, model, now)
 	}
 }
@@ -429,7 +444,7 @@ func (s *Server) HandleResolveChatSessionID(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{"sessionId": native, "sessionKey": sessionKey})
 }
 
-func (s *Server) streamResponseFromAgentV1(w http.ResponseWriter, r *http.Request, ag *agent.Agent, msg bus.InboundMessage, chatID, model string, created int64, sessionID, sessionKey string) {
+func (s *Server) streamResponseFromAgentV1(w http.ResponseWriter, r *http.Request, ag *agent.Agent, msg bus.InboundMessage, chatID, model string, created int64, sessionID, sessionKey string, ws workspace.Store) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -493,12 +508,12 @@ func (s *Server) streamResponseFromAgentV1(w http.ResponseWriter, r *http.Reques
 	}()
 
 	streamDone := false
+	var content strings.Builder
 	for !streamDone {
 		select {
 		case chunk := <-chunkCh:
 			if chunk.Content != "" {
-				s.writeSSEChunk(w, chatID, model, created, "", chunk.Content, nil)
-				flush()
+				content.WriteString(chunk.Content)
 			}
 			if chunk.Done {
 				streamDone = true
@@ -514,6 +529,12 @@ func (s *Server) streamResponseFromAgentV1(w http.ResponseWriter, r *http.Reques
 		case <-r.Context().Done():
 			return
 		}
+	}
+
+	finalContent := rewriteWorkspaceURLsToPublic(r.Context(), ws, ag.Name(), msg.ProjectID, msg.ChatID, content.String())
+	if finalContent != "" {
+		s.writeSSEChunk(w, chatID, model, created, "", finalContent, nil)
+		flush()
 	}
 
 	done := "stop"
@@ -534,7 +555,7 @@ func (s *Server) writeNamedSSE(w http.ResponseWriter, event string, data any) {
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, blob)
 }
 
-func (s *Server) streamResponseFromAgent(w http.ResponseWriter, r *http.Request, ag *agent.Agent, msg bus.InboundMessage, chatID, model string, created int64) {
+func (s *Server) streamResponseFromAgent(w http.ResponseWriter, r *http.Request, ag *agent.Agent, msg bus.InboundMessage, chatID, model string, created int64, ws workspace.Store) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -551,17 +572,23 @@ func (s *Server) streamResponseFromAgent(w http.ResponseWriter, r *http.Request,
 		flusher.Flush()
 	}
 
-	// Forward chunks from StreamReader
+	// Forward chunks from StreamReader. Buffer content so workspace links that
+	// span model chunks can be rewritten to the configured public object-store URL.
+	var content strings.Builder
 	for {
 		chunk, more := sr.Next()
 		if chunk.Content != "" {
-			s.writeSSEChunk(w, chatID, model, created, "", chunk.Content, nil)
-			if ok {
-				flusher.Flush()
-			}
+			content.WriteString(chunk.Content)
 		}
 		if chunk.Done || !more {
 			break
+		}
+	}
+	finalContent := rewriteWorkspaceURLsToPublic(r.Context(), ws, ag.Name(), msg.ProjectID, msg.ChatID, content.String())
+	if finalContent != "" {
+		s.writeSSEChunk(w, chatID, model, created, "", finalContent, nil)
+		if ok {
+			flusher.Flush()
 		}
 	}
 
@@ -635,4 +662,46 @@ func resolveAgent(space *UserSpaceView, agentID string) *agent.Agent {
 		return all[0]
 	}
 	return nil
+}
+
+func agentIDsToInjectAfterUserSwitch(ident auth.Identity, requestedAgentID string) []string {
+	if requestedAgentID != "" {
+		if ident.CanAccessAgent(requestedAgentID) {
+			return []string{requestedAgentID}
+		}
+		return nil
+	}
+	seen := make(map[string]bool, len(ident.APIKeyAgents))
+	ids := make([]string, 0, len(ident.APIKeyAgents))
+	for _, id := range ident.APIKeyAgents {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+var workspaceURLRefRegex = regexp.MustCompile(`https?://[^\s)]+/workspace/[^\s)]+|/workspace/[^\s)]+`)
+
+func rewriteWorkspaceURLsToPublic(ctx context.Context, ws workspace.Store, agentID, projectID, sessionID, text string) string {
+	if text == "" || ws == nil || agentID == "" {
+		return text
+	}
+	return workspaceURLRefRegex.ReplaceAllStringFunc(text, func(raw string) string {
+		rel := raw
+		if i := strings.Index(rel, "/workspace/"); i >= 0 {
+			rel = rel[i+len("/workspace/"):]
+		}
+		rel = strings.TrimPrefix(rel, "/")
+		if rel == "" {
+			return raw
+		}
+		if u, err := ws.PublicURL(ctx, agentID, projectID, sessionID, rel); err == nil && strings.TrimSpace(u) != "" {
+			return strings.TrimSpace(u)
+		}
+		return raw
+	})
 }

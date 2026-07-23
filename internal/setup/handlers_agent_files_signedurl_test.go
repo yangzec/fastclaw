@@ -14,6 +14,7 @@ import (
 
 type signedURLWorkspaceStore struct {
 	signedURL string
+	publicURL string
 	getCalls  int
 }
 
@@ -40,7 +41,24 @@ func (s *signedURLWorkspaceStore) SignedURL(context.Context, string, string, str
 	return s.signedURL, nil
 }
 func (s *signedURLWorkspaceStore) PublicURL(context.Context, string, string, string, string) (string, error) {
+	if s.publicURL != "" {
+		return s.publicURL, nil
+	}
 	return "", workspace.ErrSignedURLUnsupported
+}
+
+func TestScopedWorkspaceFilePathUsesResolvedSessionScope(t *testing.T) {
+	got := scopedWorkspaceFilePath("preview.html", "", "chat-123")
+	if got != "sessions/chat-123/preview.html" {
+		t.Fatalf("path = %q, want sessions/chat-123/preview.html", got)
+	}
+}
+
+func TestScopedWorkspaceFilePathUsesResolvedProjectAndSessionScope(t *testing.T) {
+	got := scopedWorkspaceFilePath("src/index.html", "proj-1", "chat-123")
+	if got != "projects/proj-1/chat-123/src/index.html" {
+		t.Fatalf("path = %q, want projects/proj-1/chat-123/src/index.html", got)
+	}
 }
 
 func TestServeFileFromWorkspaceStoreRedirectsNonHTMLToSignedURL(t *testing.T) {
@@ -63,8 +81,28 @@ func TestServeFileFromWorkspaceStoreRedirectsNonHTMLToSignedURL(t *testing.T) {
 	}
 }
 
-func TestServeFileFromWorkspaceStoreDoesNotRedirectHTML(t *testing.T) {
-	st := &signedURLWorkspaceStore{signedURL: "https://r2.example.test/bucket/page.html?X-Amz-Signature=abc"}
+func TestServeFileFromWorkspaceStoreRedirectsNonHTMLToPublicURLWhenConfigured(t *testing.T) {
+	st := &signedURLWorkspaceStore{publicURL: "https://cdn.example.test/fastclaw/agent-a/sessions/s1/image.png"}
+	s := NewServer(0)
+	s.SetWorkspaceStore(st)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/agent-a/files/sessions/s1/image.png", nil)
+	rr := httptest.NewRecorder()
+	s.serveFileFromWorkspaceStore(rr, req, "agent-a", "sessions/s1/image.png")
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d; body=%q", rr.Code, http.StatusFound, rr.Body.String())
+	}
+	if got := rr.Header().Get("Location"); got != st.publicURL {
+		t.Fatalf("Location = %q, want %q", got, st.publicURL)
+	}
+	if st.getCalls != 0 {
+		t.Fatalf("Get called %d times; public-url redirect should avoid proxy read", st.getCalls)
+	}
+}
+
+func TestServeFileFromWorkspaceStoreDoesNotRedirectHTMLToPublicURL(t *testing.T) {
+	st := &signedURLWorkspaceStore{publicURL: "https://cdn.example.test/fastclaw/agent-a/sessions/s1/page.html", signedURL: "https://r2.example.test/bucket/page.html?X-Amz-Signature=abc"}
 	s := NewServer(0)
 	s.SetWorkspaceStore(st)
 

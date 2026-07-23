@@ -250,9 +250,11 @@ func (s *DockerSandbox) Create() error {
 		args = append(args, "--add-host", "host.docker.internal:host-gateway")
 	}
 
-	// Mount workspace
+	// Mount workspace. Use --mount instead of -v so host paths containing
+	// ':' (valid on Linux; common in external chat/session IDs) are not
+	// parsed as extra Docker volume fields.
 	if s.workspace != "" {
-		args = append(args, "-v", fmt.Sprintf("%s:/workspace:rw", s.workspace))
+		args = appendBindMount(args, s.workspace, "/workspace", false)
 		wd := s.workdir
 		if wd == "" {
 			wd = "/workspace"
@@ -304,7 +306,7 @@ func (s *DockerSandbox) Create() error {
 	// fails inside sandbox" instead of "sandbox refuses to start".
 	if s.userSkillsHostDir != "" {
 		if err := os.MkdirAll(s.userSkillsHostDir, 0o755); err == nil {
-			args = append(args, "-v", fmt.Sprintf("%s:/root/.agents/skills:rw", s.userSkillsHostDir))
+			args = appendBindMount(args, s.userSkillsHostDir, "/root/.agents/skills", false)
 		}
 	}
 
@@ -325,7 +327,7 @@ func (s *DockerSandbox) Create() error {
 	// scaffold copies OUT of it; the project's own files live in the
 	// /workspace bind mount.
 	if s.templateMount != "" {
-		args = append(args, "-v", fmt.Sprintf("%s:/template:ro", s.templateMount))
+		args = appendBindMount(args, s.templateMount, "/template", true)
 	}
 
 	// Extra volumes (e.g. the shared pnpm store).
@@ -375,6 +377,14 @@ func (s *DockerSandbox) Create() error {
 	return nil
 }
 
+func appendBindMount(args []string, hostPath, containerPath string, readOnly bool) []string {
+	spec := fmt.Sprintf("type=bind,source=%s,target=%s", hostPath, containerPath)
+	if readOnly {
+		spec += ",readonly"
+	}
+	return append(args, "--mount", spec)
+}
+
 // appendSkillMounts binds a host skill directory into the container at
 // containerDir, EXCLUDING the top-level SKILL.md. The manifest is the
 // agent's IP — the model already gets its contents via the load_skill
@@ -391,14 +401,14 @@ func (s *DockerSandbox) Create() error {
 func appendSkillMounts(args []string, hostSkillDir, containerDir string) []string {
 	entries, err := os.ReadDir(hostSkillDir)
 	if err != nil {
-		return append(args, "-v", fmt.Sprintf("%s:%s:ro", hostSkillDir, containerDir))
+		return appendBindMount(args, hostSkillDir, containerDir, true)
 	}
 	for _, e := range entries {
 		if e.Name() == "SKILL.md" {
 			continue
 		}
 		src := filepath.Join(hostSkillDir, e.Name())
-		args = append(args, "-v", fmt.Sprintf("%s:%s/%s:ro", src, containerDir, e.Name()))
+		args = appendBindMount(args, src, containerDir+"/"+e.Name(), true)
 	}
 	return args
 }
