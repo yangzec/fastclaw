@@ -308,7 +308,11 @@ func (s *Server) handleOnboard(w http.ResponseWriter, r *http.Request) {
 		// and an inactive Test connection button, even though
 		// agents.defaults already names this model.
 		if req.Model != "" {
-			pcfg.Models = []config.ModelEntry{{ID: req.Model, Name: req.Model}}
+			pcfg.Models = []config.ModelEntry{{
+				ID:            req.Model,
+				Name:          req.Model,
+				ContextWindow: config.KnownContextWindow(req.Model),
+			}}
 		}
 		if err := scope.SaveProviderByScope(r.Context(), s.dataStore, scope.System, "", req.Provider, pcfg); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})

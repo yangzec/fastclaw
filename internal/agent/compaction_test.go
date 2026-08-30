@@ -250,6 +250,24 @@ func TestCompactThresholdSmallWindowStillCompacts(t *testing.T) {
 	}
 }
 
+func TestLookupContextWindowFallsBackToKnownPreset(t *testing.T) {
+	provs := map[string]config.ProviderConfig{
+		"openai": {Models: []config.ModelEntry{{ID: "gpt-5.5"}}},
+	}
+	if w := lookupContextWindow(provs, "openai/gpt-5.5"); w != 1_050_000 {
+		t.Fatalf("zero-saved window should use preset, got %d", w)
+	}
+	if w := lookupContextWindow(nil, "anthropic/claude-opus-4-7"); w != 1_000_000 {
+		t.Fatalf("no catalog should still resolve preset, got %d", w)
+	}
+	saved := map[string]config.ProviderConfig{
+		"openai": {Models: []config.ModelEntry{{ID: "gpt-5.5", ContextWindow: 128000}}},
+	}
+	if w := lookupContextWindow(saved, "openai/gpt-5.5"); w != 128000 {
+		t.Fatalf("saved window should win over preset, got %d", w)
+	}
+}
+
 func TestLookupContextWindowPrefersProviderPrefix(t *testing.T) {
 	provs := map[string]config.ProviderConfig{
 		"openai": {Models: []config.ModelEntry{{ID: "gpt-4o", ContextWindow: 128000}}},

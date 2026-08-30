@@ -45,6 +45,7 @@ import {
   type ProviderRow,
 } from "@/lib/api";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
+import { DEFAULT_CONTEXT_WINDOW, knownContextWindow, presetContextWindow } from "@/lib/model-defaults";
 
 // Keep these maps in sync with onboard's ProviderStep so the two flows
 // look and behave identically — same preset set, same labels, same
@@ -109,7 +110,7 @@ function emptyModel(): ModelEntry {
     reasoning: false,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 200000,
+    contextWindow: DEFAULT_CONTEXT_WINDOW,
     maxTokens: 8192,
   };
 }
@@ -119,7 +120,12 @@ function emptyModel(): ModelEntry {
 // filled in instead of an empty list.
 function presetModelRows(preset: string): ModelEntry[] {
   const ids = PROVIDER_PRESETS[preset]?.models || [];
-  return ids.map((id) => ({ ...emptyModel(), id, name: id }));
+  return ids.map((id) => ({
+    ...emptyModel(),
+    id,
+    name: id,
+    contextWindow: presetContextWindow(id),
+  }));
 }
 
 export default function ModelsPage() {
@@ -432,7 +438,11 @@ export default function ModelsPage() {
     setFormModels((prev) => {
       const updated = [...prev];
       const m = { ...updated[index], cost: { ...updated[index].cost }, input: [...updated[index].input] };
-      if (field === "id") m.id = value as string;
+      if (field === "id") {
+        m.id = value as string;
+        const known = knownContextWindow(m.id);
+        if (known > 0) m.contextWindow = known;
+      }
       else if (field === "name") m.name = value as string;
       else if (field === "reasoning") m.reasoning = value as boolean;
       else if (field === "contextWindow") m.contextWindow = Number(value) || 0;
@@ -1033,11 +1043,11 @@ export default function ModelsPage() {
                       min={0}
                       value={m.contextWindow || ""}
                       onChange={(e) => handleUpdateModel(idx, "contextWindow", e.target.value)}
-                      placeholder="200000"
+                      placeholder={String(DEFAULT_CONTEXT_WINDOW)}
                       className="font-mono text-xs h-8"
                     />
                     <p className="text-[11px] text-muted-foreground/70">
-                      This model&apos;s input context size. Chat history is compacted when it approaches this, minus room for the reply.
+                      Official window for this model id when we know it; edit if your provider differs. History is compacted as the session approaches this, minus room for the reply.
                     </p>
                   </div>
                 </div>

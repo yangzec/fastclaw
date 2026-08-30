@@ -60,7 +60,7 @@ func CompactThreshold(contextWindow, maxTokens int) int {
 // agent's provider catalog. "provider/modelId" prefers that provider;
 // a bare model id searches every provider. 0 means not configured.
 func lookupContextWindow(providers map[string]config.ProviderConfig, model string) int {
-	if model == "" || len(providers) == 0 {
+	if model == "" {
 		return 0
 	}
 	provKey, modelID := provider.SplitProviderModel(model)
@@ -81,7 +81,7 @@ func lookupContextWindow(providers map[string]config.ProviderConfig, model strin
 			}
 		}
 	}
-	return 0
+	return config.KnownContextWindow(model)
 }
 
 func modelContextWindow(models []config.ModelEntry, id string) int {
