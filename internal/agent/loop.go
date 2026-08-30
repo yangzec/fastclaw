@@ -2336,7 +2336,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 
 	// Context compaction: check if session messages are too large
 	sessionMsgs := sess.GetMessages()
-	compactResult, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model, a.compactTokenThreshold())
+	compactResult, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model, a.compactTokenThreshold(chatterUID))
 	if err != nil {
 		slog.Warn("compaction error", "agent", a.name, "error", err)
 	}
@@ -3135,7 +3135,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	sess.Append(userMsg)
 
 	sessionMsgs := sess.GetMessages()
-	compactResult, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model, a.compactTokenThreshold())
+	compactResult, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model, a.compactTokenThreshold(chatterUID))
 	if err != nil {
 		slog.Warn("compaction error", "agent", a.name, "error", err)
 	}
@@ -3788,8 +3788,57 @@ func copyProviders(src map[string]config.ProviderConfig) map[string]config.Provi
 	return dst
 }
 
-func (a *Agent) compactTokenThreshold() int {
-	return CompactThreshold(lookupContextWindow(a.providers, a.model), a.maxTokens)
+func (a *Agent) compactTokenThreshold(chatterUID string) int {
+	return CompactThreshold(lookupContextWindow(a.liveProviders(chatterUID), a.model), a.maxTokens)
+}
+
+func (a *Agent) effectiveContextWindow(chatterUID string) int {
+	w := lookupContextWindow(a.liveProviders(chatterUID), a.model)
+	if w <= 0 {
+		return DefaultContextWindow
+	}
+	return w
+}
+
+// liveProviders returns the provider catalog compaction should use.
+// When a store is wired, this is read from DB each turn so a Models
+// save (contextWindow change) applies on the next message without
+// waiting for UserSpace eviction. Boot-time a.providers is the fallback
+// for tests and local runs with no store.
+func (a *Agent) liveProviders(chatterUID string) map[string]config.ProviderConfig {
+	if a.dataStore == nil {
+		return a.providers
+	}
+	uid := chatterUID
+	if uid == "" {
+		uid = a.ownerUserID
+	}
+	ctx := context.Background()
+	provs, err := scope.Providers(ctx, a.dataStore, uid, a.agentID)
+	if err != nil {
+		slog.Warn("live providers lookup failed", "agent", a.name, "error", err)
+		return a.providers
+	}
+	if len(provs) == 0 {
+		return a.providers
+	}
+	// Foreign chatter: owner user-scope + agent-scope overlay, matching
+	// UserSpace.EnsureAgent when shareModelConfig is on. Agent-scope
+	// must win so an owner edit on the agent Models page is what
+	// compact uses.
+	if a.ownerUserID != "" && uid != a.ownerUserID {
+		if ownerProvs, err := scope.UserScopeProviders(ctx, a.dataStore, a.ownerUserID); err == nil {
+			for k, v := range ownerProvs {
+				provs[k] = v
+			}
+		}
+		if agentProvs, err := scope.AgentScopeProviders(ctx, a.dataStore, a.agentID); err == nil {
+			for k, v := range agentProvs {
+				provs[k] = v
+			}
+		}
+	}
+	return provs
 }
 
 // UpdateConfig updates the agent's runtime config (model, temperature, etc.)

@@ -439,9 +439,20 @@ export default function ModelsPage() {
       const updated = [...prev];
       const m = { ...updated[index], cost: { ...updated[index].cost }, input: [...updated[index].input] };
       if (field === "id") {
+        const prevID = m.id;
         m.id = value as string;
         const known = knownContextWindow(m.id);
-        if (known > 0) m.contextWindow = known;
+        const prevKnown = knownContextWindow(prevID);
+        // Only overwrite when the window is still the old default / old
+        // preset. A number the user typed must survive an id tweak.
+        if (
+          known > 0 &&
+          (m.contextWindow === 0 ||
+            m.contextWindow === DEFAULT_CONTEXT_WINDOW ||
+            m.contextWindow === prevKnown)
+        ) {
+          m.contextWindow = known;
+        }
       }
       else if (field === "name") m.name = value as string;
       else if (field === "reasoning") m.reasoning = value as boolean;
