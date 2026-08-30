@@ -1810,8 +1810,8 @@ export function ChatScreen() {
         // stop spinning. Server-side padOrphanToolResults will write a
         // matching record on its end; this just keeps the UI consistent
         // until the next history fetch overwrites it.
-        setMessages((prev) =>
-          prev.map((m) =>
+        setMessages((prev) => {
+          const next = prev.map((m) =>
             m.role === "tool-group" && m.toolCalls
               ? {
                   ...m,
@@ -1820,12 +1820,22 @@ export function ChatScreen() {
                   ),
                 }
               : m,
-          ),
-        );
-        setMessages((prev) => [
-          ...prev,
-          { id: `e-${Date.now()}`, role: "agent", content: "(Stopped)", timestamp: Date.now() },
-        ]);
+          );
+          // Keyboard-stack / stream teardown can throw AbortError after
+          // a successful turn. Don't tack "(Stopped)" onto an answer
+          // the user already got.
+          const lastUser = [...next].reverse().findIndex((m) => m.role === "user");
+          if (lastUser >= 0) {
+            const replyAfter = next
+              .slice(next.length - lastUser)
+              .some((m) => m.role === "agent" || m.role === "tool-group");
+            if (replyAfter) return next;
+          }
+          return [
+            ...next,
+            { id: `e-${Date.now()}`, role: "agent", content: "(Stopped)", timestamp: Date.now() },
+          ];
+        });
       } else {
         setMessages((prev) => {
           const lastUser = [...prev].reverse().findIndex((m) => m.role === "user");
@@ -2648,10 +2658,13 @@ export function ChatScreen() {
                       </Button>
                     ) : (
                       <Button
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          handleSend();
-                        }}
+                        type="button"
+                        // Keep the textarea focused, but send on click — not
+                        // mousedown. Send immediately swaps this slot to Stop;
+                        // a mousedown send lets the leftover click hit Stop
+                        // and abort the turn as "(Stopped)".
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => handleSend()}
                         disabled={(!input.trim() && attachments.length === 0) || !canSendComposer}
                         size="icon"
                         className="h-9 w-9 shrink-0 rounded-full"
@@ -2714,10 +2727,9 @@ export function ChatScreen() {
                     </Button>
                   ) : (
                     <Button
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        handleSend();
-                      }}
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => handleSend()}
                       disabled={(!input.trim() && attachments.length === 0) || !canSendComposer}
                       size="icon"
                       className="h-8 w-8 shrink-0 rounded-lg"
