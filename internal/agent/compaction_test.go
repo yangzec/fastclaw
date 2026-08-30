@@ -280,11 +280,13 @@ func TestCompactMessagesRespectsThreshold(t *testing.T) {
 			provider.Message{Role: "tool", ToolCallID: "t", Content: strings.Repeat("x", 400)},
 		)
 	}
-	res, err = CompactMessages(long, t.TempDir(), nil, "m", 100)
+	// 2500 tokens before prune, ~1135 after. Stay above prune-after
+	// so we don't need an LLM summarizer, but below the raw size.
+	res, err = CompactMessages(long, t.TempDir(), nil, "m", 2000)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !res.Pruned {
-		t.Fatal("oversized history should compact when threshold is 100")
+		t.Fatal("oversized history should compact when threshold is 2000")
 	}
 }
