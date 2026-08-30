@@ -1026,6 +1026,20 @@ export default function ModelsPage() {
                       />
                     </div>
                   </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Context window (tokens)</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      value={m.contextWindow || ""}
+                      onChange={(e) => handleUpdateModel(idx, "contextWindow", e.target.value)}
+                      placeholder="200000"
+                      className="font-mono text-xs h-8"
+                    />
+                    <p className="text-[11px] text-muted-foreground/70">
+                      This model&apos;s input context size. Chat history is compacted when it approaches this, minus room for the reply.
+                    </p>
+                  </div>
                 </div>
                 );
               })}
