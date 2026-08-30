@@ -1262,10 +1262,15 @@ export function ChatScreen() {
     // Refresh todo.md alongside the history fetch. We don't gate the
     // rest of the load on it — a 404 (no todo.md yet) is the normal
     // empty-session case.
-    getChatTodo(selectedAgent, sessionId)
-      .then((todo) => setTodoItems(todo.items))
-      .catch(() => setTodoItems([]));
+    setTodoItems([]);
     let aborted = false;
+    getChatTodo(selectedAgent, sessionId)
+      .then((todo) => {
+        if (!aborted) setTodoItems(todo.items);
+      })
+      .catch(() => {
+        if (!aborted) setTodoItems([]);
+      });
     getChatHistoryWithCursor(selectedAgent, sessionId)
       .then(async ({ history, latestEventSeq }) => {
         if (aborted) return;
@@ -3670,10 +3675,12 @@ function WorkspacePanel({
     }
   }, [agentId, sessionId, projectId]);
 
+  const refreshGenRef = useRef(0);
   const refresh = useCallback(async () => {
     // Project scope (no session) is handled via projectId; chat scope
     // requires sessionId. With neither, there's nothing to fetch.
     if (!agentId || (!sessionId && !projectId)) return;
+    const gen = ++refreshGenRef.current;
     setLoading(true);
     try {
       // When projectId is set we skip sessionId — backend scope filter
@@ -3683,20 +3690,29 @@ function WorkspacePanel({
       const list = projectId
         ? await listAgentFiles(agentId, undefined, projectId)
         : await listAgentFiles(agentId, sessionId);
+      if (gen !== refreshGenRef.current) return;
       const cleaned = list
         .filter((f) => !isSystemFile(f.path))
         .sort((a, b) => (b.modTime || 0) - (a.modTime || 0));
       setFiles(cleaned);
       // Best-effort: is there a live app preview for this scope?
       getScopePreview(agentId, projectId ? undefined : sessionId, projectId)
-        .then(setAppPreview)
-        .catch(() => setAppPreview({ status: "none" }));
+        .then((p) => {
+          if (gen === refreshGenRef.current) setAppPreview(p);
+        })
+        .catch(() => {
+          if (gen === refreshGenRef.current) setAppPreview({ status: "none" });
+        });
       // Best-effort: which files did the agent change vs the template?
       getChangedFiles(agentId, projectId ? undefined : sessionId, projectId)
-        .then(setChanged)
-        .catch(() => setChanged({ files: [], available: false }));
+        .then((c) => {
+          if (gen === refreshGenRef.current) setChanged(c);
+        })
+        .catch(() => {
+          if (gen === refreshGenRef.current) setChanged({ files: [], available: false });
+        });
     } finally {
-      setLoading(false);
+      if (gen === refreshGenRef.current) setLoading(false);
     }
   }, [agentId, sessionId, projectId]);
 
@@ -3725,10 +3741,13 @@ function WorkspacePanel({
     }
     if (!sessionId) return;
     setHistoryOpen(true);
+    const gen = refreshGenRef.current;
     try {
-      setHistory(await getSessionHistory(agentId, sessionId));
+      const rows = await getSessionHistory(agentId, sessionId);
+      if (gen !== refreshGenRef.current) return;
+      setHistory(rows);
     } catch {
-      setHistory([]);
+      if (gen === refreshGenRef.current) setHistory([]);
     }
   }, [historyOpen, agentId, sessionId]);
 
@@ -3753,11 +3772,18 @@ function WorkspacePanel({
     [agentId, sessionId, restoring, refresh],
   );
 
-  // Switching conversations swaps the file tree to the new scope — clear the
-  // selected file too, so the viewer never shows a file from the previous
-  // conversation (the tree refetches but `previewing` would otherwise linger).
+  // Switching conversations swaps the file tree to the new scope — drop
+  // the previous chat's list/preview/history immediately so a slow
+  // listAgentFiles(A) cannot paint A's files onto B.
   useEffect(() => {
+    refreshGenRef.current += 1;
     setPreviewing(null);
+    setFiles([]);
+    setChanged({ files: [], available: false });
+    setAppPreview({ status: "none" });
+    setBuildLogs("");
+    setHistory([]);
+    setHistoryOpen(false);
   }, [agentId, sessionId, projectId]);
 
   // While the Preview tab is open, poll the runtime so a "building" preview
