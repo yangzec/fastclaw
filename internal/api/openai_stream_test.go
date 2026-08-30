@@ -3,6 +3,7 @@ package api
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -98,6 +99,57 @@ func newStreamTestServer(t *testing.T, prov provider.Provider) *Server {
 		t.Fatalf("NewManager: %v", err)
 	}
 	return NewServer(streamTestResolver{space: &UserSpaceView{UserID: "user-1", Agents: mgr}}, nil, nil)
+}
+
+type instantChatProvider struct{}
+
+func (instantChatProvider) Chat(ctx context.Context, messages []provider.Message, tools []provider.Tool, model string, maxTokens int, temperature float64) (*provider.Response, error) {
+	return &provider.Response{Content: "hello-from-agent"}, nil
+}
+
+func (instantChatProvider) ChatStream(ctx context.Context, messages []provider.Message, tools []provider.Tool, model string, maxTokens int, temperature float64) (*provider.StreamReader, error) {
+	ch := make(chan provider.StreamChunk, 2)
+	ch <- provider.StreamChunk{Content: "hello-from-agent"}
+	ch <- provider.StreamChunk{Done: true}
+	close(ch)
+	return provider.NewStreamReader(ch), nil
+}
+
+func TestChatCompletionHTTPReturnsBothSessionIds(t *testing.T) {
+	srv := newStreamTestServer(t, instantChatProvider{})
+	const callerKey = "app:user:conv-accept"
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		`{"agent_id":"agent-1","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Fastclaw-Session-Key", callerKey)
+	req = req.WithContext(auth.WithIdentity(req.Context(), auth.Identity{UserID: "user-1", AuthMethod: "session"}))
+
+	rr := httptest.NewRecorder()
+	srv.HandleChatCompletions(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("X-Fastclaw-Session-Key"); got != callerKey {
+		t.Fatalf("X-Fastclaw-Session-Key = %q", got)
+	}
+	native := rr.Header().Get("X-Fastclaw-Session-Id")
+	if !strings.HasPrefix(native, "s-") {
+		t.Fatalf("X-Fastclaw-Session-Id = %q, want s-...", native)
+	}
+	if native == callerKey {
+		t.Fatal("native session id echoed the caller key")
+	}
+	var body chatCompletionResponse
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.SessionKey != callerKey || body.SessionID != native {
+		t.Fatalf("json session_key=%q session_id=%q headers key=%q id=%q",
+			body.SessionKey, body.SessionID, callerKey, native)
+	}
+	if body.Choices[0].Message.Content != "hello-from-agent" {
+		t.Fatalf("content = %q", body.Choices[0].Message.Content)
+	}
 }
 
 func streamAuthedRequest(body string) *http.Request {
