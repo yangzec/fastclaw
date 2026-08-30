@@ -69,7 +69,8 @@ export default function ChannelsPage() {
             </div>
             <p className="text-sm text-muted-foreground mb-1">No channels configured</p>
             <p className="text-xs text-muted-foreground/60">
-              Configure channels in Settings or fastclaw.json
+              Bind Telegram, Discord, Slack, and other IM bots from an
+              agent&apos;s Settings → Channels tab.
             </p>
           </div>
         </div>

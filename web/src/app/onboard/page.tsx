@@ -346,7 +346,12 @@ export default function OnboardPage() {
           />
         )}
 
-        {step === 5 && <DoneStep onContinue={() => router.replace("/")} />}
+        {step === 5 && (
+          <DoneStep
+            providerConfigured={providerEnabled}
+            onContinue={() => router.replace("/")}
+          />
+        )}
 
         {submitError && (
           <Card className="border-destructive/40 bg-destructive/5">
@@ -919,7 +924,13 @@ function SandboxStep(props: {
   );
 }
 
-function DoneStep({ onContinue }: { onContinue: () => void }) {
+function DoneStep({
+  onContinue,
+  providerConfigured,
+}: {
+  onContinue: () => void;
+  providerConfigured: boolean;
+}) {
   return (
     <Card>
       <CardHeader>
@@ -928,13 +939,15 @@ function DoneStep({ onContinue }: { onContinue: () => void }) {
           You&apos;re in!
         </CardTitle>
         <CardDescription>
-          Admin account created, provider configured, first agent ready.
+          {providerConfigured
+            ? "Admin account created, provider configured, first agent ready."
+            : "Admin account created and first agent ready. Add a provider from Models when you want to chat."}
         </CardDescription>
       </CardHeader>
       <CardContent>
         <p className="text-sm text-muted-foreground">
-          The session cookie is already set — clicking continue takes you
-          straight to the dashboard.
+          The session cookie is already set — Open dashboard takes you
+          straight in.
         </p>
       </CardContent>
       <CardFooter>

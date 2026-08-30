@@ -1744,7 +1744,7 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 	sess.Append(userMsg)
 
 	if a.provider == nil {
-		noProviderMsg := "Agent is not configured with a usable LLM provider. Check that cfg.Providers contains the prefix referenced by model `" + a.model + "`."
+		noProviderMsg := noProviderConfiguredMsg(a.model)
 		emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": noProviderMsg}})
 		emitEvent(ctx, ChatEvent{Type: "done"})
 		return noProviderMsg
@@ -2417,7 +2417,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 
 		if a.provider == nil {
 			slog.Error("agent has no provider configured", "agent", a.name, "model", a.model)
-			noProviderMsg := "Agent is not configured with a usable LLM provider. Check that cfg.Providers contains the prefix referenced by model `" + a.model + "`."
+			noProviderMsg := noProviderConfiguredMsg(a.model)
 			emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": noProviderMsg}})
 			emitEvent(ctx, ChatEvent{Type: "done"})
 			return noProviderMsg
@@ -3919,6 +3919,17 @@ func extractMediaPaths(output string) []string {
 		}
 	}
 	return paths
+}
+
+// noProviderConfiguredMsg is the chat-visible error when an agent has
+// no resolved LLM provider. Keep it free of internal field names —
+// operators who skipped onboard's provider step land here first.
+func noProviderConfiguredMsg(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "This agent has no model configured. Add an LLM provider under Models, then set a default model."
+	}
+	return "No LLM provider is configured for model `" + model + "`. Add a matching provider under Models (the name before the slash)."
 }
 
 // sendMediaFiles sends extracted MEDIA: files to the outbound bus.
