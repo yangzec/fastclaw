@@ -258,6 +258,10 @@ function generateSessionId() {
   return `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function chatScopeKey(agent: string, sid: string) {
+  return `${agent}\t${sid}`;
+}
+
 const PASTED_IMAGE_EXTENSIONS: Record<string, string> = {
   "image/avif": "avif",
   "image/gif": "gif",
@@ -673,6 +677,32 @@ export function ChatScreen() {
   // AbortController for the in-flight chat stream so the Stop button can
   // cancel both the upload and the SSE connection. Reset on every new turn.
   const abortRef = useRef<AbortController | null>(null);
+  // Session / agent the UI is showing right now. Stream callbacks close
+  // over the turn they started, not the latest render, so they must
+  // consult these before writing into `messages`.
+  const sessionIdRef = useRef(sessionId);
+  const selectedAgentRef = useRef(selectedAgent);
+  sessionIdRef.current = sessionId;
+  selectedAgentRef.current = selectedAgent;
+  const messagesCacheRef = useRef(new Map<string, ChatMessage[]>());
+  const inFlightSessionsRef = useRef(new Set<string>());
+  const abortBySessionRef = useRef(new Map<string, AbortController>());
+  const streamingMsgIdBySessionRef = useRef(new Map<string, string | null>());
+  const maxSeqBySessionRef = useRef(new Map<string, number>());
+
+  const patchMessages = useCallback((agent: string, sid: string, updater: (prev: ChatMessage[]) => ChatMessage[]) => {
+    const key = chatScopeKey(agent, sid);
+    if (sessionIdRef.current === sid && selectedAgentRef.current === agent) {
+      setMessages((prev) => {
+        const next = updater(prev);
+        messagesCacheRef.current.set(key, next);
+        return next;
+      });
+      return;
+    }
+    const prev = messagesCacheRef.current.get(key) ?? [];
+    messagesCacheRef.current.set(key, updater(prev));
+  }, []);
 
   // Gates the EventSource effect: holds the sessionId whose history has
   // been fetched and whose `subscribeSinceRef` is now accurate. Without
@@ -717,6 +747,7 @@ export function ChatScreen() {
     setSessionTitle("");
     setAgentName("");
     setAttachments([]);
+    setSending(false);
   }, [selectedAgent]);
 
   // Resolve the agent's display name once. The chat title and any
@@ -904,7 +935,7 @@ export function ChatScreen() {
         // transient slash bubble, then reload history on `done`; slash
         // replies are event-only, so that reload clears the visible
         // answer and makes the send look like it did nothing.
-        if (inFlightSendSessionRef.current === sessionId) return;
+        if (inFlightSessionsRef.current.has(chatScopeKey(selectedAgent, sessionId))) return;
         // CAREFUL: do NOT bump maxSeqRef before the switch. This handler
         // intentionally drops tool_call / tool_result during catch-up
         // (the post-`done` history reload renders them properly) — but
@@ -1084,7 +1115,10 @@ export function ChatScreen() {
       prevHadSessionRef.current = true;
       if (urlSessionId !== sessionId) {
         setSessionId(urlSessionId);
-        setMessages([]);
+        const cached = selectedAgent
+          ? messagesCacheRef.current.get(chatScopeKey(selectedAgent, urlSessionId))
+          : undefined;
+        setMessages(cached ?? []);
       }
       return;
     }
@@ -1110,6 +1144,17 @@ export function ChatScreen() {
     const s = sessions.find((x) => x.id === sessionId);
     setSessionTitle(s?.title || s?.preview || "");
   }, [sessionId, sessions]);
+
+  useEffect(() => {
+    setSending(inFlightSessionsRef.current.has(chatScopeKey(selectedAgent, sessionId)));
+    streamingMsgIdRef.current = streamingMsgIdBySessionRef.current.get(chatScopeKey(selectedAgent, sessionId)) ?? null;
+  }, [selectedAgent, sessionId]);
+
+  useEffect(() => {
+    if (selectedAgent && sessionId) {
+      messagesCacheRef.current.set(chatScopeKey(selectedAgent, sessionId), messages);
+    }
+  }, [selectedAgent, sessionId, messages]);
 
   // Channel of the currently-open session, derived from the sessions
   // list. Brand-new web chats don't have a row yet — the fallback to
@@ -1197,11 +1242,12 @@ export function ChatScreen() {
   // hanging it off the last agent message.
   useEffect(() => {
     if (!selectedAgent || !sessionId) return;
-    const sessionHasActivePost = inFlightSendSessionRef.current === sessionId;
+    const sessionHasActivePost = inFlightSessionsRef.current.has(chatScopeKey(selectedAgent, sessionId));
     // Reset dedup state when session changes — events from a previous
     // session must not bias the new session's seq filter, and any
-    // transient placeholder is no longer relevant.
-    maxSeqRef.current = -1;
+    // transient placeholder is no longer relevant. Restore this
+    // session's own cursor if we already streamed it in the background.
+    maxSeqRef.current = maxSeqBySessionRef.current.get(chatScopeKey(selectedAgent, sessionId)) ?? -1;
     subscribeSinceRef.current = -1;
     transientBubbleIdRef.current = null;
     // Close the SSE gate for this sessionId; reopens once the history
@@ -1256,7 +1302,13 @@ export function ChatScreen() {
           }
         } catch { /* listing failed — fall back to no panel */ }
         if (aborted) return;
-        setMessages(built);
+        // A live POST for this session already owns the bubbles (the
+        // user may have left and come back mid-turn). Don't replace
+        // them with a history snapshot that is still missing the
+        // in-flight reply.
+        if (!sessionHasActivePost) {
+          setMessages(built);
+        }
         setLoadedSessionId(sessionId);
       })
       .catch(() => {
@@ -1307,9 +1359,9 @@ export function ChatScreen() {
   // reconciling against the optimistic pendingSteer bubble (if any) so
   // the message isn't duplicated. seq-dedup is already applied upstream
   // by both event consumers.
-  const applySteerEvent = useCallback((content: string) => {
+  const applySteerEvent = useCallback((content: string, agent?: string, sid?: string) => {
     if (!content) return;
-    setMessages((prev) => {
+    const updater = (prev: ChatMessage[]) => {
       const idx = prev.findIndex(
         (m) => m.role === "user" && m.pendingSteer && m.content === content,
       );
@@ -1320,10 +1372,15 @@ export function ChatScreen() {
       }
       return [
         ...prev,
-        { id: `s-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, role: "user", content, timestamp: Date.now() },
+        { id: `s-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, role: "user" as const, content, timestamp: Date.now() },
       ];
-    });
-  }, []);
+    };
+    if (agent && sid) {
+      patchMessages(agent, sid, updater);
+      return;
+    }
+    setMessages(updater);
+  }, [patchMessages]);
 
   const handleSend = useCallback(async (overrideText?: string, force?: boolean) => {
     // overrideText lets caller post a message that didn't come from
@@ -1363,7 +1420,20 @@ export function ChatScreen() {
     // useSearchParams (and the sidebar's navigateOnce dedupe that
     // derives from them) still see the new URL.
     const target = `/agents/${selectedAgent}/chat/${sessionId}/`;
-    inFlightSendSessionRef.current = sessionId;
+    const turnSessionId = sessionId;
+    const turnAgent = selectedAgent;
+    const turnKey = chatScopeKey(turnAgent, turnSessionId);
+    const setTurnMessages = (updater: (prev: ChatMessage[]) => ChatMessage[]) => {
+      patchMessages(turnAgent, turnSessionId, updater);
+    };
+    const setStreamBubbleId = (id: string | null) => {
+      streamingMsgIdBySessionRef.current.set(turnKey, id);
+      if (sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+        streamingMsgIdRef.current = id;
+      }
+    };
+    inFlightSendSessionRef.current = turnSessionId;
+    inFlightSessionsRef.current.add(turnKey);
     if (pathname !== target) {
       window.history.replaceState(null, "", target);
     }
@@ -1392,10 +1462,18 @@ export function ChatScreen() {
         await uploadAgentFiles(selectedAgent, sessionId, filesToUpload);
         notifyWorkspaceChanged(selectedAgent, sessionId);
       } catch (err) {
-        setMessages((prev) => [
+        setTurnMessages((prev) => [
           ...prev,
           { id: `e-${Date.now()}`, role: "agent", content: `File upload failed: ${err instanceof Error ? err.message : "unknown error"}`, timestamp: Date.now() },
         ]);
+        inFlightSessionsRef.current.delete(turnKey);
+        if (inFlightSendSessionRef.current === turnSessionId) {
+          inFlightSendSessionRef.current = null;
+        }
+        abortBySessionRef.current.delete(turnKey);
+        if (sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+          setSending(false);
+        }
         return;
       }
 
@@ -1440,7 +1518,7 @@ export function ChatScreen() {
     // to bottom even if the user had scrolled up to read earlier in the
     // conversation.
     stickToBottomRef.current = true;
-    setMessages((prev) => [
+    setTurnMessages((prev) => [
       ...prev,
       {
         id: `u-${Date.now()}`,
@@ -1451,7 +1529,9 @@ export function ChatScreen() {
       },
     ]);
     setSending(true);
-    abortRef.current = new AbortController();
+    const turnAbort = new AbortController();
+    abortRef.current = turnAbort;
+    abortBySessionRef.current.set(turnKey, turnAbort);
 
     // Snapshot the workspace before the turn so we can diff at `done` and
     // attach newly-created / modified files (PDFs, images, …) to the
@@ -1482,12 +1562,12 @@ export function ChatScreen() {
       curGroupId = `tg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       curCalls = [];
       curContent = "";
-      streamingMsgIdRef.current = null;
+      setStreamBubbleId(null);
     };
     startNewGroup();
 
     try {
-      await sendChatStream(selectedAgent, sessionId, fullText, (evt: ChatStreamEvent) => {
+      await sendChatStream(selectedAgent, turnSessionId, fullText, (evt: ChatStreamEvent) => {
         // Dedup against /api/chat/subscribe SSE, which subscribes to
         // the same chat-events hub server-side. Whichever path arrives
         // first renders; the other skips. seq < 0 means persistence
@@ -1495,8 +1575,12 @@ export function ChatScreen() {
         // possibility of a double-render rather than dropping the
         // event entirely.
         if (typeof evt.seq === "number" && evt.seq >= 0) {
-          if (evt.seq <= maxSeqRef.current) return;
-          maxSeqRef.current = evt.seq;
+          const prevSeq = maxSeqBySessionRef.current.get(turnKey) ?? -1;
+          if (evt.seq <= prevSeq) return;
+          maxSeqBySessionRef.current.set(turnKey, evt.seq);
+          if (sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+            maxSeqRef.current = evt.seq;
+          }
         }
         switch (evt.type) {
           case "content_delta": {
@@ -1508,23 +1592,23 @@ export function ChatScreen() {
             // intact even though deltas aren't persisted.
             const delta = evt.data?.delta || "";
             if (!delta) break;
-            if (curCalls.length > 0 && !streamingMsgIdRef.current) {
+            if (curCalls.length > 0 && !streamingMsgIdBySessionRef.current.get(turnKey)) {
               // Content after tool calls = new round; reset state so
               // the new bubble is its own message, not appended onto
               // the previous tool-group's thinking text.
               startNewGroup();
             }
             curContent += delta;
-            if (!streamingMsgIdRef.current) {
+            if (!streamingMsgIdBySessionRef.current.get(turnKey)) {
               const id = `a-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-              streamingMsgIdRef.current = id;
-              setMessages((prev) => [
+              setStreamBubbleId(id);
+              setTurnMessages((prev) => [
                 ...prev,
                 { id, role: "agent", content: delta, timestamp: Date.now() },
               ]);
             } else {
-              const id = streamingMsgIdRef.current;
-              setMessages((prev) => {
+              const id = streamingMsgIdBySessionRef.current.get(turnKey)!;
+              setTurnMessages((prev) => {
                 const idx = prev.findIndex((m) => m.id === id);
                 if (idx < 0) return prev;
                 const updated = [...prev];
@@ -1538,8 +1622,10 @@ export function ChatScreen() {
             const content = evt.data?.content || "";
             const meta = evt.data?.metadata;
             if (content === "__NEW_SESSION__") {
-              handleNewChat();
-              loadSessions(selectedAgent);
+              if (sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+                handleNewChat();
+              }
+              loadSessions(turnAgent);
               return;
             }
             if (!content && !meta) {
@@ -1549,11 +1635,11 @@ export function ChatScreen() {
             // the final `content` carries the same text — just seal
             // the in-flight ID, optionally attach metadata, and skip
             // creating a duplicate bubble.
-            if (streamingMsgIdRef.current) {
-              const id = streamingMsgIdRef.current;
-              streamingMsgIdRef.current = null;
+            if (streamingMsgIdBySessionRef.current.get(turnKey)) {
+              const id = streamingMsgIdBySessionRef.current.get(turnKey)!;
+              setStreamBubbleId(null);
               if (meta) {
-                setMessages((prev) => {
+                setTurnMessages((prev) => {
                   const idx = prev.findIndex((m) => m.id === id);
                   if (idx < 0) return prev;
                   const updated = [...prev];
@@ -1571,7 +1657,7 @@ export function ChatScreen() {
             // Apply to the last agent message instead of creating an
             // empty new bubble.
             if (!content && meta) {
-              setMessages((prev) => {
+              setTurnMessages((prev) => {
                 for (let i = prev.length - 1; i >= 0; i--) {
                   if (prev[i].role === "agent") {
                     const updated = [...prev];
@@ -1589,7 +1675,7 @@ export function ChatScreen() {
             }
             // Store as thinking content (may become part of next tool-group, or stay as final answer)
             curContent = content;
-            setMessages((prev) => [
+            setTurnMessages((prev) => [
               ...prev,
               { id: `a-${Date.now()}`, role: "agent", content, timestamp: Date.now(), metadata: meta },
             ]);
@@ -1602,7 +1688,7 @@ export function ChatScreen() {
             // ID so a subsequent content_delta on the next round
             // spawns a fresh bubble instead of writing into the
             // now-defunct ID.
-            streamingMsgIdRef.current = null;
+            setStreamBubbleId(null);
             // New round starts if every tool in the current group has
             // already resolved. Without this, two assistant turns that
             // happen back-to-back with no intervening content event get
@@ -1619,7 +1705,7 @@ export function ChatScreen() {
             });
             const groupId = curGroupId;
             const calls = [...curCalls];
-            setMessages((prev) => {
+            setTurnMessages((prev) => {
               // Update existing tool-group for this round (additional
               // tool_call within the same assistant turn).
               const idx = prev.findIndex((m) => m.id === groupId);
@@ -1671,15 +1757,19 @@ export function ChatScreen() {
                   (typeof args?.path === "string" ? args.path : "") ||
                   (typeof args?.file_path === "string" ? args.file_path : "");
                 if (path && /(^|\/)todo\.md$/i.test(path)) {
-                  getChatTodo(selectedAgent, sessionId)
-                    .then((todo) => setTodoItems(todo.items))
+                  getChatTodo(turnAgent, turnSessionId)
+                    .then((todo) => {
+                      if (sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+                        setTodoItems(todo.items);
+                      }
+                    })
                     .catch(() => {});
                 }
               } catch { /* ignore bad args */ }
             }
             const groupId = curGroupId;
             const calls = [...curCalls];
-            setMessages((prev) => {
+            setTurnMessages((prev) => {
               const idx = prev.findIndex((m) => m.id === groupId);
               if (idx < 0) return prev;
               const updated = [...prev];
@@ -1693,15 +1783,17 @@ export function ChatScreen() {
             // "current run state" since delegate_task is registered
             // serial — only one subagent in flight at any time.
             // phase="done" clears the indicator.
-            if (evt.data?.phase === "done") {
-              setSubagentProgress(null);
-            } else {
-              setSubagentProgress({
-                iteration: evt.data?.iteration,
-                max: evt.data?.max,
-                phase: evt.data?.phase,
-                tools: evt.data?.tools,
-              });
+            if (sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+              if (evt.data?.phase === "done") {
+                setSubagentProgress(null);
+              } else {
+                setSubagentProgress({
+                  iteration: evt.data?.iteration,
+                  max: evt.data?.max,
+                  phase: evt.data?.phase,
+                  tools: evt.data?.tools,
+                });
+              }
             }
             break;
           }
@@ -1709,7 +1801,7 @@ export function ChatScreen() {
             // A message the user injected mid-turn was folded into the
             // running turn server-side. Render it as a user bubble
             // (reconciled against the optimistic pendingSteer bubble).
-            applySteerEvent(evt.data?.content || "");
+            applySteerEvent(evt.data?.content || "", turnAgent, turnSessionId);
             break;
           }
           case "error": {
@@ -1719,14 +1811,14 @@ export function ChatScreen() {
             // gateway log line the user can't see.
             const msg = evt.data?.message || "Unknown error";
             if (/\bcontext canceled\b/i.test(msg)) break;
-            setMessages((prev) => [
+            setTurnMessages((prev) => [
               ...prev,
               { id: `e-${Date.now()}`, role: "agent", content: `Error: ${msg}`, timestamp: Date.now() },
             ]);
             break;
           }
         }
-      }, abortRef.current.signal, imageDataUrls, projectIdHint);
+      }, turnAbort.signal, imageDataUrls, projectIdHint);
       // Diff the workspace against the pre-turn snapshot so files
       // produced by *exec* (e.g. a Python script that saves PDFs) get
       // surfaced too — `turnFiles` only catches write_file tool calls
@@ -1759,7 +1851,7 @@ export function ChatScreen() {
         });
       }
       if (allFiles.length > 0) {
-        setMessages((prev) => {
+        setTurnMessages((prev) => {
           if (prev.length === 0) return prev;
           const updated = [...prev];
           const last = updated[updated.length - 1];
@@ -1810,7 +1902,7 @@ export function ChatScreen() {
         // stop spinning. Server-side padOrphanToolResults will write a
         // matching record on its end; this just keeps the UI consistent
         // until the next history fetch overwrites it.
-        setMessages((prev) => {
+        setTurnMessages((prev) => {
           const next = prev.map((m) =>
             m.role === "tool-group" && m.toolCalls
               ? {
@@ -1837,7 +1929,7 @@ export function ChatScreen() {
           ];
         });
       } else {
-        setMessages((prev) => {
+        setTurnMessages((prev) => {
           const lastUser = [...prev].reverse().findIndex((m) => m.role === "user");
           if (lastUser >= 0) {
             const replyAfter = prev
@@ -1860,22 +1952,28 @@ export function ChatScreen() {
         });
       }
     } finally {
-      if (inFlightSendSessionRef.current === sessionId) {
+      inFlightSessionsRef.current.delete(turnKey);
+      abortBySessionRef.current.delete(turnKey);
+      setStreamBubbleId(null);
+      if (inFlightSendSessionRef.current === turnSessionId) {
         inFlightSendSessionRef.current = null;
       }
-      abortRef.current = null;
-      setSending(false);
-      // Belt-and-suspenders: the subagent's done event clears this on
-      // the happy path, but if a network blip drops that event we don't
-      // want a stale "iteration 5/20" sitting under a finished turn.
-      setSubagentProgress(null);
-      textareaRef.current?.focus();
+      if (abortRef.current === turnAbort) {
+        abortRef.current = null;
+      }
+      if (sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+        setSending(false);
+        setSubagentProgress(null);
+        textareaRef.current?.focus();
+      }
     }
-  }, [input, attachments, selectedAgent, sessionId, sending, isReadOnlyView, isReadOnlySafeSlashCommand, loadSessions, pathname, router, urlProjectId]);
+  }, [input, attachments, selectedAgent, sessionId, sending, isReadOnlyView, isReadOnlySafeSlashCommand, loadSessions, pathname, router, urlProjectId, patchMessages, applySteerEvent]);
 
   const handleStop = useCallback(() => {
-    abortRef.current?.abort();
-  }, []);
+    const key = chatScopeKey(selectedAgent, sessionId);
+    const ac = abortBySessionRef.current.get(key) ?? abortRef.current;
+    ac?.abort();
+  }, [selectedAgent, sessionId]);
 
   // handleSteer fires while a turn is streaming: it buffers the message
   // into the running turn (the agent folds it in between tool rounds and
@@ -2045,6 +2143,8 @@ export function ChatScreen() {
 
   const handleSelectSession = (sid: string) => {
     setSessionId(sid);
+    const cached = messagesCacheRef.current.get(chatScopeKey(selectedAgent, sid));
+    setMessages(cached ?? []);
     // history.replaceState (not router.replace) for the same reason as
     // handleSend: /chat/[session] is only pre-rendered for the `_`
     // placeholder under output:'export', so router-driven navigation to
