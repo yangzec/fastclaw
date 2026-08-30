@@ -494,7 +494,7 @@ func (r *Registry) readForPatch(ctx context.Context, path string) (string, error
 		return "", fmt.Errorf("%s", IdentityFileRefusal)
 	}
 	if r.workspaceStore != nil && r.agentID != "" && r.isWorkspacePath(path) {
-		rc, err := r.workspaceStore.Get(ctx, r.agentID, r.projectID, r.sessionID, path)
+		rc, err := r.workspaceStore.Get(ctx, r.agentID, r.projectID, r.scopeSessionID(), r.wsPath(path))
 		if err != nil {
 			return "", fmt.Errorf("workspace get: %w", err)
 		}
@@ -540,8 +540,12 @@ func (r *Registry) writeForPatch(ctx context.Context, path, content string) erro
 		return fmt.Errorf("%s", OwnerManagedFileWriteRefusal)
 	}
 	if r.workspaceStore != nil && r.agentID != "" && r.isWorkspacePath(path) {
-		return r.workspaceStore.Put(ctx, r.agentID, r.projectID, r.sessionID, path,
-			strings.NewReader(content), int64(len(content)), "")
+		if err := r.workspaceStore.Put(ctx, r.agentID, r.projectID, r.scopeSessionID(), r.wsPath(path),
+			strings.NewReader(content), int64(len(content)), ""); err != nil {
+			return err
+		}
+		r.mirrorWorkspaceFileToSandbox(ctx, path, content)
+		return nil
 	}
 	if r.systemFileStore != nil && r.agentID != "" && isSingleSegmentSystemFile(path) {
 		name := filepath.Clean(path)
@@ -581,7 +585,7 @@ func (r *Registry) deleteForPatch(ctx context.Context, path string) error {
 		return fmt.Errorf("apply_patch: refusing to delete identity file %q (use Update File with empty content instead)", path)
 	}
 	if r.workspaceStore != nil && r.agentID != "" && r.isWorkspacePath(path) {
-		return r.workspaceStore.Delete(ctx, r.agentID, r.projectID, r.sessionID, path)
+		return r.workspaceStore.Delete(ctx, r.agentID, r.projectID, r.scopeSessionID(), r.wsPath(path))
 	}
 	root := r.rootForPath(path)
 	full, err := resolvePathSandboxed(root, r.effectiveSandboxRoot(root), path)
@@ -607,7 +611,7 @@ func (r *Registry) readForPatchSandbox(ctx context.Context, ex sandbox.Executor,
 		return "", nil
 	}
 	if r.workspaceStore != nil && r.agentID != "" && r.isWorkspacePath(path) {
-		rc, err := r.workspaceStore.Get(ctx, r.agentID, r.projectID, r.sessionID, path)
+		rc, err := r.workspaceStore.Get(ctx, r.agentID, r.projectID, r.scopeSessionID(), r.wsPath(path))
 		if err == nil {
 			defer rc.Close()
 			data, readErr := io.ReadAll(rc)
@@ -629,8 +633,12 @@ func (r *Registry) writeForPatchSandbox(ctx context.Context, ex sandbox.Executor
 		return r.systemFileStore.SaveWorkspaceFile(ctx, r.agentID, r.systemFileUserID(name), name, []byte(content))
 	}
 	if r.workspaceStore != nil && r.agentID != "" && r.isWorkspacePath(path) {
-		return r.workspaceStore.Put(ctx, r.agentID, r.projectID, r.sessionID, path,
-			strings.NewReader(content), int64(len(content)), "")
+		if err := r.workspaceStore.Put(ctx, r.agentID, r.projectID, r.scopeSessionID(), r.wsPath(path),
+			strings.NewReader(content), int64(len(content)), ""); err != nil {
+			return err
+		}
+		r.mirrorWorkspaceFileToSandbox(ctx, path, content)
+		return nil
 	}
 	_, err := ex.WriteFile(ctx, path, content)
 	return err
@@ -641,7 +649,7 @@ func (r *Registry) deleteForPatchSandbox(ctx context.Context, ex sandbox.Executo
 		return fmt.Errorf("apply_patch: refusing to delete identity file %q (use Update File with empty content instead)", path)
 	}
 	if r.workspaceStore != nil && r.agentID != "" && r.isWorkspacePath(path) {
-		return r.workspaceStore.Delete(ctx, r.agentID, r.projectID, r.sessionID, path)
+		return r.workspaceStore.Delete(ctx, r.agentID, r.projectID, r.scopeSessionID(), r.wsPath(path))
 	}
 	// Sandbox executor exposes no Delete API; fall back to `rm`. Single-quote
 	// the path and escape embedded single quotes so a pathological filename

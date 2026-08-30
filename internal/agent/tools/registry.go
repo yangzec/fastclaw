@@ -626,11 +626,20 @@ func (r *Registry) SetCodingSubdir(dir string) {
 // runtime-backed scope.
 func (r *Registry) CodingSubdir() string { return r.codingSubdir }
 
-// wsPath maps a tool-supplied path into the active coding subdir. It is
-// idempotent: a path already under the subdir (e.g. one the agent copied
-// from a list_dir result) is returned unchanged, so the agent can use
-// either "src/x" or "app/src/x" and both resolve to the same file.
+// wsPath maps a tool-supplied path into the workspace.Store key. It
+// strips the sandbox `/workspace/` prefix so write_file("report.md") and
+// write_file("/workspace/report.md") address the same object, then
+// (when a coding subdir is active) redirects into that folder. The
+// coding redirect is idempotent: a path already under the subdir is
+// returned unchanged, so the agent can use either "src/x" or "app/src/x".
 func (r *Registry) wsPath(p string) string {
+	if rel, ok := workspaceRel(p); ok {
+		if rel == "." {
+			p = ""
+		} else {
+			p = rel
+		}
+	}
 	if r.codingSubdir == "" {
 		return p
 	}

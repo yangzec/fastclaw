@@ -203,6 +203,40 @@ function isSystemFile(path: string): boolean {
   return !path.includes("/") && SYSTEM_FILES.has(path);
 }
 
+// workspaceToolPath maps a write_file/edit_file argument onto the
+// session-store key. Relative names and /workspace/<name> are the same
+// artifact; /tmp/ scratch and identity files are not listed.
+function workspaceToolPath(path: string): string | null {
+  if (!path) return null;
+  let p = path;
+  if (p.startsWith("/workspace/")) p = p.slice("/workspace/".length);
+  else if (p.startsWith("/")) return null;
+  if (!p || isSystemFile(p)) return null;
+  return p;
+}
+
+function notifyWorkspaceChanged(agentId: string, sessionId?: string) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent("fastclaw:workspace-changed", {
+      detail: { agentId, sessionId },
+    }),
+  );
+}
+
+function workspaceTreePrefix(
+  files: WorkspaceFile[],
+  projectId?: string,
+  sessionId?: string,
+): string {
+  if (projectId) return `projects/${projectId}/`;
+  for (const f of files) {
+    const match = f.path.match(/^sessions\/[^/]+\//);
+    if (match) return match[0];
+  }
+  return sessionId ? `sessions/${sessionId}/` : "";
+}
+
 function parseWrittenSize(result: string): number | undefined {
   const m = result.match(/^Written (\d+) bytes/);
   return m ? parseInt(m[1], 10) : undefined;
@@ -1356,6 +1390,7 @@ export function ChatScreen() {
 
       try {
         await uploadAgentFiles(selectedAgent, sessionId, filesToUpload);
+        notifyWorkspaceChanged(selectedAgent, sessionId);
       } catch (err) {
         setMessages((prev) => [
           ...prev,
@@ -1422,7 +1457,7 @@ export function ChatScreen() {
     // attach newly-created / modified files (PDFs, images, …) to the
     // final reply. Fire-and-forget; if the snapshot fails we just won't
     // surface files this turn. `path → size|modTime` key.
-    const preTurnFilesPromise = listAgentFiles(selectedAgent)
+    const preTurnFilesPromise = listAgentFiles(selectedAgent, sessionId)
       .then((items) => {
         const m = new Map<string, string>();
         for (const f of items) m.set(f.path, `${f.size}|${f.modTime}`);
@@ -1616,10 +1651,11 @@ export function ChatScreen() {
             if (tc && tc.name === "write_file" && /^Written \d+ bytes/.test(resultText)) {
               try {
                 const args = JSON.parse(tc.arguments);
-                const p: string = typeof args?.path === "string" ? args.path : "";
-                if (p && !p.startsWith("/") && !isSystemFile(p) && !seenPaths.has(p)) {
+                const p = workspaceToolPath(typeof args?.path === "string" ? args.path : "");
+                if (p && !seenPaths.has(p)) {
                   seenPaths.add(p);
                   turnFiles.push({ path: p, size: parseWrittenSize(resultText) });
+                  notifyWorkspaceChanged(selectedAgent, sessionId);
                 }
               } catch { /* ignore bad args */ }
             }
@@ -1696,7 +1732,7 @@ export function ChatScreen() {
       // surfaced too — `turnFiles` only catches write_file tool calls
       // with relative, non-identity paths, which misses most real-
       // world flows. Union both sources by path.
-      const postTurnFiles = await listAgentFiles(selectedAgent).catch(() => []);
+      const postTurnFiles = await listAgentFiles(selectedAgent, sessionId).catch(() => []);
       const preSnap = await preTurnFilesPromise;
       const diffFiles: ProducedFile[] = [];
       for (const f of postTurnFiles) {
@@ -1739,6 +1775,7 @@ export function ChatScreen() {
         });
       }
       loadSessions(selectedAgent);
+      notifyWorkspaceChanged(selectedAgent, sessionId);
       // First-turn of a brand-new session just got persisted — tell the
       // global sidebar to refetch its Chats list so the new title shows
       // up without a full page reload.
@@ -3555,6 +3592,17 @@ function WorkspacePanel({
     refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    const onChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ agentId?: string; sessionId?: string }>).detail;
+      if (detail?.agentId && detail.agentId !== agentId) return;
+      if (detail?.sessionId && sessionId && detail.sessionId !== sessionId) return;
+      void refresh();
+    };
+    window.addEventListener("fastclaw:workspace-changed", onChange);
+    return () => window.removeEventListener("fastclaw:workspace-changed", onChange);
+  }, [refresh, agentId, sessionId]);
+
   // Workspace version history: load commits when the dropdown opens;
   // restore checks out the whole session workspace to that commit and
   // refreshes the file tree/viewer.
@@ -3917,7 +3965,7 @@ function WorkspacePanel({
                   return (
                     <FileTreeView
                       files={list}
-                      rootPrefix={projectId ? `projects/${projectId}/` : `sessions/${sessionId}/`}
+                      rootPrefix={workspaceTreePrefix(list, projectId, sessionId)}
                       selectedPath={previewing?.path}
                       onSelect={(f) => {
                         onClearKnowledgePreview?.();
@@ -3945,6 +3993,7 @@ function WorkspacePanel({
                   // the new file's content is fetched (not the stale previous).
                   key={previewing.path}
                   agentId={agentId}
+                  sessionId={sessionId}
                   file={previewing}
                   onClose={() => setPreviewing(null)}
                 />
@@ -4095,10 +4144,10 @@ function KnowledgeFileViewer({ agentId, source, onClose }: { agentId: string; so
   );
 }
 
-function FileViewer({ agentId, file, onClose }: { agentId: string; file: ProducedFile; onClose?: () => void }) {
+function FileViewer({ agentId, file, sessionId, onClose }: { agentId: string; file: ProducedFile; sessionId?: string; onClose?: () => void }) {
   const { preview } = fileKind(file.path);
-  const src = fileUrl(agentId, file.path, false);
-  const downloadUrl = fileUrl(agentId, file.path, true);
+  const src = fileUrl(agentId, file.path, false, sessionId);
+  const downloadUrl = fileUrl(agentId, file.path, true, sessionId);
   const basename = file.path.split("/").pop() || file.path;
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);

@@ -1371,14 +1371,55 @@ func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveFileFromWorkspaceStore(w http.ResponseWriter, r *http.Request, agentID, path string) {
-	rc, err := s.workspaceStore.Get(r.Context(), agentID, "", "", path)
+	projectID, sessionID, rel, ok := s.resolveWorkspaceFileGet(r, agentID, path)
+	if !ok {
+		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "file not found"})
+		return
+	}
+	rc, err := s.workspaceStore.Get(r.Context(), agentID, projectID, sessionID, rel)
 	if err != nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 		return
 	}
 	defer rc.Close()
-	setFileResponseHeaders(w, path)
+	setFileResponseHeaders(w, rel)
 	io.Copy(w, rc)
+}
+
+// resolveWorkspaceFileGet turns a files/{path} URL into workspace.Store
+// Get arguments. Full agent-relative keys (sessions/<chat>/…,
+// projects/<pid>/…) stay as-is against the agent root. A bare name
+// (report.md) or a leftover "workspace/report.md" from a /workspace/
+// markdown rewrite is scoped via ?sessionId= so chat bubbles resolve
+// the same object write_file("/workspace/report.md") stored.
+//
+// Returns ok=false when the caller passed sessionId but it does not
+// resolve to a chat they own — never fall back to the raw token, or a
+// public-agent viewer could read another chatter's files by guessing
+// a chat_id.
+func (s *Server) resolveWorkspaceFileGet(r *http.Request, agentID, path string) (projectID, sessionID, rel string, ok bool) {
+	rel = strings.TrimPrefix(filepath.ToSlash(path), "/")
+	if strings.HasPrefix(rel, "workspace/") {
+		rel = strings.TrimPrefix(rel, "workspace/")
+	}
+	if rel == "" || rel == "." {
+		return "", "", "", false
+	}
+	if strings.HasPrefix(rel, "sessions/") || strings.HasPrefix(rel, "projects/") {
+		return "", "", rel, true
+	}
+	rawSession := strings.TrimSpace(r.URL.Query().Get("sessionId"))
+	if rawSession == "" {
+		return "", "", rel, true
+	}
+	chatID := s.workspaceSessionScope(r.Context(), agentID, rawSession)
+	if chatID == "" {
+		return "", "", "", false
+	}
+	if pid := s.resolveSessionProject(r.Context(), r, agentID, rawSession); pid != "" {
+		return pid, chatID, rel, true
+	}
+	return "", chatID, rel, true
 }
 
 // setFileResponseHeaders picks the right Content-Type for a user-produced

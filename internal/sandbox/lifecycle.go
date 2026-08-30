@@ -345,9 +345,9 @@ func (l *lazyExecutor) WriteFile(ctx context.Context, path, content string) (str
 	out, writeErr := ex.WriteFile(ctx, path, content)
 	// Mirror writes to the durable store on cloud sandboxes — same
 	// reasoning as the post-exec sync above. Without this, write_file
-	// (and apply_patch) calls that fall through to ex.WriteFile (any
-	// absolute /workspace path — see file.go's isWorkspacePath, which
-	// rejects abs paths) only land in the E2B sandbox and disappear on
+	// (and apply_patch) calls that fall through to ex.WriteFile (paths
+	// outside the store, e.g. /tmp/ scratch) only land in the E2B
+	// sandbox and disappear on
 	// idle eviction, never reaching the host workspace.Store the UI and
 	// signed URLs read from. Targeted single-file Put rather than
 	// syncSnapshot: we already have the bytes in memory, no need for a

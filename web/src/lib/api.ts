@@ -2012,10 +2012,21 @@ export async function getAgentTokenUsage(
 // cookie, so <img src>, <a href>, and direct downloads authenticate by cookie
 // like every other API call. (Putting `?token=<bearer>` in a URL leaked a full
 // API credential via Referer, browser history, and reverse-proxy access logs.)
-export function fileUrl(agentId: string, path: string, download = false): string {
-  const encoded = path.split("/").map(encodeURIComponent).join("/");
+export function fileUrl(
+  agentId: string,
+  path: string,
+  download = false,
+  sessionId?: string,
+): string {
+  // /workspace/<name> and a leftover "workspace/<name>" key are the same
+  // session artifact as <name>. The API resolves a bare name via ?sessionId=.
+  let rel = path.replace(/^\/+/, "");
+  if (rel.startsWith("workspace/")) rel = rel.slice("workspace/".length);
+  const encoded = rel.split("/").map(encodeURIComponent).join("/");
   const params = new URLSearchParams();
   if (download) params.set("download", "1");
+  const scoped = rel.startsWith("sessions/") || rel.startsWith("projects/");
+  if (sessionId && !scoped) params.set("sessionId", sessionId);
   const qs = params.toString();
   return `/api/agents/${agentId}/files/${encoded}${qs ? "?" + qs : ""}`;
 }
