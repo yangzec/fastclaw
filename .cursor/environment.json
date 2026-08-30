@@ -1,0 +1,17 @@
+{
+  "name": "FastClaw",
+  "install": "corepack prepare pnpm@10.15.0 --activate && make build",
+  "terminals": [
+    {
+      "name": "gateway",
+      "command": "FASTCLAW_BIND=all FASTCLAW_LOG_LEVEL=info ./bin/fastclaw gateway",
+      "description": "FastClaw gateway + web dashboard on http://localhost:18953"
+    }
+  ],
+  "ports": [
+    {
+      "name": "dashboard",
+      "port": 18953
+    }
+  ]
+}
