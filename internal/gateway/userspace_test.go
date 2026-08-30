@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fastclaw-ai/fastclaw/internal/agent"
 	"github.com/fastclaw-ai/fastclaw/internal/bus"
+	"github.com/fastclaw-ai/fastclaw/internal/config"
 	"github.com/fastclaw-ai/fastclaw/internal/scope"
 	"github.com/fastclaw-ai/fastclaw/internal/store"
 	"github.com/fastclaw-ai/fastclaw/internal/users"
@@ -26,6 +28,66 @@ func TestPathSandboxRequiredOnlyForHostedDeploy(t *testing.T) {
 	if !pathSandboxRequired() {
 		t.Fatal("hosted deploy must retain workspace path isolation")
 	}
+}
+
+func TestEnsureAgentRegistersConfiguredProviderTools(t *testing.T) {
+	t.Setenv("FASTCLAW_HOME", t.TempDir())
+	db, err := store.NewDBStore("sqlite", "file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	ctx := context.Background()
+
+	const agentID = "agt_foreign_tools"
+	if err := db.SaveAgent(ctx, &store.AgentRecord{
+		ID:       agentID,
+		UserID:   "owner-user",
+		Name:     "Foreign Tools Agent",
+		IsPublic: true,
+	}); err != nil {
+		t.Fatalf("save agent: %v", err)
+	}
+
+	cfg := &config.Config{
+		ToolProviders: map[string]config.ToolProviderCfg{
+			"openai": {APIKey: "test-key"},
+		},
+		Tools: map[string]config.ToolCategoryCfg{
+			"image_gen": {Primary: "openai/gpt-image-2"},
+		},
+	}
+	manager, err := agent.NewManager(
+		nil,
+		nil,
+		bus.New(),
+		agent.WithUserID("app-user"),
+	)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	space := &UserSpace{
+		UserID: "app-user",
+		Config: cfg,
+		Agents: manager,
+	}
+
+	if err := space.EnsureAgent(ctx, db, bus.New(), nil, agentID); err != nil {
+		t.Fatalf("ensure agent: %v", err)
+	}
+	loaded := manager.AgentByID(agentID)
+	if loaded == nil {
+		t.Fatalf("agent %q was not attached", agentID)
+	}
+	for _, tool := range loaded.RegisteredTools() {
+		if tool.Name == "image_gen" {
+			return
+		}
+	}
+	t.Fatal("lazy-attached agent is missing configured image_gen tool")
 }
 
 // readUserScopeAgentDefaults must distinguish "user has no row" from

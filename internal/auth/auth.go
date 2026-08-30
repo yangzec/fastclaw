@@ -256,9 +256,11 @@ func (r *Resolver) ResolveBearer(ctx context.Context, token string) (Identity, e
 // externalID), minting that row the first time it's seen. The app_user is
 // keyed on the api_key's OWNER account — NOT the api_key id — so the calling
 // app can rotate/replace its api_key without orphaning the end-user. APIKeyID
-// + APIKeyAgents are preserved (only UserID + Role flip) so the apikey's agent
-// ACL still gates access. Empty externalID passes through untouched. Only
-// valid for AuthMethod=="apikey"; session callers stay as-is.
+// + the key owner's APIKeyAgents are preserved. A type=user key also gains the
+// selected app_user's own agents, so it can manage both site-owned and
+// end-user-owned agents without exposing sibling app_users. Empty externalID
+// passes through untouched. Only valid for AuthMethod=="apikey"; session
+// callers stay as-is.
 func (r *Resolver) SwitchToAppUser(ctx context.Context, ident Identity, externalID string) (Identity, error) {
 	if externalID == "" {
 		return ident, nil
@@ -276,6 +278,20 @@ func (r *Resolver) SwitchToAppUser(ctx context.Context, ident Identity, external
 	acc, err := r.accounts.EnsureAppUser(ctx, ident.UserID, externalID, "", ident.APIKeyID)
 	if err != nil {
 		return ident, err
+	}
+	if ident.APIKeyType == users.APIKeyTypeUser {
+		agents, err := r.store.ListAgents(ctx, acc.ID)
+		if err != nil {
+			return ident, err
+		}
+		if len(agents) > 0 {
+			scope := make([]string, 0, len(ident.APIKeyAgents)+len(agents))
+			scope = append(scope, ident.APIKeyAgents...)
+			for _, ag := range agents {
+				scope = append(scope, ag.ID)
+			}
+			ident.APIKeyAgents = scope
+		}
 	}
 	ident.UserID = acc.ID
 	ident.Role = acc.Role

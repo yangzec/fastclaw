@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sync"
 
 	"github.com/fastclaw-ai/fastclaw/internal/agent"
 	"github.com/fastclaw-ai/fastclaw/internal/auth"
@@ -47,6 +48,9 @@ type Server struct {
 	limiter      *rateLimiter
 	meter        usage.Meter
 	quotaStore   usage.QuotaStore
+	workspace    workspace.Store
+	v2RunsMu     sync.RWMutex
+	v2Runs       map[string]v2Run
 }
 
 // NewServer creates a new API server. authResolver is mandatory — there is
@@ -68,6 +72,7 @@ func NewServer(resolver UserResolver, authResolver *auth.Resolver, gatewayCfg *c
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/ws", s.HandleWebSocket)
 	mux.HandleFunc("OPTIONS /v1/", s.handleCORS)
+	mux.HandleFunc("OPTIONS /v2/", s.handleCORS)
 
 	getUserID := func(r *http.Request) string { return config.UserIDFromContext(r.Context()) }
 
@@ -102,6 +107,20 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleGetQuota)))
 	mux.HandleFunc("DELETE /v1/quota",
 		s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleDeleteQuota)))
+
+	// First-party Agent Run API. This is intentionally separate from the
+	// OpenAI-compatible /v1 surface: V2 owns session scope, lifecycle events,
+	// and artifact URLs while /v1 keeps its existing wire contract.
+	mux.HandleFunc("POST /v2/agents/{agentId}/runs",
+		s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleV2CreateRun)))
+	mux.HandleFunc("GET /v2/agents/{agentId}/runs/{runId}",
+		s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleV2GetRun)))
+	mux.HandleFunc("GET /v2/agents/{agentId}/sessions/{sessionId}/messages",
+		s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleV2ListSessionMessages)))
+	mux.HandleFunc("GET /v2/agents/{agentId}/sessions/{sessionId}/files",
+		s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleV2ListSessionFiles)))
+	mux.HandleFunc("GET /v2/agents/{agentId}/sessions/{sessionId}/files/{fileId}",
+		s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleV2GetSessionFile)))
 }
 
 // SetMeter installs the token usage meter for the /v1/usage endpoint.
@@ -109,6 +128,11 @@ func (s *Server) SetMeter(m usage.Meter) { s.meter = m }
 
 // SetQuotaStore installs the quota store for /v1/quota endpoints.
 func (s *Server) SetQuotaStore(qs usage.QuotaStore) { s.quotaStore = qs }
+
+// SetWorkspaceStore installs the durable artifact store used by the V2 Agent
+// Run file API. The same store is already injected into Agent tools by the
+// gateway, so the API exposes exactly the objects produced during a run.
+func (s *Server) SetWorkspaceStore(ws workspace.Store) { s.workspace = ws }
 
 // RegisterAdminRoutes is kept as a no-op for callers that still call it
 // during gateway boot. Admin user/apikey CRUD now lives under /api/admin

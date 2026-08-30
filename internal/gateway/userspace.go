@@ -596,6 +596,11 @@ func (sp *UserSpace) EnsureAgent(ctx context.Context, st store.Store, mb *bus.Me
 	if err := sp.Agents.AddAgentWithSkillsCfg(rc, sp.Provider, mb, skillsCfg); err != nil {
 		return fmt.Errorf("EnsureAgent: add agent: %w", err)
 	}
+	ag := sp.Agents.AgentByID(rc.ID)
+	if ag == nil {
+		return fmt.Errorf("EnsureAgent: agent %q missing after add", rc.ID)
+	}
+	registerAgentToolChains(sp.Config, []*agent.Agent{ag})
 	if sp.SandboxPool != nil {
 		if ag := sp.Agents.AgentByID(rc.ID); ag != nil {
 			ag.SetSandboxPool(sp.SandboxPool)

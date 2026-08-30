@@ -2702,6 +2702,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			if meta != nil {
 				evt["metadata"] = meta
 			}
+			evt["success"] = r.err == nil
 			emitEvent(ctx, ChatEvent{Type: "tool_result", Data: evt})
 
 			if loopDetector.Observe(tc, resultContent) && !loopDetected {
@@ -3213,6 +3214,17 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			return a.streamFinalSynthesis(ctx, msg, messages, toolDefs, sess, totalToolCalls, chatterMem, knowledgeMeta, resp.Content)
 		}
 
+		// Keep the streaming runtime's lifecycle surface aligned with the
+		// regular HandleMessage path. API/UI consumers can now show tool
+		// progress while the final answer still arrives through StreamReader.
+		for _, tc := range resp.ToolCalls {
+			emitEvent(ctx, ChatEvent{Type: "tool_call", Data: map[string]any{
+				"id":        tc.ID,
+				"name":      tc.Function.Name,
+				"arguments": tc.Function.Arguments,
+			}})
+		}
+
 		// Tool calls - process concurrently via SDK engine
 		assistantMsg := provider.Message{
 			Role:         "assistant",
@@ -3297,6 +3309,15 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 				slog.Warn("tool loop detected", "agent", a.name, "tool", tc.Function.Name)
 				loopDetected = true
 			}
+			evt := map[string]any{
+				"id":     tc.ID,
+				"name":   r.toolName,
+				"result": resultContent,
+			}
+			if meta != nil {
+				evt["metadata"] = meta
+			}
+			emitEvent(ctx, ChatEvent{Type: "tool_result", Data: evt})
 		}
 		if loopDetected {
 			warnMsg := repeatedToolCallWarning("Loop detected: you called the same tool with the same arguments and received the same result 3 times. Please try a different approach.")
@@ -3348,13 +3369,11 @@ func (a *Agent) streamFinalSynthesis(ctx context.Context, inboundMsg bus.Inbound
 			var rawAssistant json.RawMessage
 			var streamUsage provider.Usage
 			var finalToolCalls []provider.ToolCall
-			var buffered []provider.StreamChunk
 			for {
 				chunk, ok := sr.Next()
 				if !ok {
 					break
 				}
-				buffered = append(buffered, chunk)
 				if chunk.Content != "" {
 					full.WriteString(chunk.Content)
 				}
@@ -3373,6 +3392,14 @@ func (a *Agent) streamFinalSynthesis(ctx context.Context, inboundMsg bus.Inbound
 				if chunk.Usage.InputTokens > 0 || chunk.Usage.OutputTokens > 0 ||
 					chunk.Usage.CacheReadTokens > 0 || chunk.Usage.CacheCreationTokens > 0 {
 					streamUsage = chunk.Usage
+				}
+				if len(finalToolCalls) == 0 {
+					select {
+					case outCh <- chunk:
+					case <-ctx.Done():
+						outReader.SetErr(ctx.Err())
+						return
+					}
 				}
 			}
 			if err := sr.Err(); err != nil {
@@ -3397,14 +3424,6 @@ func (a *Agent) streamFinalSynthesis(ctx context.Context, inboundMsg bus.Inbound
 
 			if len(finalToolCalls) == 0 {
 				sess.Append(assistantMsg)
-				for _, chunk := range buffered {
-					select {
-					case outCh <- chunk:
-					case <-ctx.Done():
-						outReader.SetErr(ctx.Err())
-						return
-					}
-				}
 				a.runPostTurn(ctx, inboundMsg, append(currentMessages, assistantMsg), totalToolCalls, chatterMem)
 				return
 			}
