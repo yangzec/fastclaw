@@ -476,7 +476,10 @@ function TodoPanel({ items, active }: { items: TodoItem[]; active: boolean }) {
 // page tree) is what lets the component instance survive sidebar
 // navigations — sessionId / projectId become reactive values that
 // update in place rather than gating a remount.
-function parseAgentRoute(pathname: string): {
+function parseAgentRoute(
+  pathname: string,
+  searchParams?: URLSearchParams | null,
+): {
   sessionId: string;
   projectId: string;
 } {
@@ -492,6 +495,13 @@ function parseAgentRoute(pathname: string): {
     const pid = projMatch[1];
     return { sessionId: "", projectId: pid === "_" ? "" : pid };
   }
+  // Legacy `?session=` on /chat/ — keep working so old bookmarks and
+  // any leftover chats-list links still open the right thread instead
+  // of minting a blank conversation.
+  const q = searchParams?.get("session") || "";
+  if (q) {
+    return { sessionId: q, projectId: "" };
+  }
   return { sessionId: "", projectId: "" };
 }
 
@@ -506,8 +516,8 @@ export function ChatScreen() {
   const actAsUserId = searchParams?.get("actAs") || "";
   const isActAsView = !!actAsUserId;
   const { sessionId: urlSessionId, projectId: urlProjectId } = useMemo(
-    () => parseAgentRoute(pathname || ""),
-    [pathname],
+    () => parseAgentRoute(pathname || "", searchParams),
+    [pathname, searchParams],
   );
   // Reactive: re-derives from pathname so switching agents (sidebar
   // dropdown, browser back/forward) immediately updates downstream

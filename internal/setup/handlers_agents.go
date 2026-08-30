@@ -804,16 +804,21 @@ func (s *Server) handleGetAgentSystemFile(w http.ResponseWriter, r *http.Request
 	}
 
 	// Per-user files: prefer caller's own row, fall back to the owner's.
-	// `source: "db"` means the caller has authored an override; "owner"
-	// means we're showing the agent owner's row by fallback. The
+	// `source: "db"` means a non-owner chatter has authored an override;
+	// "owner" means we're showing the agent owner's canonical row. The
 	// frontend uses this to decide whether to show the "Edited" badge
-	// and enable the Revert action.
+	// and enable Revert. The owner reading their own USER.md / MEMORY.md
+	// is NOT an override — treating it as "db" made Customize paint
+	// Memory/User as dirty with a Revert that would delete the owner's
+	// files (https://github.com/fastclaw-ai/fastclaw/issues/91).
 	if data, err := s.dataStore.GetAgentFileExact(r.Context(), id, caller, name); err == nil {
+		if rec.UserID == caller {
+			jsonResponse(w, http.StatusOK, map[string]any{"content": string(data), "source": "owner"})
+			return
+		}
 		baseContent := ""
-		if rec.UserID != caller {
-			if base, err2 := s.dataStore.GetAgentFileExact(r.Context(), id, rec.UserID, name); err2 == nil {
-				baseContent = string(base)
-			}
+		if base, err2 := s.dataStore.GetAgentFileExact(r.Context(), id, rec.UserID, name); err2 == nil {
+			baseContent = string(base)
 		}
 		resp := map[string]any{"content": string(data), "source": "db"}
 		if baseContent != "" {

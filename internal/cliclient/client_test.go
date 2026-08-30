@@ -34,6 +34,26 @@ func TestStreamCallbackAndErrorEvent(t *testing.T) {
 	}
 }
 
+func TestStreamAcceptsDataLineWithoutSpace(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data:{\"type\":\"content_delta\",\"data\":{\"delta\":\"hi\"}}\n\n"))
+		_, _ = w.Write([]byte("data:{\"type\":\"done\"}\n\n"))
+	}))
+	defer server.Close()
+
+	c := NewWithHTTPClient(server.URL, "tok", server.Client())
+	var types []string
+	if err := c.Stream(context.Background(), "a", "s", "msg", func(ev Event) {
+		types = append(types, ev.Type)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(types, ",") != "content_delta,done" {
+		t.Fatalf("event types = %v (data: without space should still parse)", types)
+	}
+}
+
 func TestStreamTruncatedWithoutDone(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

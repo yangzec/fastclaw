@@ -51,7 +51,7 @@ import {
 // the sidebar showing the platform nav for /agents/<id>/project/...
 function extractAgentId(pathname: string): string | null {
   const match = pathname.match(
-    /^\/agents\/([^/]+)\/(chat|customize|skills|models|sessions|channels|chats|scheduler|project)/,
+    /^\/agents\/([^/]+)\/(chat|customize|skills|models|sessions|channels|chats|scheduler|project|knowledge|plugins|mcp|context|usage)/,
   );
   return match ? match[1] : null;
 }
@@ -99,12 +99,11 @@ const ADMIN_USER_GROUP: NavItem[] = [
 ];
 
 // "New chat" is active iff we're parked on the bare /chat/ page with
-// no session open. A session can be encoded two ways:
-//   - `?session=<id>` query param on `/chat/`
-//   - path segment: `/chat/<sessionId>/`
-// Either form means a specific session is open, so the New chat entry
-// must NOT light up. We check the exact pathname (rather than
-// startsWith) so the path-segment form falls through.
+// no session open. The canonical form is `/chat/<sessionId>/`; a
+// leftover `?session=<id>` query param on `/chat/` is still treated
+// as an open session so New chat does not light up. We check the
+// exact pathname (rather than startsWith) so the path-segment form
+// falls through.
 //
 // Configuration tabs (Customize / Models / Skills / Channels /
 // Scheduler) live in the footer Settings dialog — for owners only —
