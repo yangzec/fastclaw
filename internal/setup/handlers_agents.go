@@ -943,19 +943,17 @@ func (s *Server) resolveSystemFileTarget(w http.ResponseWriter, r *http.Request,
 // passes its own sessionID for in-chat tool calls; those land under the
 // session sub-prefix automatically.
 
-// workspaceSessionScope translates the URL `?sessionId=` token into
-// the directory name used under workspaces/<agent>/sessions/. The URL
-// token is the session_key (so the dashboard can address any session
-// uniformly), but workspace artifacts are namespaced by chat_id
-// instead — that's what the agent runtime passed at write time.
+// workspaceSessionScope translates a `?sessionId=` token into the
+// directory name used under workspaces/<agent>/sessions/. The token may
+// be the stored session_key (dashboard URL) or the chat_id
+// (X-Fastclaw-Session-Key on /v1/chat/completions). Artifacts are
+// namespaced by chat_id — that's what the agent runtime passed at write
+// time.
 //
-// Returns the chat_id when the session_key resolves under the caller's
+// Returns the chat_id when either form resolves under the caller's
 // (user_id, agent_id). Returns "" when the lookup fails — including
 // the case where the session belongs to a DIFFERENT user — so callers
-// don't accidentally widen scope into another user's files. Pre-fix
-// behavior was to fall back to the raw URL token; on a public agent
-// that let a non-owner caller pass a known chat_id of the owner and
-// read its files because the resulting scope was sessions/<their chat>/.
+// don't accidentally widen scope into another user's files.
 func (s *Server) workspaceSessionScope(ctx context.Context, agentID, urlToken string) string {
 	tok := strings.TrimSpace(urlToken)
 	if tok == "" || s.dataStore == nil {
@@ -965,7 +963,7 @@ func (s *Server) workspaceSessionScope(ctx context.Context, agentID, urlToken st
 	if uid == "" {
 		return ""
 	}
-	_, _, chatID, err := s.dataStore.LookupSessionTriple(ctx, uid, agentID, tok)
+	chatID, _, err := s.dataStore.LookupSessionScopeToken(ctx, uid, agentID, tok)
 	if err != nil || chatID == "" {
 		return ""
 	}

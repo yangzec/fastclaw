@@ -1158,6 +1158,21 @@ func (a *Agent) WebChatSessions() []session.WebSession {
 	return a.sessions.ListWebSessions()
 }
 
+// SessionKeyFor returns the durable session_key (s-...) for this inbound
+// address. /v1/chat/completions uses the caller's X-Fastclaw-Session-Key
+// as ChatID, but the stored row id is minted separately for non-web
+// channels. Safe before or after HandleMessage — Get is idempotent.
+func (a *Agent) SessionKeyFor(msg bus.InboundMessage) string {
+	if a.sessions == nil {
+		return ""
+	}
+	sess := a.sessions.Get(sessionTriple(msg, msg.ProjectID))
+	if sess == nil {
+		return ""
+	}
+	return sess.SessionKey()
+}
+
 // DeleteWebChatSession removes a chat session (any channel) by the URL
 // token — accepts either session_key or legacy web chat_id.
 func (a *Agent) DeleteWebChatSession(sessionId string) error {

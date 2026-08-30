@@ -15,6 +15,8 @@ Use `/v1/*` for upstream applications:
 - `POST /v1/users` to provision upstream end-users, or lazy-provision via chat.
 - `GET /v1/usage` for billing dashboards.
 - `PUT /v1/quota`, `GET /v1/quota`, `DELETE /v1/quota` for paid-plan limits.
+- After a chat turn, list/download workspace files with the same API key:
+  `GET /api/agents/{agent_id}/files?sessionId=<session_key or session_id>`.
 
 Use `/api/*` or the `fastclaw` CLI only for operator/admin workflows such as
 creating agents, configuring providers, installing skills, managing channels,
@@ -66,13 +68,43 @@ Rules:
   `X-Fastclaw-Agent-ID`.
 - `user` is the upstream stable user ID. Body wins over
   `X-Fastclaw-End-User`.
-- `X-Fastclaw-Session-Key` controls conversation history. Use a deterministic
-  key such as `<app>:<user-id>:<conversation-id>`.
+- `X-Fastclaw-Session-Key` is YOUR conversation id. Use a deterministic
+  key such as `<app>:<user-id>:<conversation-id>`. FastClaw stores a
+  separate native `session_id` (`s-...`) for that row.
+- Every completion echoes both ids:
+  - headers `X-Fastclaw-Session-Key` (what you sent) and
+    `X-Fastclaw-Session-Id` (native `s-...`)
+  - non-stream JSON also has `session_key` and `session_id`
+- Use either id as `?sessionId=` when listing or downloading files.
 - `params` is per-turn structured context. It is shown to the agent but not
   persisted.
 - Use `images` or `imageUrls` for image URLs/data URLs intended for vision
   models.
 - Use `attachments` for general files, with optional `name`.
+
+## Session Files
+
+Agent-produced files (markdown, charts, uploads) live in the session
+workspace. After a completion:
+
+```http
+GET /api/agents/<agent_id>/files?sessionId=<session_key or session_id>
+Authorization: Bearer <FASTCLAW_API_KEY>
+```
+
+Download one file (relative name from the list, or `/workspace/<name>`):
+
+```http
+GET /api/agents/<agent_id>/files/<name>?sessionId=<session_key or session_id>
+Authorization: Bearer <FASTCLAW_API_KEY>
+```
+
+`sessionId` accepts the header you sent on chat (`session_key`) or the
+native `session_id` from the response. Do not guess `sessions/<id>/...`
+paths yourself.
+
+If chat used `user` or `X-Fastclaw-End-User`, send the same
+`X-Fastclaw-End-User` on file requests so the row lookup matches.
 
 ## User Provisioning
 
@@ -127,7 +159,9 @@ Content-Type: application/json
 2. Add or reuse upstream conversation IDs.
 3. Map upstream user IDs to FastClaw `user` or `/v1/users`.
 4. Implement streaming SSE parsing for `/v1/chat/completions`.
-5. Persist or derive `X-Fastclaw-Session-Key` per conversation.
+5. Persist or derive `X-Fastclaw-Session-Key` per conversation. After
+   each completion, store `session_id` from the response headers/body
+   if you need dashboard-style ids; file APIs accept either token.
 6. Add attachment support only if the product UI needs it.
 7. Add `/v1/usage` and `/v1/quota` only if billing/paid limits are required.
 8. Handle OpenAI-style error objects:

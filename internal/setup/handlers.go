@@ -284,7 +284,11 @@ func (s *Server) resolveSessionProject(ctx context.Context, r *http.Request, age
 	if uid == "" {
 		return ""
 	}
-	pid, err := s.dataStore.LookupSessionProject(ctx, uid, agentID, sessionKey)
+	_, resolvedKey, err := s.dataStore.LookupSessionScopeToken(ctx, uid, agentID, sessionKey)
+	if err != nil || resolvedKey == "" {
+		resolvedKey = sessionKey
+	}
+	pid, err := s.dataStore.LookupSessionProject(ctx, uid, agentID, resolvedKey)
 	if err != nil {
 		return ""
 	}

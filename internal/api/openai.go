@@ -145,7 +145,9 @@ type chatCompletionResponse struct {
 	Created int64              `json:"created"`
 	Model   string             `json:"model"`
 	Choices []completionChoice `json:"choices"`
-	Usage   completionUsage    `json:"usage"`
+	Usage      completionUsage `json:"usage"`
+	SessionID  string          `json:"session_id,omitempty"`
+	SessionKey string          `json:"session_key,omitempty"`
 }
 
 type completionChoice struct {
@@ -294,10 +296,13 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Params:    req.Params,
 		PhotoURLs: req.inlineImageURLs(),
 	}
+	nativeSessionID := ag.SessionKeyFor(msg)
+	writeSessionHeaders(w, sessionKey, nativeSessionID)
 
 	slog.Info("chat completion request",
 		"agent", ag.Name(),
 		"session", sessionKey,
+		"session_id", nativeSessionID,
 		"stream", req.Stream != nil && *req.Stream,
 	)
 
@@ -314,7 +319,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Get reply from agent
 		reply := ag.HandleMessage(r.Context(), msg)
-		s.fullResponse(w, reply, chatID, model, now)
+		s.fullResponse(w, reply, chatID, model, now, sessionKey, nativeSessionID)
 	}
 }
 
@@ -379,7 +384,7 @@ func (s *Server) writeSSEChunk(w http.ResponseWriter, id, model string, created 
 	fmt.Fprintf(w, "data: %s\n\n", data)
 }
 
-func (s *Server) fullResponse(w http.ResponseWriter, reply, chatID, model string, created int64) {
+func (s *Server) fullResponse(w http.ResponseWriter, reply, chatID, model string, created int64, sessionKey, nativeSessionID string) {
 	resp := chatCompletionResponse{
 		ID:      chatID,
 		Object:  "chat.completion",
@@ -397,8 +402,20 @@ func (s *Server) fullResponse(w http.ResponseWriter, reply, chatID, model string
 			CompletionTokens: 0,
 			TotalTokens:      0,
 		},
+		SessionID:  nativeSessionID,
+		SessionKey: sessionKey,
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func writeSessionHeaders(w http.ResponseWriter, sessionKey, nativeSessionID string) {
+	if sessionKey != "" {
+		w.Header().Set("X-Fastclaw-Session-Key", sessionKey)
+	}
+	if nativeSessionID != "" {
+		w.Header().Set("X-Fastclaw-Session-Id", nativeSessionID)
+	}
+	w.Header().Set("Access-Control-Expose-Headers", "X-Fastclaw-Session-Id, X-Fastclaw-Session-Key")
 }
 
 // resolveAgent picks an agent out of the caller's user space, preferring an

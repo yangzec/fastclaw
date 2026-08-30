@@ -2795,6 +2795,33 @@ func (d *DBStore) LookupSessionTriple(ctx context.Context, userID, agentID, sess
 	return ch, acc, ci, nil
 }
 
+// LookupSessionScopeToken maps a caller token to (chat_id, session_key).
+// session_key matches win over chat_id matches so a dashboard URL token
+// is never shadowed by an unrelated row whose chat_id happens to equal
+// someone else's session_key.
+func (d *DBStore) LookupSessionScopeToken(ctx context.Context, userID, agentID, token string) (string, string, error) {
+	tok := strings.TrimSpace(token)
+	if tok == "" {
+		return "", "", nil
+	}
+	row := d.db.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT chat_id, session_key FROM sessions
+			WHERE user_id = %s AND agent_id = %s
+			  AND (session_key = %s OR chat_id = %s)
+			ORDER BY CASE WHEN session_key = %s THEN 0 ELSE 1 END, updated_at DESC
+			LIMIT 1`,
+			d.ph(1), d.ph(2), d.ph(3), d.ph(4), d.ph(5)),
+		userID, agentID, tok, tok, tok)
+	var chatID, sessionKey string
+	if err := row.Scan(&chatID, &sessionKey); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", "", nil
+		}
+		return "", "", scanErr(err)
+	}
+	return chatID, sessionKey, nil
+}
+
 // LookupSessionProject returns the project_id of a session_key (or "")
 // — the workspace path resolver consults this to decide between
 // projects/<id>/ and sessions/<chat>/ for the sandbox mount.

@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -62,6 +63,7 @@ func TestAgentFileGetResolvesWorkspacePathViaSession(t *testing.T) {
 		query string
 	}{
 		{"bare name + sessionId", "chart.svg", "?sessionId=" + sessionKey},
+		{"bare name + chat_id (API session key)", "chart.svg", "?sessionId=" + chatID},
 		{"workspace prefix + sessionId", "workspace/chart.svg", "?sessionId=" + sessionKey},
 		{"full store key", "sessions/" + chatID + "/chart.svg", ""},
 	} {
@@ -74,9 +76,43 @@ func TestAgentFileGetResolvesWorkspacePathViaSession(t *testing.T) {
 		}
 	}
 
-	// A sessionId that does not resolve for this caller must not fall
-	// back to treating the token as a chat_id (that was a cross-user leak).
+	// A token that is neither this caller's session_key nor chat_id
+	// must 404 — do not treat an unknown string as a raw directory name.
 	if rr := get("chart.svg", "?sessionId=someone-elses-chat"); rr.Code != http.StatusNotFound {
 		t.Fatalf("foreign sessionId = %d, want 404", rr.Code)
+	}
+
+	list := func(query string) []string {
+		t.Helper()
+		req := authTestRequest(t, ctx, resolver, http.MethodGet, "/api/agents/"+agentID+"/files"+query, owner.ID)
+		req.SetPathValue("id", agentID)
+		rr := httptest.NewRecorder()
+		s.authMiddleware(s.handleAgentFileList)(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("LIST %s = %d: %s", query, rr.Code, rr.Body.String())
+		}
+		var body struct {
+			Files []struct {
+				Path string `json:"path"`
+			} `json:"files"`
+		}
+		if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+			t.Fatalf("LIST decode %s: %v", query, err)
+		}
+		out := make([]string, 0, len(body.Files))
+		for _, f := range body.Files {
+			out = append(out, f.Path)
+		}
+		return out
+	}
+	wantPath := "sessions/" + chatID + "/chart.svg"
+	for _, q := range []string{"?sessionId=" + sessionKey, "?sessionId=" + chatID} {
+		got := list(q)
+		if len(got) != 1 || got[0] != wantPath {
+			t.Fatalf("LIST %s = %v, want [%s]", q, got, wantPath)
+		}
+	}
+	if got := list("?sessionId=someone-elses-chat"); len(got) != 0 {
+		t.Fatalf("LIST foreign sessionId = %v, want empty", got)
 	}
 }
