@@ -159,6 +159,9 @@ Content-Type: application/json
 2. Add or reuse upstream conversation IDs.
 3. Map upstream user IDs to FastClaw `user` or `/v1/users`.
 4. Implement streaming SSE parsing for `/v1/chat/completions`.
+   Keep the socket open through tool execution: the first event is the
+   role chunk, then `: heartbeat` comments every 10s until tokens
+   arrive. Ignore lines that start with `:`. Do not time out on silence.
 5. Persist or derive `X-Fastclaw-Session-Key` per conversation. After
    each completion, store `session_id` from the response headers/body
    if you need dashboard-style ids; file APIs accept either token.

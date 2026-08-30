@@ -160,6 +160,17 @@ data: {"id":"chatcmpl-...","object":"chat.completion.chunk","choices":[{"delta":
 data: [DONE]
 ```
 
+The agent may run tools for a long time before the first content token.
+During that silence FastClaw still writes the role chunk immediately,
+then an SSE comment every 10s:
+
+```text
+: heartbeat
+```
+
+Keep the HTTP connection open. Ignore lines that start with `:`. Do not
+treat a quiet period as a hang and close the socket.
+
 Non-streaming responses follow OpenAI response shape, plus two FastClaw
 session fields:
 
