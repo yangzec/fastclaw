@@ -3717,10 +3717,6 @@ function WorkspacePanel({
   }, [agentId, sessionId, projectId]);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  useEffect(() => {
     const onChange = (event: Event) => {
       const detail = (event as CustomEvent<{ agentId?: string; sessionId?: string }>).detail;
       if (detail?.agentId && detail.agentId !== agentId) return;
@@ -3772,11 +3768,14 @@ function WorkspacePanel({
     [agentId, sessionId, restoring, refresh],
   );
 
-  // Switching conversations swaps the file tree to the new scope — drop
-  // the previous chat's list/preview/history immediately so a slow
-  // listAgentFiles(A) cannot paint A's files onto B.
+  // Switching conversations (or first mount) must clear the previous
+  // scope's tree AND then fetch. These used to be two effects: refresh()
+  // started a fetch (gen=N), then a later effect bumped refreshGenRef
+  // and wiped `files`. The in-flight list was discarded as stale, loading
+  // stayed true (Refresh spun forever), and the panel showed an empty
+  // tree even when /files returned rows. One effect keeps the cancel
+  // token and the fetch on the same generation.
   useEffect(() => {
-    refreshGenRef.current += 1;
     setPreviewing(null);
     setFiles([]);
     setChanged({ files: [], available: false });
@@ -3784,7 +3783,8 @@ function WorkspacePanel({
     setBuildLogs("");
     setHistory([]);
     setHistoryOpen(false);
-  }, [agentId, sessionId, projectId]);
+    void refresh();
+  }, [refresh]);
 
   // While the Preview tab is open, poll the runtime so a "building" preview
   // flips to the live iframe on its own (and reflects sleep/crash). Cheap
@@ -4289,6 +4289,7 @@ function FileViewer({ agentId, file, sessionId, onClose }: { agentId: string; fi
   const basename = file.path.split("/").pop() || file.path;
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [imgError, setImgError] = useState(false);
   // Default to SOURCE for markdown/html — clicking a file shows its code; the
   // toggle flips to rendered when wanted.
   const [view, setView] = useState<"rendered" | "source">("source");
@@ -4349,7 +4350,16 @@ function FileViewer({ agentId, file, sessionId, onClose }: { agentId: string; fi
         <div className="min-h-0 flex-1">
           {preview === "image" && (
             <div className="flex h-full items-center justify-center overflow-auto p-4">
-              <img src={src} alt={basename} className="max-h-full max-w-full object-contain" />
+              {imgError ? (
+                <p className="text-sm text-destructive">Failed to load image — the file is not a valid {basename.split(".").pop()?.toUpperCase() || "image"}.</p>
+              ) : (
+                <img
+                  src={src}
+                  alt={basename}
+                  className="max-h-full max-w-full object-contain"
+                  onError={() => setImgError(true)}
+                />
+              )}
             </div>
           )}
           {preview === "pdf" && (
