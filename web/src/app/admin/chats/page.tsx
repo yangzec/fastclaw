@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   MessagesSquare,
   ChevronLeft,
@@ -27,6 +28,7 @@ import { ChannelIcon, channelLabel } from "@/components/channel-icon";
 const PAGE_SIZE = 30;
 
 export default function AdminChatsPage() {
+  const router = useRouter();
   const [sessions, setSessions] = useState<AdminChatSessionEntry[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -143,7 +145,15 @@ export default function AdminChatsPage() {
               </TableHeader>
               <TableBody>
                 {pageRows.map((s) => (
-                  <TableRow key={`${s.agentId}:${s.id}`}>
+                  <TableRow
+                    key={`${s.agentId}:${s.id}`}
+                    className="cursor-pointer"
+                    onClick={() =>
+                      router.push(
+                        `/agents/${encodeURIComponent(s.agentId)}/chat/${encodeURIComponent(s.id)}/?actAs=${encodeURIComponent(s.userId)}`,
+                      )
+                    }
+                  >
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2 min-w-0">
                         {s.thumbnailUrl ? (
@@ -195,7 +205,7 @@ export default function AdminChatsPage() {
                     <TableCell className="hidden sm:table-cell text-xs text-muted-foreground whitespace-nowrap">
                       {formatTime(s.updatedAt)}
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                       <a
                         href={`/agents/${encodeURIComponent(s.agentId)}/chat/${encodeURIComponent(s.id)}/?actAs=${encodeURIComponent(s.userId)}`}
                         target="_blank"

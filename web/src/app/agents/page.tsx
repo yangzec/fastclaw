@@ -49,8 +49,8 @@ interface OtherAgent {
   ownerDisplayName?: string;
 }
 
-// AgentAvatar tries to load /api/agents/{id}/files/avatar.png and falls
-// back to the default Bot icon when the agent has no avatar yet (404).
+// AgentAvatar uses avatarUrl when the API says a file exists; otherwise
+// the Bot icon — no speculative 404 request.
 function AgentAvatar({
   agent,
   bust,

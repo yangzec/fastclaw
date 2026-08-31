@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { login as apiLogin, register, getStatus } from "@/lib/api";
+import { MIN_PASSWORD_LENGTH } from "@/lib/password";
 
 interface LoginScreenProps {
   onSuccess: () => void;
@@ -67,8 +68,8 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
       setError("All fields are required");
       return;
     }
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters");
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
       return;
     }
     if (password !== signupConfirm) {

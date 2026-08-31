@@ -534,6 +534,9 @@ export default function ModelsPage() {
   };
 
   const handleDeleteProvider = async (row: ProviderEntry) => {
+    if (!confirm(`Remove provider “${row.name}”? This cannot be undone.`)) {
+      return;
+    }
     setSaving(true);
     try {
       await deleteProvider(row.id);

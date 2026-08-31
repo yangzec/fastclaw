@@ -50,6 +50,8 @@ import {
 // missed when the project chat route was introduced and that left
 // the sidebar showing the platform nav for /agents/<id>/project/...
 function extractAgentId(pathname: string): string | null {
+  const bare = pathname.match(/^\/agents\/([^/]+)\/?$/);
+  if (bare) return bare[1];
   const match = pathname.match(
     /^\/agents\/([^/]+)\/(chat|customize|skills|models|sessions|channels|chats|scheduler|project|knowledge|plugins|mcp|context|usage)/,
   );
@@ -164,7 +166,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   React.useEffect(() => {
     getAgents()
       .then((list) => {
-        setAgents(list.map((a) => ({ id: a.id, name: a.name, model: a.model })));
+        setAgents(list.map((a) => ({ id: a.id, name: a.name, model: a.model, avatarUrl: a.avatarUrl })));
         const roles: Record<string, "owner" | "viewer"> = {};
         for (const a of list) {
           roles[a.id] = a.role === "viewer" ? "viewer" : "owner";
@@ -189,7 +191,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
         setAgents((prev) =>
           prev.some((x) => x.id === a.id)
             ? prev
-            : [...prev, { id: a.id, name: a.name, model: a.model }],
+            : [...prev, { id: a.id, name: a.name, model: a.model, avatarUrl: a.avatarUrl }],
         );
         if (a.role === "viewer" || a.role === "owner") {
           setAgentRoles((prev) => ({ ...prev, [a.id]: a.role as "owner" | "viewer" }));
@@ -319,6 +321,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
           <SidebarMenuItem>
             <SidebarMenuButton
               tooltip="Settings"
+              isActive={!!pathname?.startsWith("/settings")}
               onClick={() => {
                 setSettingsUserOnly(!activeAgentId);
                 setSettingsOpen(true);

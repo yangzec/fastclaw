@@ -65,8 +65,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid email"})
 		return
 	}
-	if len(req.Password) < 8 {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "password must be at least 8 characters"})
+	if err := users.CheckPasswordLength(req.Password); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
 	acct, err := s.accounts.Create(r.Context(), users.CreateInput{

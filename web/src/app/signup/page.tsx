@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { register, getStatus } from "@/lib/api";
+import { register, getStatus, getMe } from "@/lib/api";
+import { MIN_PASSWORD_LENGTH } from "@/lib/password";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -18,11 +19,22 @@ export default function SignupPage() {
 
   useEffect(() => {
     let aborted = false;
-    getStatus()
-      .then((s) => { if (!aborted) setOpen(!!s.registrationOpen); })
-      .catch(() => { if (!aborted) setOpen(false); });
+    (async () => {
+      const me = await getMe().catch(() => null);
+      if (aborted) return;
+      if (me?.ok && me.user) {
+        router.replace("/overview/");
+        return;
+      }
+      try {
+        const s = await getStatus();
+        if (!aborted) setOpen(!!s.registrationOpen);
+      } catch {
+        if (!aborted) setOpen(false);
+      }
+    })();
     return () => { aborted = true; };
-  }, []);
+  }, [router]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -31,8 +43,8 @@ export default function SignupPage() {
       setError("All fields are required");
       return;
     }
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters");
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
       return;
     }
     if (password !== confirm) {

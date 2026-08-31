@@ -72,7 +72,7 @@ export interface AgentDetail {
   id: string;
   name?: string;
   description?: string;
-  avatarUrl?: string;       // /api/agents/{id}/files/avatar.png — may 404
+  avatarUrl?: string;       // set only when avatar.png exists
   userId?: string;          // owner's user id (agents.user_id)
   // role distinguishes agents the caller owns from agents accessed via
   // a public link. "viewer" gates UI out of configuration tabs

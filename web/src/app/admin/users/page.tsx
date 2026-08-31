@@ -10,6 +10,7 @@ import {
   getRegistration,
   setRegistration,
 } from "@/lib/api";
+import { MIN_PASSWORD_LENGTH } from "@/lib/password";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -105,6 +106,10 @@ export default function AdminUsersPage() {
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     setError("");
+    if (form.password.length < MIN_PASSWORD_LENGTH) {
+      setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+      return;
+    }
     const res = await adminCreateUser(form);
     if (res.error) {
       setError(res.error);
@@ -131,6 +136,10 @@ export default function AdminUsersPage() {
 
   async function handleResetPassword() {
     if (!resetTarget || !resetPwd.trim()) return;
+    if (resetPwd.length < MIN_PASSWORD_LENGTH) {
+      setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+      return;
+    }
     const res = await adminResetPassword(resetTarget.id, resetPwd);
     if (res.error) {
       setError(res.error);
@@ -328,7 +337,7 @@ export default function AdminUsersPage() {
                 type="password"
                 value={form.password}
                 onChange={(e) => setForm({ ...form, password: e.target.value })}
-                placeholder="Initial password"
+                placeholder={`${MIN_PASSWORD_LENGTH}+ characters`}
               />
             </div>
             <div className="grid grid-cols-2 gap-3">

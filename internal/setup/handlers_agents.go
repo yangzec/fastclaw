@@ -274,7 +274,7 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 			"name":        ar.Name,
 			"description": desc,
 			"model":       s.agentScopeModel(r, ar.ID),
-			"avatarUrl":   "/api/agents/" + ar.ID + "/files/avatar.png",
+			"avatarUrl":   s.agentAvatarURL(r.Context(), ar.ID),
 			"createdAt":   ar.CreatedAt,
 			"userId":      ar.UserID,
 			"role":        "owner",
@@ -699,7 +699,7 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 			"autoPersist":      s.agentScopeAutoPersist(r, rec.ID),
 			"sharedIdentity":   s.agentScopeSharedIdentity(r, rec.UserID, rec.ID),
 			"plugins":          s.agentScopePlugins(r, rec.ID),
-			"avatarUrl":        "/api/agents/" + rec.ID + "/files/avatar.png",
+			"avatarUrl":        s.agentAvatarURL(r.Context(), rec.ID),
 			"createdAt":        rec.CreatedAt,
 			"isPublic":         rec.IsPublic,
 			"shareModelConfig": share,
@@ -1316,6 +1316,29 @@ func openInFileBrowser(path string) error {
 	// Detach: we don't care about the file manager's lifetime.
 	go func() { _ = cmd.Wait() }()
 	return nil
+}
+
+// agentAvatarURL returns the public files URL when the agent has an
+// uploaded avatar.png. An empty string means "no avatar" so clients
+// can skip the <img> request instead of 404-ing in the console.
+func (s *Server) agentAvatarURL(ctx context.Context, agentID string) string {
+	if agentID == "" {
+		return ""
+	}
+	if s.workspaceStore != nil {
+		if _, err := s.workspaceStore.Stat(ctx, agentID, "", "", "avatar.png"); err == nil {
+			return "/api/agents/" + agentID + "/files/avatar.png"
+		}
+		return ""
+	}
+	home, err := config.HomeDir()
+	if err != nil {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(home, "workspaces", agentID, "avatar.png")); err == nil {
+		return "/api/agents/" + agentID + "/files/avatar.png"
+	}
+	return ""
 }
 
 func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {

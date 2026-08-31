@@ -36,6 +36,7 @@ import {
   UserPlus,
 } from "lucide-react";
 import { getStatus, onboard, testProvider } from "@/lib/api";
+import { MIN_PASSWORD_LENGTH } from "@/lib/password";
 
 const STEPS = [
   { id: "welcome", label: "Welcome", icon: PartyPopper },
@@ -266,7 +267,7 @@ export default function OnboardPage() {
     true,
     username.trim() !== "" &&
       email.trim() !== "" &&
-      password.length >= 6 &&
+      password.length >= MIN_PASSWORD_LENGTH &&
       password === passwordConfirm,
     !providerEnabled ||
       (apiKey.trim() !== "" && model.trim() !== "" && apiBase.trim() !== "" && testStatus === "ok"),
@@ -484,7 +485,7 @@ function AdminStep(props: {
   setDisplayName: (v: string) => void;
 }) {
   const passwordTooShort =
-    props.password.length > 0 && props.password.length < 6;
+    props.password.length > 0 && props.password.length < MIN_PASSWORD_LENGTH;
   const mismatch =
     props.passwordConfirm.length > 0 && props.password !== props.passwordConfirm;
   return (
@@ -540,10 +541,10 @@ function AdminStep(props: {
               value={props.password}
               onChange={(e) => props.setPassword(e.target.value)}
               autoComplete="new-password"
-              placeholder="6+ characters"
+              placeholder={`${MIN_PASSWORD_LENGTH}+ characters`}
             />
             {passwordTooShort && (
-              <p className="text-xs text-destructive">at least 6 characters</p>
+              <p className="text-xs text-destructive">at least {MIN_PASSWORD_LENGTH} characters</p>
             )}
           </div>
           <div className="space-y-1.5">

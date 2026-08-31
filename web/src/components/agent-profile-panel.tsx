@@ -154,7 +154,11 @@ export default function AgentProfilePanel() {
   // route.
   const avatarSrc =
     avatarPreview ||
-    `/api/agents/${agent.id}/files/avatar.png${avatarBust ? `?v=${avatarBust}` : ""}`;
+    (agent.avatarUrl
+      ? `${agent.avatarUrl}${avatarBust ? `?v=${avatarBust}` : ""}`
+      : avatarBust
+        ? `/api/agents/${agent.id}/files/avatar.png?v=${avatarBust}`
+        : "");
 
   return (
     <div className="p-6 max-w-3xl space-y-6">
@@ -322,7 +326,7 @@ function AgentAvatarImg({ src }: { src: string }) {
   React.useEffect(() => {
     setFailed(false);
   }, [src]);
-  if (failed) {
+  if (!src || failed) {
     return (
       <div className="flex h-full w-full items-center justify-center bg-primary/10 dark:bg-primary/15">
         <Bot className="h-9 w-9 text-primary" />
