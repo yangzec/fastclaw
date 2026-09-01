@@ -127,12 +127,6 @@ func EstimateTokens(messages []provider.Message) int {
 	return total
 }
 
-const (
-	compactMethodPrune     = "prune"
-	compactMethodSummarize = "summarize"
-	compactMethodHardTrim  = "hard_trim"
-)
-
 // CompactResult holds the result of a compaction operation.
 type CompactResult struct {
 	Messages []provider.Message
