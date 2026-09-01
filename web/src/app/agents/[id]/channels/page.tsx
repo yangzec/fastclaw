@@ -42,6 +42,7 @@ import {
   connectAgentSlack,
   connectAgentLINE,
   connectAgentFeishu,
+  connectAgentWeCom,
   startAgentFeishuLogin,
   pollAgentFeishuLoginStatus,
   cancelAgentFeishuLogin,
@@ -52,6 +53,7 @@ import {
 } from "@/lib/api";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { useAgentName } from "@/hooks/use-agent-name";
+import { openOfficialWeComScan } from "@/lib/wecom-scan";
 
 // Channels page: per-agent IM bot bindings. One card per channel type
 // in the catalog — connected types show bot info + Disconnect, others
@@ -97,6 +99,12 @@ const CATALOG: { type: string; label: string; description: string; available: bo
     description: "Scan a QR code in Feishu / Lark to create a bot automatically, or paste an existing App ID + Secret.",
     available: true,
   },
+  {
+    type: "wecom",
+    label: "WeCom",
+    description: "Scan a QR code in 企业微信 to create an AI bot, or paste BotID + long-connection Secret.",
+    available: true,
+  },
 ];
 
 export default function AgentChannelsPage() {
@@ -113,6 +121,7 @@ export default function AgentChannelsPage() {
   const [lineOpen, setLineOpen] = useState(false);
   const [wechatOpen, setWechatOpen] = useState(false);
   const [feishuOpen, setFeishuOpen] = useState(false);
+  const [wecomOpen, setWecomOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<AgentChannel | null>(null);
 
   const refresh = useCallback(() => {
@@ -200,6 +209,7 @@ export default function AgentChannelsPage() {
                   else if (entry.type === "line") setLineOpen(true);
                   else if (entry.type === "wechat") setWechatOpen(true);
                   else if (entry.type === "feishu") setFeishuOpen(true);
+                  else if (entry.type === "wecom") setWecomOpen(true);
                 }}
               />
             );
@@ -245,6 +255,13 @@ export default function AgentChannelsPage() {
       <ConnectFeishuDialog
         open={feishuOpen}
         onOpenChange={setFeishuOpen}
+        agentId={agentId}
+        onConnected={refresh}
+      />
+
+      <ConnectWeComDialog
+        open={wecomOpen}
+        onOpenChange={setWecomOpen}
         agentId={agentId}
         onConnected={refresh}
       />
@@ -392,6 +409,7 @@ function ChannelIcon({ type }: { type: string }) {
     line: "/channels/line.png",
     feishu: "/channels/feishu.png",
     wechat: "/channels/wechat.svg",
+    wecom: "/channels/wecom.svg",
   };
   if (asset[type]) {
     // WeChat's artwork is non-square (50×40) — object-contain letterboxes
@@ -1587,6 +1605,215 @@ function ConnectFeishuDialog({
               <Button
                 onClick={submitManual}
                 disabled={submitting || !appId.trim() || !appSecret.trim()}
+              >
+                {submitting ? "Validating…" : "Connect"}
+              </Button>
+            </>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ConnectWeComDialog({
+  open,
+  onOpenChange,
+  agentId,
+  onConnected,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  agentId: string;
+  onConnected: () => void;
+}) {
+  type Mode = "scan" | "manual";
+  const [mode, setMode] = useState<Mode>("scan");
+  const [scanning, setScanning] = useState(false);
+  const [botId, setBotId] = useState("");
+  const [secret, setSecret] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [connected, setConnected] = useState<{ botId: string } | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      setMode("scan");
+      setScanning(false);
+      setBotId("");
+      setSecret("");
+      setBaseUrl("");
+      setSubmitting(false);
+      setError("");
+      setConnected(null);
+    }
+  }, [open]);
+
+  const persist = async (nextBotId: string, nextSecret: string) => {
+    if (!agentId) return;
+    setSubmitting(true);
+    setError("");
+    const res = await connectAgentWeCom(agentId, nextBotId, nextSecret, baseUrl.trim());
+    setSubmitting(false);
+    if (res.error || !res.ok) {
+      setError(res.error || "Failed to connect WeCom bot");
+      return;
+    }
+    setConnected({ botId: res.botId || nextBotId });
+    onConnected();
+  };
+
+  const startScan = async () => {
+    if (!agentId) return;
+    setScanning(true);
+    setError("");
+    try {
+      const bot = await openOfficialWeComScan();
+      await persist(bot.botid, bot.secret);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "WeCom scan cancelled or failed");
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const submitManual = async () => {
+    if (!botId.trim() || !secret.trim()) return;
+    await persist(botId.trim(), secret.trim());
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <img src="/channels/wecom.svg" alt="WeCom" className="h-5 w-5 object-contain" />
+            Connect WeCom
+          </DialogTitle>
+          <DialogDescription>
+            {mode === "scan"
+              ? "Official scan-to-create opens a WeCom window. Scan with the 企业微信 app to mint a BotID + long-connection Secret."
+              : "Paste BotID and the long-connection Secret from 管理工具 → 智能机器人 → API 模式 → 长连接."}
+          </DialogDescription>
+        </DialogHeader>
+
+        {connected ? (
+          <div className="space-y-3 py-2">
+            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-2">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                <span className="text-sm font-medium">Bot connected</span>
+              </div>
+              <p className="text-sm">
+                Live as <strong>{connected.botId}</strong>. FastClaw is opening
+                the official long-connection — open the bot in WeCom and send
+                a message. First enter-chat gets a welcome; later messages
+                go to this agent.
+              </p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              One bot can only keep one live socket. Starting FastClaw twice
+              with the same BotID kicks the older connection.
+            </p>
+          </div>
+        ) : mode === "scan" ? (
+          <div className="flex flex-col items-center gap-4 py-2">
+            <div className="flex h-40 w-full items-center justify-center rounded-lg border bg-muted/30">
+              {scanning || submitting ? (
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              ) : (
+                <QrCode className="h-10 w-10 text-muted-foreground/60" />
+              )}
+            </div>
+            <p className="text-xs text-center text-muted-foreground max-w-sm">
+              Uses Tencent&apos;s <code>@wecom/wecom-aibot-sdk</code> popup.
+              Allow the window, then scan inside 企业微信.
+            </p>
+            <button
+              type="button"
+              className="text-xs underline text-muted-foreground"
+              onClick={() => {
+                setMode("manual");
+                setError("");
+              }}
+            >
+              Already have BotID / Secret? Paste credentials
+            </button>
+            {error && <p className="text-xs text-destructive text-center">{error}</p>}
+          </div>
+        ) : (
+          <div className="space-y-3 py-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="wecom-bot-id">BotID</Label>
+              <Input
+                id="wecom-bot-id"
+                value={botId}
+                onChange={(e) => setBotId(e.target.value)}
+                placeholder="from 智能机器人 → API 模式"
+                className="font-mono text-sm"
+                autoFocus
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="wecom-secret">Long-connection Secret</Label>
+              <Input
+                id="wecom-secret"
+                value={secret}
+                onChange={(e) => setSecret(e.target.value)}
+                placeholder="shown once when you enable 长连接"
+                type="password"
+                className="font-mono text-sm"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="wecom-base-url">Private WS URL (optional)</Label>
+              <Input
+                id="wecom-base-url"
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                placeholder="wss://openws.work.weixin.qq.com"
+                className="font-mono text-sm"
+              />
+              <p className="text-xs text-muted-foreground">
+                Leave empty for the official public endpoint. Private-deploy
+                enterprises copy the long-conn address from the admin console.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="text-xs underline text-muted-foreground"
+              onClick={() => {
+                setMode("scan");
+                setError("");
+              }}
+            >
+              Scan a QR code instead
+            </button>
+            {error && <p className="text-xs text-destructive">{error}</p>}
+          </div>
+        )}
+
+        <DialogFooter>
+          {connected ? (
+            <Button onClick={() => onOpenChange(false)}>Done</Button>
+          ) : mode === "scan" ? (
+            <>
+              <Button variant="outline" onClick={() => onOpenChange(false)} disabled={scanning || submitting}>
+                Cancel
+              </Button>
+              <Button onClick={() => void startScan()} disabled={scanning || submitting}>
+                {scanning || submitting ? "Waiting for scan…" : "Scan with WeCom"}
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+                Cancel
+              </Button>
+              <Button
+                onClick={() => void submitManual()}
+                disabled={submitting || !botId.trim() || !secret.trim()}
               >
                 {submitting ? "Validating…" : "Connect"}
               </Button>

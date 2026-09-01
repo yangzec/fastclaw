@@ -7,6 +7,17 @@ action on upgrade — read those notes before deploying.
 
 ### Added
 
+- **WeCom (企业微信) scan-to-create + long-connection.** New
+  channel type `wecom` (does not reuse personal WeChat iLink).
+  The dashboard opens Tencent's official `@wecom/wecom-aibot-sdk`
+  scan popup; after the phone confirms, FastClaw stores BotID +
+  long-conn Secret and subscribes on
+  `wss://openws.work.weixin.qq.com` (`aibot_subscribe`). Inbound
+  `aibot_msg_callback` is replied with `aibot_respond_msg`;
+  enter-chat gets the official welcome command; typing uses a
+  stream bubble. Paste BotID/Secret remains as fallback. One bot
+  keeps one live socket (new subscribe kicks the old). See
+  https://developer.work.weixin.qq.com/document/path/101463
 - **Feishu / Lark scan-to-create.** Connecting a Feishu channel no
   longer requires creating a custom app in the developer console.
   The dashboard now uses the official OAuth 2.0 Device Authorization

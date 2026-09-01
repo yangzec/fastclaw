@@ -6,6 +6,7 @@ const nextConfig: NextConfig = {
   images: {
     unoptimized: true,
   },
+  transpilePackages: ["@wecom/wecom-aibot-sdk"],
 };
 
 export default nextConfig;

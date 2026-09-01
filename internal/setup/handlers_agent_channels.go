@@ -1173,6 +1173,102 @@ func (s *Server) persistFeishuAccount(ctx context.Context, userID, agentIDArg, a
 	return nil
 }
 
+// --- WeCom (企业微信智能机器人) ---
+
+type connectWeComRequest struct {
+	BotID   string `json:"botId"`
+	Secret  string `json:"secret"`
+	BaseURL string `json:"baseUrl"`
+}
+
+// wecomValidateCredentials is the official aibot_subscribe handshake.
+// Tests swap this so they don't hit wss://openws.work.weixin.qq.com.
+var wecomValidateCredentials = channels.WeComValidateCredentials
+
+// handleConnectAgentWeCom persists BotID + long-conn Secret (from the
+// official browser scan SDK or the admin console) and hot-registers
+// the long-conn adapter. Validation is a real subscribe against the
+// official WebSocket so a typo fails before we store anything.
+func (s *Server) handleConnectAgentWeCom(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWritable(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	uid, aid, ok := s.resolveChannelBindingScope(w, r, id)
+	if !ok {
+		return
+	}
+
+	var req connectWeComRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	botID := strings.TrimSpace(req.BotID)
+	secret := strings.TrimSpace(req.Secret)
+	baseURL := strings.TrimSpace(req.BaseURL)
+	if botID == "" || secret == "" {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "botId and secret required"})
+		return
+	}
+
+	if err := wecomValidateCredentials(r.Context(), botID, secret, baseURL); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+
+	if err := s.persistWeComAccount(r.Context(), uid, aid, id, botID, secret, baseURL); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "already connected") {
+			status = http.StatusConflict
+		}
+		jsonResponse(w, status, map[string]any{"error": err.Error()})
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"botId":   botID,
+		"account": botID,
+	})
+}
+
+// persistWeComAccount writes the channel row + binding and hot-registers
+// the adapter. Shared by the official scan popup (frontend POSTs the
+// issued botid/secret) and the paste-credentials fallback.
+func (s *Server) persistWeComAccount(ctx context.Context, userID, agentIDArg, agentID, botID, secret, baseURL string) error {
+	cc := config.ChannelConfig{
+		Enabled: true,
+		Accounts: map[string]config.AccountConfig{
+			botID: {
+				BotToken:    secret,
+				BaseURL:     baseURL,
+				UseLongConn: true,
+			},
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/", nil)
+	if err != nil {
+		return err
+	}
+	if err := s.assertChannelCredentialUniqueOpt(req, "wecom", botID, "", userID, agentIDArg, true); err != nil {
+		return err
+	}
+	if err := s.saveChannelRecord(ctx, userID, agentIDArg, "wecom", botID, true, cc); err != nil {
+		return err
+	}
+	if err := s.appendBinding(req, "", "", config.Binding{
+		AgentID: agentID,
+		Match:   config.Match{Channel: "wecom", AccountID: botID},
+	}); err != nil {
+		return err
+	}
+	s.invalidateOwner(userID, agentIDArg)
+	if ch, err := s.dataStore.LookupChannel(ctx, "wecom", botID); err == nil && ch != nil {
+		s.hotRegisterChannelRecord(*ch)
+	}
+	return nil
+}
+
 // --- LINE ---
 
 type connectLINERequest struct {

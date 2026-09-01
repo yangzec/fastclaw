@@ -55,6 +55,8 @@ func registerChannelInstance(rec store.ConfigRecord, mb *bus.MessageBus, chanMgr
 		return registerWeChatChannels(rec, cc, mb, chanMgr, st, hot)
 	case "feishu":
 		return registerFeishuChannels(cc, mb, chanMgr, hot)
+	case "wecom":
+		return registerWeComChannels(cc, mb, chanMgr, hot)
 	}
 	return nil
 }
@@ -77,6 +79,8 @@ func registerChannelFromRecord(rec store.ChannelRecord, mb *bus.MessageBus, chan
 		return registerWeChatChannels(cfgRec, cc, mb, chanMgr, st, hot)
 	case "feishu":
 		return registerFeishuChannels(cc, mb, chanMgr, hot)
+	case "wecom":
+		return registerWeComChannels(cc, mb, chanMgr, hot)
 	}
 	return nil
 }
@@ -129,7 +133,8 @@ func register(chanMgr *channels.Manager, ch channels.Channel, hot bool) {
 // registerSingleton is the polling-channel variant: every replica
 // running this binary will share the (channel, accountID) lease and
 // only the leaseholder's Start runs. Use for Telegram long-poll,
-// WeChat iLink long-poll, Discord/Slack WS, and Feishu long-conn —
+// WeChat iLink long-poll, Discord/Slack WS, Feishu long-conn, and
+// WeCom AI-bot long-conn —
 // anything where a second concurrent client would deliver duplicate
 // inbound. Webhook-only adapters (LINE, Feishu webhook mode) and
 // in-process fanout (Web) stay on plain register.
@@ -283,6 +288,24 @@ func registerFeishuChannels(chCfg config.ChannelConfig, mb *bus.MessageBus, chan
 	return nil
 }
 
+func registerWeComChannels(chCfg config.ChannelConfig, mb *bus.MessageBus, chanMgr *channels.Manager, hot bool) error {
+	// WeCom AI-bot long-conn: one BotID + Secret per account. Official
+	// protocol allows only one live socket; a second subscribe kicks
+	// the first. Always singleton.
+	for accountID, acct := range chCfg.Accounts {
+		secret := acct.BotToken
+		if secret == "" {
+			secret = chCfg.BotToken
+		}
+		wc, err := channels.NewWeCom(accountID, secret, acct.BaseURL, accountID, mb)
+		if err != nil {
+			return err
+		}
+		registerSingleton(chanMgr, wc, hot)
+	}
+	return nil
+}
+
 func registerWeChatChannels(rec store.ConfigRecord, chCfg config.ChannelConfig, mb *bus.MessageBus, chanMgr *channels.Manager, st store.Store, hot bool) error {
 	// WeChat is multi-account by design — every QR scan mints a new
 	// (botToken, ilink_user_id, baseURL) triple keyed under a fresh
@@ -361,4 +384,3 @@ func purgeWeChatAccount(st store.Store, rowID, deadAccount string) error {
 	rec.Data = data
 	return st.SaveConfig(ctx, rec)
 }
-

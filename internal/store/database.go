@@ -411,7 +411,7 @@ func (d *DBStore) migrateUsersAddOwnerUserID(ctx context.Context) error {
 	}
 	// 2. Rows with IM-channel external_id but apikey_id is a user_id
 	//    (legacy platform-scoped namespace) → chatter
-	for _, ch := range []string{"wechat", "telegram", "discord", "line", "feishu", "slack"} {
+	for _, ch := range []string{"wechat", "telegram", "discord", "line", "feishu", "slack", "wecom"} {
 		if _, err := d.db.ExecContext(ctx, fmt.Sprintf(`
 			UPDATE users SET
 				role = 'channel_user',

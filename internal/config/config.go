@@ -511,11 +511,10 @@ type AccountConfig struct {
 	EncryptKey string `json:"encryptKey,omitempty"`
 	// UseLongConn switches inbound transport to a long-lived
 	// connection (WebSocket) initiated outbound from fastclaw rather
-	// than the platform POSTing to a public webhook. Currently only
-	// honored by the Feishu adapter; ignored by adapters that don't
-	// offer this mode. When true, verification/encrypt keys are
-	// unused (the WS connection is authenticated by appID/appSecret)
-	// and no public URL needs to be reachable.
+	// than the platform POSTing to a public webhook. Honored by Feishu
+	// (optional) and WeCom (always-on official AI-bot long-conn).
+	// When true, verification/encrypt keys are unused and no public
+	// URL needs to be reachable.
 	UseLongConn bool `json:"useLongConn,omitempty"`
 }
 

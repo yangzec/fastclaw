@@ -1973,6 +1973,25 @@ export async function connectAgentFeishu(
   return res.json();
 }
 
+export async function connectAgentWeCom(
+  agentId: string,
+  botId: string,
+  secret: string,
+  baseUrl = "",
+): Promise<{
+  ok: boolean;
+  botId?: string;
+  account?: string;
+  error?: string;
+}> {
+  const res = await apiFetch(`/api/agents/${agentId}/channels/wecom`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ botId, secret, baseUrl }),
+  });
+  return res.json();
+}
+
 export async function disconnectAgentChannel(
   agentId: string,
   type: string,

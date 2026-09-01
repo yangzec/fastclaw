@@ -629,7 +629,7 @@ type ChannelRecord struct {
 	ID             string `json:"id"`
 	UserID         string `json:"userId"`    // who bound this channel
 	AgentID        string `json:"agentId"`   // which agent it routes to
-	Type           string `json:"type"`      // wechat / telegram / discord / slack / line / feishu
+	Type           string `json:"type"`      // wechat / telegram / discord / slack / line / feishu / wecom
 	AccountID      string `json:"accountId"` // bot unique identifier (credential_key equivalent)
 	Enabled        bool   `json:"enabled"`
 	BotToken       string `json:"botToken,omitempty"`
