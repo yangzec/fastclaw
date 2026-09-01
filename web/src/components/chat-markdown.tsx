@@ -16,6 +16,7 @@ import { fileUrl } from "@/lib/api";
 import type { KnowledgeSource } from "@/lib/api";
 import { copyToClipboard } from "@/lib/utils";
 import { ExternalAnchor } from "@/components/markdown-link";
+import { repairChatMarkdown } from "@/lib/repair-chat-markdown";
 
 // Streamdown 2.x splits rendering features into opt-in plugins. Without these,
 // fenced code lands as an unstyled <pre> (no highlight), ```mermaid stays as
@@ -88,8 +89,9 @@ export function ChatMarkdown({
     return map;
   }, [knowledgeSources]);
   const renderedText = useMemo(() => {
-    if (knowledgeByID.size === 0) return text;
-    return text.replace(/\[(K\d+)\]/g, (match, id: string) => {
+    const next = repairChatMarkdown(text);
+    if (knowledgeByID.size === 0) return next;
+    return next.replace(/\[(K\d+)\]/g, (match, id: string) => {
       if (!knowledgeByID.has(id)) return match;
       return `[${id}](#knowledge-${id})`;
     });
