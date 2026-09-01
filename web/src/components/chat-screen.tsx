@@ -103,7 +103,7 @@ function renderContentWithDataImages(
 import { usePageHeader } from "@/components/sidebar";
 import { useSidebarOptional } from "@/components/ui/sidebar";
 import { channelLabel } from "@/components/channel-icon";
-import { cn } from "@/lib/utils";
+import { cn, copyToClipboard } from "@/lib/utils";
 
 interface ProducedFile {
   path: string; // path relative to workspace
@@ -2175,8 +2175,11 @@ export function ChatScreen() {
     }
   };
 
-  const handleCopy = (msg: ChatMessage) => {
-    navigator.clipboard.writeText(msg.content);
+  const handleCopy = async (msg: ChatMessage) => {
+    const text = msg.content ?? "";
+    if (!text) return;
+    const ok = await copyToClipboard(text);
+    if (!ok) return;
     setCopiedId(msg.id);
     setTimeout(() => setCopiedId(null), 1500);
   };
@@ -2570,6 +2573,7 @@ export function ChatScreen() {
                             </span>
                           )}
                           <button
+                            type="button"
                             onClick={() => handleCopy(msg)}
                             className="rounded p-1.5 text-muted-foreground/70 hover:bg-muted hover:text-muted-foreground md:p-0.5 md:opacity-0 md:group-hover:opacity-100"
                             title="Copy"
@@ -2581,6 +2585,7 @@ export function ChatScreen() {
                             )}
                           </button>
                           <button
+                            type="button"
                             onClick={() => handleRetry(msg)}
                             className="rounded p-1.5 text-muted-foreground/70 hover:bg-muted hover:text-muted-foreground md:p-0.5 md:opacity-0 md:group-hover:opacity-100"
                             title="Resend (refills the composer)"
@@ -2596,6 +2601,7 @@ export function ChatScreen() {
                             </span>
                           )}
                           <button
+                            type="button"
                             onClick={() => handleCopy(msg)}
                             className="rounded p-1.5 text-muted-foreground/70 hover:bg-muted hover:text-muted-foreground md:p-0.5 md:opacity-0 md:group-hover:opacity-100"
                             title="Copy"

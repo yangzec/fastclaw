@@ -14,6 +14,7 @@ import { cjk } from "@streamdown/cjk";
 import remarkBreaks from "remark-breaks";
 import { fileUrl } from "@/lib/api";
 import type { KnowledgeSource } from "@/lib/api";
+import { copyToClipboard } from "@/lib/utils";
 import { ExternalAnchor } from "@/components/markdown-link";
 
 // Streamdown 2.x splits rendering features into opt-in plugins. Without these,
@@ -142,8 +143,18 @@ export function ChatMarkdown({
 
   // Click anywhere on a mermaid diagram → fullscreen. Streamdown renders a
   // hidden fullscreen toggle inside the block; we delegate the click to it.
-  function onMermaidClick(e: ReactMouseEvent<HTMLDivElement>) {
+  // Code-block copy is handled here too: Streamdown's pill only calls
+  // navigator.clipboard.writeText, which is missing/rejected on HTTP LAN
+  // origins. We copy the rendered <pre> as a fallback after that attempt.
+  function onMarkdownClick(e: ReactMouseEvent<HTMLDivElement>) {
     const target = e.target as HTMLElement;
+    const copyBtn = target.closest<HTMLElement>('[data-streamdown="code-block-copy-button"]');
+    if (copyBtn) {
+      const block = copyBtn.closest<HTMLElement>('[data-streamdown="code-block"]');
+      const text = block?.querySelector("pre")?.textContent ?? "";
+      if (text) void copyToClipboard(text);
+      return;
+    }
     if (target.closest("button, a")) return;
     target
       .closest<HTMLElement>("[data-streamdown=mermaid-block]")
@@ -161,7 +172,7 @@ export function ChatMarkdown({
   }
 
   return (
-    <div className={bareCode ? PROSE_CLASS + " chat-md-bare" : PROSE_CLASS} onClick={onMermaidClick} onWheelCapture={onWheelCapture}>
+    <div className={bareCode ? PROSE_CLASS + " chat-md-bare" : PROSE_CLASS} onClick={onMarkdownClick} onWheelCapture={onWheelCapture}>
       <Streamdown
         parseIncompleteMarkdown
         plugins={streamdownPlugins}

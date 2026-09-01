@@ -286,9 +286,11 @@ html.theme-transition *::after {
   .chat-md pre { @apply !bg-transparent !text-inherit !p-0 !my-0 !rounded-none max-w-full overflow-x-auto; }
   .chat-md img { @apply max-w-full h-auto; }
 
-  /* Code block — strip card, bound width, anchor the floating pill. */
+  /* Code block — strip card, bound width, anchor the floating pill.
+     Keep overflow visible here so the absolute copy pill isn't clipped;
+     horizontal scroll lives on <pre>. */
   .chat-md [data-streamdown="code-block"] {
-    @apply !border-0 !bg-transparent !p-0 !rounded-none !min-w-0 !max-w-full !overflow-x-auto relative;
+    @apply !border-0 !bg-transparent !p-0 !rounded-none !min-w-0 !max-w-full !overflow-visible relative;
   }
 
   /* File-viewer (bareCode) mode: no copy pill, no card border/padding — the
@@ -340,4 +342,13 @@ html.theme-transition *::after {
   .chat-md [data-streamdown="mermaid-block"]:hover [data-streamdown="mermaid-block-actions"],
   .chat-md [data-streamdown="table-wrapper"]:hover > div:first-child {
     @apply opacity-100;
+  }
+  /* Touch devices have no hover, so a hover-only pill is unclickable.
+     Keep it visible whenever the pointer cannot hover. */
+  @media (hover: none) {
+    .chat-md [data-streamdown="code-block-actions"],
+    .chat-md [data-streamdown="mermaid-block-actions"],
+    .chat-md [data-streamdown="table-wrapper"] > div:first-child {
+      @apply opacity-100;
+    }
   }
