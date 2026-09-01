@@ -1039,6 +1039,23 @@ func (a *Agent) Sessions() *session.Manager {
 	return a.sessions
 }
 
+// WebChatTurnActive reports whether HandleMessage is currently running
+// for this session. A page reload uses this so in-progress tool calls
+// stay "running" instead of being painted as stopped.
+func (a *Agent) WebChatTurnActive(sessionId string) bool {
+	if a == nil || a.sessions == nil {
+		return false
+	}
+	if sessionId == "" {
+		sessionId = "web-ui"
+	}
+	resolved := a.sessions.ResolveSessionKey(sessionId)
+	if resolved == "" {
+		return false
+	}
+	return a.sessions.GetByKey(resolved).TurnActive()
+}
+
 // WebChatHistory returns chat history for a specific session — the
 // name is historical; it now serves any channel because the dashboard
 // surfaces all-channel chats in the sidebar.

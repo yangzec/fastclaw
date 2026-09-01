@@ -891,18 +891,23 @@ export async function getChatHistory(agentId: string, sessionId: string): Promis
 export interface ChatHistoryResult {
   history: ChatHistoryMessage[];
   latestEventSeq: number; // -1 when there's nothing logged yet
+  // True while HandleMessage is still running for this session. A
+  // freshly reloaded page uses this to keep in-progress tools spinning
+  // and to treat the subscribe SSE as a live resume, not a finished
+  // history snapshot.
+  turnActive: boolean;
 }
 
 export async function getChatHistoryWithCursor(agentId: string, sessionId: string): Promise<ChatHistoryResult> {
   const res = await apiFetch(`/api/chat/history?agentId=${encodeURIComponent(agentId)}&sessionId=${encodeURIComponent(sessionId)}`);
-  if (!res.ok) return { history: [], latestEventSeq: -1 };
+  if (!res.ok) return { history: [], latestEventSeq: -1, turnActive: false };
   const data = await res.json();
   const history: ChatHistoryMessage[] = Array.isArray(data?.history)
     ? data.history
     : Array.isArray(data) ? data : [];
   const seqRaw = data?.latestEventSeq;
   const latestEventSeq = typeof seqRaw === "number" ? seqRaw : -1;
-  return { history, latestEventSeq };
+  return { history, latestEventSeq, turnActive: data?.turnActive === true };
 }
 
 export interface ChatSessionEntry {
@@ -1088,6 +1093,20 @@ export async function steerChat(
   if (!res.ok) throw new Error(`steer failed: ${res.status}`);
   const data = await res.json().catch(() => ({}));
   return data?.buffered === true;
+}
+
+// stopChat cancels the in-flight server turn. Needed after a page
+// refresh: aborting the browser SSE no longer cancels the agent.
+export async function stopChat(agentId: string, sessionId: string): Promise<boolean> {
+  const res = await apiFetch("/api/chat/stop", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agentId, sessionId }),
+  });
+  if (res.status === 409) return false;
+  if (!res.ok) throw new Error(`stop failed: ${res.status}`);
+  const data = await res.json().catch(() => ({}));
+  return data?.stopped === true;
 }
 
 export interface ToolResultMetadata {

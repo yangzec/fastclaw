@@ -1,7 +1,6 @@
 package setup
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -187,13 +186,17 @@ func (s *Server) runTeamAgentTurn(w http.ResponseWriter, flusher http.Flusher, r
 	sub, unsubscribe := hub.Subscribe(uid, member.AgentID, member.SessionID)
 	defer unsubscribe()
 
-	agentCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), agentTurnTimeout)
-	defer cancel()
+	agentCtx, cancelAgentCtx, releaseAgentCtx, detachAgentCtx := newDetachedAgentCtx(r.Context())
+	defer releaseAgentCtx()
 	agentCtx = agent.ContextWithStream(agentCtx, nil, s.dataStore, hub, uid, member.AgentID, member.SessionID)
+	turnHandle := &turnCancel{cancel: cancelAgentCtx}
+	turnKey := turnCancelKey(uid, member.AgentID, member.SessionID)
+	s.turns.register(turnKey, turnHandle)
 
 	agentDone := make(chan struct{})
 	go func() {
 		defer close(agentDone)
+		defer s.turns.unregister(turnKey, turnHandle)
 		_ = member.Handle.HandleWebChatStream(agentCtx, member.SessionID, req.TeamID, uid, msgText, imageURLs, req.Params, nil)
 	}()
 
@@ -204,6 +207,7 @@ func (s *Server) runTeamAgentTurn(w http.ResponseWriter, flusher http.Flusher, r
 	for {
 		select {
 		case <-clientGone:
+			detachAgentCtx()
 			return false
 		case <-agentDone:
 		drain:
