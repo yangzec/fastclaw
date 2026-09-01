@@ -314,19 +314,36 @@ func (l *lazyExecutor) Exec(ctx context.Context, command string, timeout time.Du
 		return "", err
 	}
 	out, execErr := ex.Exec(ctx, command, timeout)
-	// Post-exec sync only for cloud sandboxes (RemoteWorkspace marker).
-	// Docker's /workspace is bind-mounted to host so files appear
-	// instantly with no sync needed; rerunning the snapshot+Put cycle
-	// after every exec would just churn the workspace.Store
-	// (especially expensive when it's S3-backed). E2B's /workspace
-	// lives inside the cloud sandbox; without this pull, files the
-	// skill writes (image-tool's /workspace/gen_xxx.webp) never
-	// reach the host and the UI shows broken images.
+	// Pull exec-created /workspace files into the durable store when
+	// the sandbox is remote (E2B / Boxlite) OR when the store is not
+	// local disk (S3 / R2). Docker bind-mounts /workspace to the host,
+	// which is enough only for LocalFS — object-store deploys would
+	// otherwise wait until idle evict, and a pod death loses the files.
 	// Best-effort — never overrides the exec result.
-	if _, remote := ex.(RemoteWorkspace); remote {
+	if l.pool.shouldSyncAfterTool(ex) {
 		l.pool.syncSnapshot(ctx, l.scope, ex, "post-exec")
 	}
 	return out, execErr
+}
+
+// shouldSyncAfterTool reports whether sandbox /workspace must be copied
+// into workspace.Store after an exec or WriteFile. Remote sandboxes
+// always need it. Local Docker + LocalFS does not (the bind mount is
+// the store). Docker + S3/R2 does: LocalScoper is absent or returns
+// ok=false, so exec output would otherwise sit on pod disk until evict.
+func (p *LifecyclePool) shouldSyncAfterTool(ex Executor) bool {
+	if p.workspace == nil {
+		return false
+	}
+	if _, remote := ex.(RemoteWorkspace); remote {
+		return true
+	}
+	if ls, ok := p.workspace.(workspace.LocalScoper); ok {
+		if _, ok := ls.LocalScopeDir("", "", ""); ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (l *lazyExecutor) ReadFile(ctx context.Context, path string) (string, error) {
@@ -353,10 +370,8 @@ func (l *lazyExecutor) WriteFile(ctx context.Context, path, content string) (str
 	// syncSnapshot: we already have the bytes in memory, no need for a
 	// full tar round-trip per write. Best-effort — never overrides the
 	// write result.
-	if writeErr == nil {
-		if _, remote := ex.(RemoteWorkspace); remote {
-			l.pool.mirrorSandboxWrite(ctx, l.scope, path, content)
-		}
+	if writeErr == nil && l.pool.shouldSyncAfterTool(ex) {
+		l.pool.mirrorSandboxWrite(ctx, l.scope, path, content)
 	}
 	return out, writeErr
 }

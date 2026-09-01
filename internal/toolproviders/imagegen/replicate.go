@@ -108,7 +108,7 @@ func (r *Replicate) Execute(ctx context.Context, req toolproviders.Request) (too
 	if len(urls) == 0 {
 		return toolproviders.Response{}, toolproviders.ErrNoResults
 	}
-	return toolproviders.Response{Text: renderURLs(a.Prompt, urls)}, nil
+	return urlResponse(a.Prompt, urls), nil
 }
 
 // decodeReplicateOutput accepts both the array shape (flux: ["url1", "url2"])

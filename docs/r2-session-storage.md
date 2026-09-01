@@ -239,12 +239,15 @@ agentStoreRouter.storeFor(agentID)
         └─ default R2 或 local FS
 ```
 
-第一期做完 router 之后，下列产物会自动进生效中的 R2：
+yangzec 现已保证下列产物在 **同一套** `Put(agentID, projectID, sessionID, …)` 坐标落地（R2 router 接上后即自动上传）：
 
 1. 相对路径 / `/workspace/...` 的 `write_file`、`apply_patch`
 2. sandbox 内写到 `/workspace/` 的文件（写后镜像 + 快照）
 3. 聊天拖拽 / HTTP 上传
 4. IM 本轮新产生的可投递媒体
+5. `image_gen`：provider URL / base64 会拉回并写入 `generated-images/…`，工具结果改成 `/workspace/generated-images/…`
+6. `tts`：`/tmp` 音频会复制进 `generated-audio/…`，保留原来的 `MEDIA:` 行给 IM
+7. Docker exec 写到 `/workspace/` 的文件：对象存储后端下 **每次 exec 后立刻 snapshot+Put**（不再等到 idle evict）。LocalFS + Docker bind-mount 仍跳过，避免无谓 churn
 
 不自动进 R2（有意）：
 
@@ -340,11 +343,10 @@ Signed URL / Public URL 仍然只在 **已通过现有文件 ACL** 之后签发�
 
 ### 切片 C — 对外 URL（保存之后能打开）
 
-对照 tencent `e1f3e92` / `image_gen_archive.go`，只移植展示，不改存储布局：
+对照 tencent `e1f3e92`，只移植展示，不改存储布局。落地本身已在 yangzec 完成（`image_gen` / `tts` archive、Docker+对象存储 post-exec sync）。
 
 - `Store.PublicURL`；无 publicBaseURL 则 signed URL；再没有则 `/api/agents/{id}/files/...`
 - 聊天 markdown / OpenAI 兼容回复改写 `/workspace/<file>`
-- `image_gen` 把 bytes archive 进 session workspace，返回可渲染 URL
 - 前端不要用 `session_key` 猜 `sessions/<session_key>/...`（tencent 总结里的 404 根因）
 
 ### 明确不做
