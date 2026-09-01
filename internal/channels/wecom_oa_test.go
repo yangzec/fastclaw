@@ -69,6 +69,28 @@ func TestWeComOAGetTokenAndAddSchedule(t *testing.T) {
 	}
 }
 
+func TestWeComAddScheduleMaps48002(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "gettoken") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"errcode": 0, "access_token": "tok", "expires_in": 7200,
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"errcode": 48002, "errmsg": "api forbidden",
+		})
+	}))
+	defer srv.Close()
+	c := NewWeComOA("ww_corp", "sec_1", "", srv.URL)
+	_, err := c.AddSchedule(context.Background(), WeComSchedule{
+		Summary: "站岗", StartUnix: 1773462000, EndUnix: 1773465600,
+	})
+	if err == nil || !strings.Contains(err.Error(), "48002") || !strings.Contains(err.Error(), "create_cron_job") {
+		t.Fatalf("want mapped 48002, got %v", err)
+	}
+}
+
 func TestWeComValidateOARejectsBadToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{

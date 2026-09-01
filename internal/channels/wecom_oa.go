@@ -143,7 +143,7 @@ func (c *WeComOA) AccessToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if parsed.ErrCode != 0 || parsed.AccessToken == "" {
-		return "", fmt.Errorf("wecom oa gettoken: %d %s", parsed.ErrCode, strings.TrimSpace(parsed.ErrMsg))
+		return "", wecomOAErr("gettoken", parsed.ErrCode, parsed.ErrMsg)
 	}
 	ttl := time.Duration(parsed.ExpiresIn) * time.Second
 	if ttl <= 0 {
@@ -182,7 +182,7 @@ func (c *WeComOA) AddSchedule(ctx context.Context, ev WeComSchedule) (string, er
 		return "", err
 	}
 	if parsed.ErrCode != 0 {
-		return "", fmt.Errorf("wecom oa schedule/add: %d %s", parsed.ErrCode, strings.TrimSpace(parsed.ErrMsg))
+		return "", wecomOAErr("schedule/add", parsed.ErrCode, parsed.ErrMsg)
 	}
 	if parsed.ScheduleID == "" {
 		return "", fmt.Errorf("wecom oa schedule/add: empty schedule_id")
@@ -206,7 +206,7 @@ func (c *WeComOA) GetSchedules(ctx context.Context, ids []string) (json.RawMessa
 		return nil, err
 	}
 	if parsed.ErrCode != 0 {
-		return nil, fmt.Errorf("wecom oa schedule/get: %d %s", parsed.ErrCode, strings.TrimSpace(parsed.ErrMsg))
+		return nil, wecomOAErr("schedule/get", parsed.ErrCode, parsed.ErrMsg)
 	}
 	raw, err := json.Marshal(parsed.ScheduleList)
 	if err != nil {
@@ -296,4 +296,19 @@ func (c *WeComOA) doJSON(req *http.Request, dest any) error {
 		return fmt.Errorf("wecom oa: decode: %w", err)
 	}
 	return nil
+}
+
+func wecomOAErr(op string, code int, msg string) error {
+	msg = strings.TrimSpace(msg)
+	switch code {
+	case 48002:
+		return fmt.Errorf("wecom oa %s: 48002 无日程权限。管理后台「协作 → 日程 → 可调用接口的应用」勾选该自建应用；可见范围要覆盖被邀请的人；若仍失败，把 FastClaw 出口 IP 加到应用的企业可信 IP。权限开通前请改用 create_cron_job 做本地到点提醒（不会出现在企微日历）", op)
+	case 60020:
+		return fmt.Errorf("wecom oa %s: 60020 企业可信 IP 未放行。把当前服务器公网 IP 加到该自建应用的可信 IP 列表", op)
+	default:
+		if msg == "" {
+			return fmt.Errorf("wecom oa %s: %d", op, code)
+		}
+		return fmt.Errorf("wecom oa %s: %d %s", op, code, msg)
+	}
 }
