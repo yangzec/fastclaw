@@ -23,6 +23,11 @@ action on upgrade — read those notes before deploying.
   as soon as the phone confirms (so closing the dialog cannot drop the
   binding), and FastClaw DMs the scanning user a welcome so the 1:1
   chat is opened.
+- **Feishu typing / reply-to status.** While the agent is working, the
+  bot adds a `Typing` reaction on the user's message (same as Hermes)
+  and replies in-thread so the turn is quoted. The reaction is cleared
+  when the reply is delivered, or replaced with `CrossMark` if send
+  fails.
 
 ### Fixed
 

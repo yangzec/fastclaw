@@ -590,11 +590,16 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		// media, push with empty text so attachments still flow but
 		// the chat panel doesn't double-render the text.
 		if webStreamed && len(items) == 0 {
+			chanMgr.ClearTyping(task.Message.Channel, task.AccountID, task.Message.ChatID)
 			return reply, nil
 		}
 		outText := text
 		if webStreamed {
 			outText = ""
+		}
+		if outText == "" && len(items) == 0 {
+			chanMgr.ClearTyping(task.Message.Channel, task.AccountID, task.Message.ChatID)
+			return reply, nil
 		}
 		out := bus.OutboundMessage{
 			Channel:      task.Message.Channel,
@@ -618,6 +623,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		select {
 		case mb.Outbound <- out:
 		case <-ctx.Done():
+			chanMgr.ClearTyping(task.Message.Channel, task.AccountID, task.Message.ChatID)
 			slog.Warn("outbound enqueue cancelled", "agent", task.AgentID, "chat", task.Message.ChatID)
 		}
 		return reply, nil

@@ -306,6 +306,32 @@ func (m *Manager) SendTyping(channel, accountID, chatID string) {
 	}
 }
 
+// typingClearer is implemented by channels that use a persistent
+// indicator (Feishu reactions) and need an explicit stop when a turn
+// ends with no outbound message.
+type typingClearer interface {
+	ClearTyping(chatID string) error
+}
+
+// ClearTyping stops a channel-specific in-progress indicator. No-op
+// when the adapter has nothing to clear.
+func (m *Manager) ClearTyping(channel, accountID, chatID string) {
+	key := channelKey(channel, accountID)
+	m.mu.Lock()
+	ch, ok := m.channels[key]
+	m.mu.Unlock()
+	if !ok {
+		return
+	}
+	clearer, ok := ch.(typingClearer)
+	if !ok {
+		return
+	}
+	if err := clearer.ClearTyping(chatID); err != nil {
+		slog.Debug("clear typing failed", "key", key, "error", err)
+	}
+}
+
 // Has returns true when a channel with the given key is registered.
 // Used by handlers to short-circuit redundant hot-starts.
 func (m *Manager) Has(channel, accountID string) bool {
