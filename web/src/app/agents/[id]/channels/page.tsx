@@ -34,6 +34,7 @@ import {
   ExternalLink,
   Loader2,
   QrCode,
+  Calendar,
 } from "lucide-react";
 import {
   listAgentChannels,
@@ -43,6 +44,8 @@ import {
   connectAgentLINE,
   connectAgentFeishu,
   connectAgentWeCom,
+  connectAgentWeComOA,
+  disconnectAgentWeComOA,
   startAgentFeishuLogin,
   pollAgentFeishuLoginStatus,
   cancelAgentFeishuLogin,
@@ -102,7 +105,7 @@ const CATALOG: { type: string; label: string; description: string; available: bo
   {
     type: "wecom",
     label: "WeCom",
-    description: "Scan a QR code in 企业微信 to create an AI bot, or paste BotID + long-connection Secret.",
+    description: "Scan a QR code in 企业微信 to create an AI bot, or paste BotID + long-connection Secret. Official calendar uses one 自建应用 on the same channel.",
     available: true,
   },
 ];
@@ -122,6 +125,7 @@ export default function AgentChannelsPage() {
   const [wechatOpen, setWechatOpen] = useState(false);
   const [feishuOpen, setFeishuOpen] = useState(false);
   const [wecomOpen, setWecomOpen] = useState(false);
+  const [wecomOATarget, setWecomOATarget] = useState<AgentChannel | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AgentChannel | null>(null);
 
   const refresh = useCallback(() => {
@@ -194,6 +198,13 @@ export default function AgentChannelsPage() {
                 label={entry.label}
                 channel={connected}
                 onDelete={() => setDeleteTarget(connected)}
+                onEnableWeComOA={() => setWecomOATarget(connected)}
+                onDisableWeComOA={async () => {
+                  if (!agentId) return;
+                  const res = await disconnectAgentWeComOA(agentId, connected.accountId);
+                  if (res.error) setError(res.error);
+                  refresh();
+                }}
               />
             ) : (
               <CatalogCard
@@ -266,6 +277,17 @@ export default function AgentChannelsPage() {
         onConnected={refresh}
       />
 
+      <ConnectWeComOADialog
+        open={!!wecomOATarget}
+        onOpenChange={(v) => !v && setWecomOATarget(null)}
+        agentId={agentId}
+        accountId={wecomOATarget?.accountId || ""}
+        onConnected={() => {
+          setWecomOATarget(null);
+          refresh();
+        }}
+      />
+
       <AlertDialog open={!!deleteTarget} onOpenChange={(v) => !v && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -332,10 +354,14 @@ function ConnectedCard({
   label,
   channel,
   onDelete,
+  onEnableWeComOA,
+  onDisableWeComOA,
 }: {
   label: string;
   channel: AgentChannel;
   onDelete: () => void;
+  onEnableWeComOA?: () => void;
+  onDisableWeComOA?: () => void;
 }) {
   // Telegram is the only provider with a public profile URL pattern
   // (t.me/<username>); Discord/Slack don't expose one from a bot
@@ -381,7 +407,36 @@ function ConnectedCard({
         <code className="text-xs text-muted-foreground/80 font-mono truncate block">
           {channel.botToken}
         </code>
+        {channel.type === "wecom" && (
+          <div className="rounded-md border bg-muted/20 p-2 space-y-1.5">
+            <div className="flex items-center gap-1.5 text-xs font-medium">
+              <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
+              Official calendar
+            </div>
+            {channel.oaEnabled ? (
+              <p className="text-xs text-muted-foreground truncate">
+                自建应用 {channel.corpId}
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Chat is live. Add one 自建应用 (CorpID + Secret) to create WeCom 日程 from chat.
+              </p>
+            )}
+          </div>
+        )}
       </div>
+
+      {channel.type === "wecom" && (
+        channel.oaEnabled ? (
+          <Button size="sm" variant="outline" onClick={onDisableWeComOA} className="w-full">
+            Disconnect calendar
+          </Button>
+        ) : (
+          <Button size="sm" variant="outline" onClick={onEnableWeComOA} className="w-full">
+            Enable official calendar
+          </Button>
+        )
+      )}
 
       <Button
         size="sm"
@@ -1819,6 +1874,123 @@ function ConnectWeComDialog({
               </Button>
             </>
           )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ConnectWeComOADialog({
+  open,
+  onOpenChange,
+  agentId,
+  accountId,
+  onConnected,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  agentId: string;
+  accountId: string;
+  onConnected: () => void;
+}) {
+  const [corpId, setCorpId] = useState("");
+  const [secret, setSecret] = useState("");
+  const [appAgentId, setAppAgentId] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) {
+      setCorpId("");
+      setSecret("");
+      setAppAgentId("");
+      setSubmitting(false);
+      setError("");
+    }
+  }, [open]);
+
+  const submit = async () => {
+    if (!agentId || !accountId || !corpId.trim() || !secret.trim()) return;
+    setSubmitting(true);
+    setError("");
+    const res = await connectAgentWeComOA(
+      agentId,
+      accountId,
+      corpId.trim(),
+      secret.trim(),
+      appAgentId.trim(),
+    );
+    setSubmitting(false);
+    if (res.error || !res.ok) {
+      setError(res.error || "Failed to enable official calendar");
+      return;
+    }
+    onConnected();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Calendar className="h-5 w-5" />
+            Enable official WeCom calendar
+          </DialogTitle>
+          <DialogDescription>
+            One 自建应用 is enough for calendar (and later approval / contacts).
+            This does not replace the AI bot — chat stays on the long-connection.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 py-2">
+          <ol className="text-xs text-muted-foreground list-decimal pl-4 space-y-1">
+            <li>企业微信管理后台 → 我的企业 → copy CorpID.</li>
+            <li>应用管理 → 自建 → open your app → copy Secret.</li>
+            <li>协作 → 日程 → 可调用接口的应用 → add this app. Visible range must include people you will invite.</li>
+          </ol>
+          <div className="space-y-1.5">
+            <Label htmlFor="wecom-corp-id">CorpID</Label>
+            <Input
+              id="wecom-corp-id"
+              value={corpId}
+              onChange={(e) => setCorpId(e.target.value)}
+              placeholder="ww…"
+              className="font-mono text-sm"
+              autoFocus
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="wecom-corp-secret">App Secret</Label>
+            <Input
+              id="wecom-corp-secret"
+              value={secret}
+              onChange={(e) => setSecret(e.target.value)}
+              type="password"
+              className="font-mono text-sm"
+              placeholder="自建应用 Secret"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="wecom-corp-agent">AgentId (optional)</Label>
+            <Input
+              id="wecom-corp-agent"
+              value={appAgentId}
+              onChange={(e) => setAppAgentId(e.target.value)}
+              className="font-mono text-sm"
+              placeholder="1000014"
+            />
+          </div>
+          {error && <p className="text-xs text-destructive">{error}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => void submit()}
+            disabled={submitting || !corpId.trim() || !secret.trim()}
+          >
+            {submitting ? "Validating…" : "Enable calendar"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

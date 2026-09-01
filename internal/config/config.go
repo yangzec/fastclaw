@@ -288,29 +288,29 @@ type SkillsLearnerCfg struct {
 // channels, agents). Callers never serialize it back out — DB tables are
 // the persistent source of truth.
 type Config struct {
-	Providers     map[string]ProviderConfig  `json:"providers"`
-	Agents        AgentsConfig               `json:"agents"`
-	Channels      map[string]ChannelConfig   `json:"channels"`
-	Bindings      []Binding                  `json:"bindings,omitempty"`
-	Teams         map[string]TeamEntry       `json:"teams,omitempty"`
-	MCPServers    map[string]MCPServerConfig `json:"mcpServers,omitempty"`
-	CronJobs      []CronJob                  `json:"cronJobs,omitempty"`
-	Heartbeat     HeartbeatCfg               `json:"heartbeat,omitempty"`
-	Storage       StorageCfg                 `json:"storage,omitempty"`
-	Sandbox       SandboxCfg                 `json:"sandbox,omitempty"`
-	ToolProviders map[string]ToolProviderCfg `json:"toolProviders,omitempty"`
-	Tools         map[string]ToolCategoryCfg `json:"tools,omitempty"`
-	ObjectStore   ObjectStoreCfg             `json:"objectStore,omitempty"`
-	Hooks         HooksCfg                   `json:"hooks,omitempty"`
-	Plugins       PluginsCfg                 `json:"plugins,omitempty"`
-	Gateway       GatewayCfg                 `json:"gateway,omitempty"`
-	TaskQueue     TaskQueueCfg               `json:"taskQueue,omitempty"`
-	Skills        SkillsCfg                  `json:"skills,omitempty"`
-	Memory        MemoryCfg                  `json:"memory,omitempty"`
-	WorkspaceHistory WorkspaceHistoryCfg    `json:"workspaceHistory,omitempty"`
-	Privacy       PrivacyCfg                 `json:"privacy,omitempty"`
-	SkillsLearner SkillsLearnerCfg           `json:"skillsLearner,omitempty"`
-	Prefs         PrefsCfg                   `json:"prefs,omitempty"`
+	Providers        map[string]ProviderConfig  `json:"providers"`
+	Agents           AgentsConfig               `json:"agents"`
+	Channels         map[string]ChannelConfig   `json:"channels"`
+	Bindings         []Binding                  `json:"bindings,omitempty"`
+	Teams            map[string]TeamEntry       `json:"teams,omitempty"`
+	MCPServers       map[string]MCPServerConfig `json:"mcpServers,omitempty"`
+	CronJobs         []CronJob                  `json:"cronJobs,omitempty"`
+	Heartbeat        HeartbeatCfg               `json:"heartbeat,omitempty"`
+	Storage          StorageCfg                 `json:"storage,omitempty"`
+	Sandbox          SandboxCfg                 `json:"sandbox,omitempty"`
+	ToolProviders    map[string]ToolProviderCfg `json:"toolProviders,omitempty"`
+	Tools            map[string]ToolCategoryCfg `json:"tools,omitempty"`
+	ObjectStore      ObjectStoreCfg             `json:"objectStore,omitempty"`
+	Hooks            HooksCfg                   `json:"hooks,omitempty"`
+	Plugins          PluginsCfg                 `json:"plugins,omitempty"`
+	Gateway          GatewayCfg                 `json:"gateway,omitempty"`
+	TaskQueue        TaskQueueCfg               `json:"taskQueue,omitempty"`
+	Skills           SkillsCfg                  `json:"skills,omitempty"`
+	Memory           MemoryCfg                  `json:"memory,omitempty"`
+	WorkspaceHistory WorkspaceHistoryCfg        `json:"workspaceHistory,omitempty"`
+	Privacy          PrivacyCfg                 `json:"privacy,omitempty"`
+	SkillsLearner    SkillsLearnerCfg           `json:"skillsLearner,omitempty"`
+	Prefs            PrefsCfg                   `json:"prefs,omitempty"`
 }
 
 // ModelCost holds pricing info for a model.
@@ -322,11 +322,11 @@ type ModelCost struct {
 }
 
 type ModelEntry struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	Reasoning     bool      `json:"reasoning"`
-	Input         []string  `json:"input"`
-	Cost          ModelCost `json:"cost"`
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Reasoning bool      `json:"reasoning"`
+	Input     []string  `json:"input"`
+	Cost      ModelCost `json:"cost"`
 	// ContextWindow is the model's input context size in tokens. The
 	// agent loop uses it (minus output/prompt reserves) as the history
 	// compaction threshold. 0 means "unset" — compaction then falls
@@ -516,6 +516,28 @@ type AccountConfig struct {
 	// When true, verification/encrypt keys are unused and no public
 	// URL needs to be reachable.
 	UseLongConn bool `json:"useLongConn,omitempty"`
+	// CorpID / CorpSecret / CorpAgentID are 企业微信自建应用
+	// credentials for official OpenAPI (calendar, approval, contacts).
+	// Distinct from BotToken, which is the WeCom AI-bot long-conn secret.
+	// Empty on every channel except wecom after the user enables
+	// "official calendar" on that bot.
+	CorpID      string `json:"corpId,omitempty"`
+	CorpSecret  string `json:"corpSecret,omitempty"`
+	CorpAgentID string `json:"corpAgentId,omitempty"`
+}
+
+// ChannelConfigFromData decodes the JSON blob stored on a ChannelRecord.
+func ChannelConfigFromData(data map[string]interface{}) ChannelConfig {
+	var cc ChannelConfig
+	if data == nil {
+		return cc
+	}
+	blob, err := json.Marshal(data)
+	if err != nil {
+		return cc
+	}
+	_ = json.Unmarshal(blob, &cc)
+	return cc
 }
 
 type Binding struct {
@@ -767,7 +789,7 @@ func (cfg *Config) MergedAgentConfig(entry AgentEntry) ResolvedAgent {
 		Thinking:             cfg.Agents.Defaults.Thinking,
 		Sandbox:              cfg.Sandbox,
 		PolicyPreset:         cfg.Agents.Defaults.PolicyPreset,
-		WorkspaceHistory:       cfg.Agents.Defaults.WorkspaceHistory,
+		WorkspaceHistory:     cfg.Agents.Defaults.WorkspaceHistory,
 	}
 
 	if entry.MaxTokens > 0 {

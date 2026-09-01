@@ -264,6 +264,10 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 		// at execute time (bindSession stamps them per-turn) so the
 		// fired message routes back to the originating chat.
 		tools.RegisterCronTools(ag.registry, m.opts.dataStore, m.uid, rc.ID)
+		// Official 企业微信日程 (自建应用 OA). Reads CorpID/Secret off
+		// the wecom channel row at execute time — registering always
+		// means enabling calendar on Channels does not need a rebuild.
+		tools.RegisterWeComScheduleTools(ag.registry, m.opts.dataStore, rc.ID)
 		// set_timezone persists the chatter's IANA timezone into scope
 		// prefs — the same rows the system-prompt date line and cron
 		// scheduling resolve through. Needs the relational store, so it

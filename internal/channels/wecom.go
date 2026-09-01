@@ -33,9 +33,12 @@ import (
 //
 // Storage mapping (same convention as Feishu / LINE):
 //
-//	accountID              = BotID
-//	AccountConfig.BotToken = Secret
-//	AccountConfig.BaseURL  = optional private-deploy WS URL
+//	accountID                = BotID
+//	AccountConfig.BotToken   = long-conn Secret
+//	AccountConfig.BaseURL    = optional private-deploy WS URL
+//	AccountConfig.CorpID     = 自建应用 CorpID (official calendar / OA)
+//	AccountConfig.CorpSecret = 自建应用 Secret
+//	AccountConfig.CorpAgentID = optional 自建应用 AgentId
 const (
 	wecomDefaultWSURL   = "wss://openws.work.weixin.qq.com"
 	wecomHeartbeatEvery = 30 * time.Second

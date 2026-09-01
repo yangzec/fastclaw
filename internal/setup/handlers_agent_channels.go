@@ -40,6 +40,9 @@ type channelOut struct {
 	SharedIdentity bool   `json:"sharedIdentity"`
 	UpdatedAt      string `json:"updatedAt,omitempty"`
 	Source         string `json:"source,omitempty"`
+	// WeCom 自建应用 official calendar. Secret is never returned.
+	OAEnabled bool   `json:"oaEnabled,omitempty"`
+	CorpID    string `json:"corpId,omitempty"`
 }
 
 // resolveChannelBindingScope authorizes a connect/disconnect call and
@@ -222,6 +225,7 @@ func flattenChannelRecords(rows []store.ChannelRecord, source string) []channelO
 			if tok == "" {
 				tok = rec.BotToken
 			}
+			oaOn, corpID := wecomOAPublic(rec.Type, acct)
 			out = append(out, channelOut{
 				Type:           rec.Type,
 				AccountID:      accountID,
@@ -231,6 +235,8 @@ func flattenChannelRecords(rows []store.ChannelRecord, source string) []channelO
 				SharedIdentity: rec.SharedIdentity,
 				UpdatedAt:      rec.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 				Source:         source,
+				OAEnabled:      oaOn,
+				CorpID:         corpID,
 			})
 		}
 	}
@@ -1232,19 +1238,34 @@ func (s *Server) handleConnectAgentWeCom(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+func wecomOAPublic(channelType string, acct config.AccountConfig) (bool, string) {
+	if channelType != "wecom" || !channels.WeComOAConfigured(acct) {
+		return false, ""
+	}
+	return true, acct.CorpID
+}
+
 // persistWeComAccount writes the channel row + binding and hot-registers
 // the adapter. Shared by the official scan popup (frontend POSTs the
-// issued botid/secret) and the paste-credentials fallback.
+// issued botid/secret) and the paste-credentials fallback. Reconnecting
+// the same BotID keeps any 自建应用 calendar credentials already stored.
 func (s *Server) persistWeComAccount(ctx context.Context, userID, agentIDArg, agentID, botID, secret, baseURL string) error {
+	acct := config.AccountConfig{
+		BotToken:    secret,
+		BaseURL:     baseURL,
+		UseLongConn: true,
+	}
+	if existing, err := s.dataStore.LookupChannel(ctx, "wecom", botID); err == nil && existing != nil {
+		old := config.ChannelConfigFromData(existing.Data)
+		if prev, ok := old.Accounts[botID]; ok {
+			acct.CorpID = prev.CorpID
+			acct.CorpSecret = prev.CorpSecret
+			acct.CorpAgentID = prev.CorpAgentID
+		}
+	}
 	cc := config.ChannelConfig{
-		Enabled: true,
-		Accounts: map[string]config.AccountConfig{
-			botID: {
-				BotToken:    secret,
-				BaseURL:     baseURL,
-				UseLongConn: true,
-			},
-		},
+		Enabled:  true,
+		Accounts: map[string]config.AccountConfig{botID: acct},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/", nil)
 	if err != nil {
@@ -1267,6 +1288,134 @@ func (s *Server) persistWeComAccount(ctx context.Context, userID, agentIDArg, ag
 		s.hotRegisterChannelRecord(*ch)
 	}
 	return nil
+}
+
+type connectWeComOARequest struct {
+	CorpID  string `json:"corpId"`
+	Secret  string `json:"secret"`
+	AgentID string `json:"agentId"`
+}
+
+// wecomValidateOA is the official gettoken call. Tests swap this so
+// they don't hit qyapi.weixin.qq.com.
+var wecomValidateOA = channels.WeComValidateOA
+
+// handleConnectAgentWeComOA attaches 自建应用 CorpID + Secret to an
+// already-connected AI bot so agent tools can call official OA APIs
+// (calendar first). Chat keeps using the long-conn BotID/Secret.
+func (s *Server) handleConnectAgentWeComOA(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWritable(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	accountID := strings.TrimSpace(r.PathValue("accountId"))
+	uid, aid, ok := s.resolveChannelBindingScope(w, r, id)
+	if !ok {
+		return
+	}
+	var req connectWeComOARequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	corpID := strings.TrimSpace(req.CorpID)
+	secret := strings.TrimSpace(req.Secret)
+	agentID := strings.TrimSpace(req.AgentID)
+	if corpID == "" || secret == "" {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "corpId and secret required"})
+		return
+	}
+	ch, err := s.findAgentWeComChannel(r.Context(), uid, aid, accountID)
+	if err != nil {
+		jsonResponse(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := wecomValidateOA(r.Context(), corpID, secret); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := s.patchWeComAccount(r.Context(), ch, func(acct *config.AccountConfig) {
+		acct.CorpID = corpID
+		acct.CorpSecret = secret
+		acct.CorpAgentID = agentID
+	}); err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"oaEnabled": true,
+		"corpId":    corpID,
+	})
+}
+
+// handleDisconnectAgentWeComOA clears 自建应用 credentials without
+// dropping the AI-bot long-conn.
+func (s *Server) handleDisconnectAgentWeComOA(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWritable(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	accountID := strings.TrimSpace(r.PathValue("accountId"))
+	uid, aid, ok := s.resolveChannelBindingScope(w, r, id)
+	if !ok {
+		return
+	}
+	ch, err := s.findAgentWeComChannel(r.Context(), uid, aid, accountID)
+	if err != nil {
+		jsonResponse(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := s.patchWeComAccount(r.Context(), ch, func(acct *config.AccountConfig) {
+		acct.CorpID = ""
+		acct.CorpSecret = ""
+		acct.CorpAgentID = ""
+	}); err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "oaEnabled": false})
+}
+
+func (s *Server) findAgentWeComChannel(ctx context.Context, userID, agentID, accountID string) (*store.ChannelRecord, error) {
+	if accountID == "" {
+		return nil, errors.New("wecom bot not connected")
+	}
+	chs, err := s.dataStore.ListChannels(ctx, userID, agentID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range chs {
+		if chs[i].Type == "wecom" && chs[i].AccountID == accountID {
+			return &chs[i], nil
+		}
+	}
+	return nil, errors.New("wecom bot not connected — connect the AI bot first")
+}
+
+func (s *Server) patchWeComAccount(ctx context.Context, rec *store.ChannelRecord, patch func(*config.AccountConfig)) error {
+	if rec == nil {
+		return errors.New("wecom channel missing")
+	}
+	cc := config.ChannelConfigFromData(rec.Data)
+	if cc.Accounts == nil {
+		cc.Accounts = map[string]config.AccountConfig{}
+	}
+	acct := cc.Accounts[rec.AccountID]
+	if acct.BotToken == "" {
+		acct.BotToken = rec.BotToken
+	}
+	if acct.BaseURL == "" {
+		acct.BaseURL = rec.BaseURL
+	}
+	acct.UseLongConn = true
+	patch(&acct)
+	cc.Accounts[rec.AccountID] = acct
+	rec.Data = channelConfigToData(cc)
+	if rec.BotToken == "" {
+		rec.BotToken = acct.BotToken
+	}
+	return s.dataStore.SaveChannel(ctx, rec)
 }
 
 // --- LINE ---
