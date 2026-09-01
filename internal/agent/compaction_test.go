@@ -310,6 +310,12 @@ func TestCompactMessagesHardTrimsWhenSummarizeFails(t *testing.T) {
 	if res == nil || !res.Pruned {
 		t.Fatal("expected a pruned result after failed compression")
 	}
+	if res.Method != compactMethodHardTrim {
+		t.Fatalf("method = %q, want %s", res.Method, compactMethodHardTrim)
+	}
+	if notice := compactionNotice(res); !strings.Contains(notice, "/new") {
+		t.Fatalf("hard-trim notice should suggest /new, got %q", notice)
+	}
 	got := EstimateTokens(res.Messages)
 	if got >= DefaultTokenThreshold {
 		t.Fatalf("hard-trim left %d tokens (threshold %d) — session would still 400", got, DefaultTokenThreshold)
@@ -364,6 +370,24 @@ func TestHardTrimMessagesNeverStartsWithTool(t *testing.T) {
 		if j < 0 || out[j].Role != "assistant" || len(out[j].ToolCalls) == 0 {
 			t.Fatalf("tool at %d has no parent assistant.tool_calls", i)
 		}
+	}
+}
+
+func TestCompactionNoticeSuggestsNew(t *testing.T) {
+	if compactionNotice(nil) != "" {
+		t.Fatal("nil result should have no notice")
+	}
+	if compactionNotice(&CompactResult{}) != "" {
+		t.Fatal("unpruned result should have no notice")
+	}
+	for _, method := range []string{compactMethodPrune, compactMethodSummarize, compactMethodHardTrim} {
+		got := compactionNotice(&CompactResult{Pruned: true, Method: method})
+		if !strings.Contains(got, "/new") {
+			t.Errorf("method %s notice missing /new: %q", method, got)
+		}
+	}
+	if !strings.Contains(compactionNotice(&CompactResult{Pruned: true, Method: compactMethodHardTrim}), "dropped") {
+		t.Error("hard-trim notice should say older turns were dropped")
 	}
 }
 

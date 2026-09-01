@@ -13,7 +13,10 @@ action on upgrade — read those notes before deploying.
   fallback then kept the still-huge pruned history (~400k tokens) and
   `llmRetry` retried the resulting `invalid_request_error` three
   times. Compaction now passes a real context, caps summarizer input,
-  and hard-trims oldest turns until the history fits. Non-transient
+  and hard-trims oldest turns until the history fits. After
+  auto-compaction the user is told to send `/new` if they want a
+  clean session (the chat UI still shows the archived thread, but
+  the model only sees the compacted working set). Non-transient
   4xx LLM errors are no longer retried.
 - **Cron jobs fired ~hours late on Postgres when the server ran in a
   non-UTC timezone.** The `cron_jobs` time columns were declared

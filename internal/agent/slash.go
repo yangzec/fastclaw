@@ -313,7 +313,11 @@ func (a *Agent) slashCompact(msg bus.InboundMessage) slashResult {
 	}
 	if result != nil && result.Pruned {
 		sess.ReplaceMessages(result.Messages)
-		return slashResult{handled: true, reply: fmt.Sprintf("✅ Compacted: %d → %d messages.", len(sessionMsgs), len(result.Messages))}
+		reply := fmt.Sprintf("✅ Compacted: %d → %d messages.", len(sessionMsgs), len(result.Messages))
+		if notice := compactionNotice(result); notice != "" {
+			reply += "\n\n" + notice
+		}
+		return slashResult{handled: true, reply: reply}
 	}
 	return slashResult{handled: true, reply: "Session is within limits, no compaction needed."}
 }

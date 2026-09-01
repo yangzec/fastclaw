@@ -48,11 +48,50 @@ func EstimateTokens(messages []provider.Message) int {
 	return total
 }
 
+const (
+	compactMethodPrune     = "prune"
+	compactMethodSummarize = "summarize"
+	compactMethodHardTrim  = "hard_trim"
+)
+
 // CompactResult holds the result of a compaction operation.
 type CompactResult struct {
 	Messages []provider.Message
 	Pruned   bool
-	LogFile  string
+	// Method is prune, summarize, or hard_trim when Pruned is true.
+	Method  string
+	LogFile string
+}
+
+// compactionNotice is the user-visible line after auto-compaction.
+// Chat UI still shows the archived full thread, but the model only
+// sees the compacted working set — so we tell the user and point
+// them at /new rather than letting the model silently "forget".
+func compactionNotice(r *CompactResult) string {
+	if r == nil || !r.Pruned {
+		return ""
+	}
+	switch r.Method {
+	case compactMethodHardTrim:
+		return "⚠️ This session was too long to keep intact — older turns were dropped so the model request would not be rejected. Send /new to start a clean session."
+	case compactMethodSummarize:
+		return "📦 Earlier turns were automatically summarized to fit the context window. Send /new if you want a clean session."
+	default:
+		return "📦 Context was compacted (older tool results trimmed). Send /new if replies start to miss earlier details."
+	}
+}
+
+// compactionModelHint is injected as a system message for the current
+// turn so the model does not pretend it still has the dropped history.
+func compactionModelHint(method string) string {
+	switch method {
+	case compactMethodHardTrim:
+		return "The session working set was just hard-trimmed to fit the model context window. Older turns are gone from your messages. Do not claim you remember details that are not present. If the user needs the earlier thread, tell them to send /new."
+	case compactMethodSummarize:
+		return "The session working set was just compacted: older turns were replaced with a short summary. Treat the summary as incomplete. If the user needs the original thread, tell them to send /new."
+	default:
+		return "Older tool results in this session were just truncated to fit the context window. If the user refers to a missing tool output, tell them to send /new."
+	}
 }
 
 // CompactMessages prunes and optionally compresses the message history when it exceeds the token threshold.
@@ -91,6 +130,7 @@ func CompactMessages(ctx context.Context, messages []provider.Message, workspace
 		return &CompactResult{
 			Messages: pruned,
 			Pruned:   true,
+			Method:   compactMethodPrune,
 			LogFile:  logFile,
 		}, nil
 	}
@@ -102,20 +142,24 @@ func CompactMessages(ctx context.Context, messages []provider.Message, workspace
 		return &CompactResult{
 			Messages: hardTrimMessages(pruned, DefaultTokenThreshold),
 			Pruned:   true,
+			Method:   compactMethodHardTrim,
 			LogFile:  logFile,
 		}, nil
 	}
 
 	after := EstimateTokens(compressed)
 	slog.Info("after compression", "tokens_before", prunedTokens, "tokens_after", after)
+	method := compactMethodSummarize
 	if after >= DefaultTokenThreshold {
 		slog.Warn("compression still over threshold, hard-trimming", "tokens", after, "threshold", DefaultTokenThreshold)
 		compressed = hardTrimMessages(compressed, DefaultTokenThreshold)
+		method = compactMethodHardTrim
 	}
 
 	return &CompactResult{
 		Messages: compressed,
 		Pruned:   true,
+		Method:   method,
 		LogFile:  logFile,
 	}, nil
 }
