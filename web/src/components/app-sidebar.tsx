@@ -280,6 +280,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   const quotaLocked = me?.user?.agentQuota === 0;
 
   return (
+    <>
     <Sidebar collapsible="icon" {...props}>
       <SidebarHeader>
         <AgentSwitcher
@@ -353,6 +354,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
         />
       </SidebarFooter>
       <SidebarRail />
+    </Sidebar>
       <AgentSettingsDialog
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
@@ -364,6 +366,6 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
         }
         isAdmin={isAdmin}
       />
-    </Sidebar>
+    </>
   );
 }
