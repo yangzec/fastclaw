@@ -57,3 +57,21 @@ func TestNewManagerWithStoreForUserEmptyUserIDDoesNotPanic(t *testing.T) {
 		t.Fatalf("message count = %d, want 1", got)
 	}
 }
+
+// /v1/chat/completions calls Get() to echo session_id, then HandleMessage
+// calls Get() again. Without a store hit (save is on first Append), the
+// second Get must reuse the in-memory key instead of minting another s-...
+func TestGetReusesInMemoryKeyBeforeStorePersist(t *testing.T) {
+	mgr := NewManagerWithStoreForUser(t.TempDir(), noopSessionStore{}, "u1", "agt-1")
+	first := mgr.Get("api", "", "app:user:conv", "")
+	second := mgr.Get("api", "", "app:user:conv", "")
+	if first == nil || second == nil {
+		t.Fatal("expected sessions")
+	}
+	if first.SessionKey() == "" || first.SessionKey() != second.SessionKey() {
+		t.Fatalf("keys %q then %q, want the same minted s-...", first.SessionKey(), second.SessionKey())
+	}
+	if len(first.SessionKey()) < 3 || first.SessionKey()[:2] != "s-" {
+		t.Fatalf("expected native session_id, got %q", first.SessionKey())
+	}
+}

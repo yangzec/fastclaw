@@ -8,6 +8,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { ChevronRightIcon, MoreHorizontal } from "lucide-react";
 import { moveChatSessionToProject } from "@/lib/api";
@@ -49,6 +50,7 @@ export function NavSessions({
 }) {
   const pathname = usePathname();
   const router = useRouter();
+  const { setOpenMobile } = useSidebar();
   // Drop-zone state for "drag a project chat back out into Chats".
   // The whole group acts as a target — we only highlight when the
   // drag carries a CHAT_DRAG_MIME payload AND the source chat is
@@ -71,12 +73,16 @@ export function NavSessions({
     (target: string) => {
       const here =
         pathname === target || pathname === target.replace(/\/$/, "");
+      // Always dismiss the mobile sheet — even when we're already on
+      // the target, otherwise tapping the current chat leaves the
+      // drawer covering the conversation.
+      setOpenMobile(false);
       if (here) return;
       if (inFlightTargetRef.current === target) return;
       inFlightTargetRef.current = target;
       router.push(target);
     },
-    [pathname, router],
+    [pathname, router, setOpenMobile],
   );
 
   if (!agentId) return null;

@@ -68,3 +68,30 @@ func TestChatCompletionImageUrlsAliasAlone(t *testing.T) {
 		t.Errorf("allAttachments = %+v", got)
 	}
 }
+
+func TestChatCompletionResponseIncludesSessionFields(t *testing.T) {
+	resp := chatCompletionResponse{
+		ID:         "chatcmpl-1",
+		Object:     "chat.completion",
+		Model:      "agent",
+		SessionID:  "s-123-abc",
+		SessionKey: "app:user:conv-1",
+		Choices: []completionChoice{
+			{Message: chatMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop"},
+		},
+	}
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["session_id"] != "s-123-abc" {
+		t.Errorf("session_id = %v", got["session_id"])
+	}
+	if got["session_key"] != "app:user:conv-1" {
+		t.Errorf("session_key = %v", got["session_key"])
+	}
+}

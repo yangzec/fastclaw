@@ -16,6 +16,7 @@ metering, quota checks, and optional channels to FastClaw.
 | Provision one upstream end-user | `POST /v1/users` | Optional. Chat can lazy-provision via `user` or `X-Fastclaw-End-User`. |
 | Query usage / token spend | `GET /v1/usage` | For upstream billing dashboards. |
 | Set paid-plan limits | `/v1/quota` | For subscription and entitlement enforcement. |
+| List/download files from a chat | `GET /api/agents/{id}/files` | Same API key as `/v1`. Pass `?sessionId=` = `X-Fastclaw-Session-Key` or the returned `session_id`. |
 | Admin/dashboard automation | `/api/*` or `fastclaw ...` CLI | Cookie/admin oriented, broader surface, not the minimal upstream app contract. |
 | Coding-agent live preview runtime | `docs/coding-agent-runtime.md` | Project/runtime endpoints are documented separately. |
 
@@ -159,13 +160,27 @@ data: {"id":"chatcmpl-...","object":"chat.completion.chunk","choices":[{"delta":
 data: [DONE]
 ```
 
-Non-streaming responses follow OpenAI response shape:
+The agent may run tools for a long time before the first content token.
+During that silence FastClaw still writes the role chunk immediately,
+then an SSE comment every 10s:
+
+```text
+: heartbeat
+```
+
+Keep the HTTP connection open. Ignore lines that start with `:`. Do not
+treat a quiet period as a hang and close the socket.
+
+Non-streaming responses follow OpenAI response shape, plus two FastClaw
+session fields:
 
 ```json
 {
   "id": "chatcmpl-...",
   "object": "chat.completion",
   "model": "agent",
+  "session_key": "chat-upstream-user-123-default",
+  "session_id": "s-...",
   "choices": [
     {
       "index": 0,
@@ -181,6 +196,14 @@ Non-streaming responses follow OpenAI response shape:
 }
 ```
 
+Streaming and non-streaming responses also set:
+
+- `X-Fastclaw-Session-Key`: the key you sent (or the auto-minted `api-...` key)
+- `X-Fastclaw-Session-Id`: the native row id (`s-...`) used by dashboard URLs
+
+`session_key` is your conversation address (ChatID). `session_id` is the
+stored session row. File APIs accept either as `?sessionId=`.
+
 ### Session Key Guidance
 
 Choose a deterministic session key from your product model:
@@ -191,6 +214,25 @@ Choose a deterministic session key from your product model:
 
 Do not reuse one session key for unrelated conversations. Session keys control
 chat history, memory extraction context, and usage grouping.
+
+### Session files
+
+```http
+GET /api/agents/agt_.../files?sessionId=chat-upstream-user-123-default
+Authorization: Bearer fcak_...
+```
+
+or the same URL with `sessionId=s-...`. Download a single file:
+
+```http
+GET /api/agents/agt_.../files/report.md?sessionId=chat-upstream-user-123-default
+Authorization: Bearer fcak_...
+```
+
+`/workspace/report.md` in the model reply is the same file as `report.md`.
+
+If chat used `user` or `X-Fastclaw-End-User`, send the same header on file
+requests so the lookup stays in that end-user's session row.
 
 ## Agents
 
@@ -320,6 +362,9 @@ Removes explicit quota and reverts the user to unlimited FastClaw-side quota.
    - set `agent_id`
    - set a deterministic `X-Fastclaw-Session-Key`
    - set `user` to the upstream stable user ID
+   - read `session_id` from `X-Fastclaw-Session-Id` (or the non-stream JSON)
+   - list/download files with `GET /api/agents/{id}/files?sessionId=` using
+     either the header you sent or that `session_id`
 6. On subscription changes:
    - call `PUT /v1/quota`
 7. For billing dashboards:

@@ -44,6 +44,65 @@ func TestOpenAIParseSSEUsage(t *testing.T) {
 // path (legacy endpoints, Ollama, etc.). Usage should land as the
 // zero-value struct so goal-budget code can detect "can't measure"
 // via an explicit zero check.
+func TestSSEDataPayloadAcceptsOptionalSpace(t *testing.T) {
+	cases := []struct {
+		line    string
+		ok      bool
+		payload string
+	}{
+		{`data: {"choices":[]}`, true, `{"choices":[]}`},
+		{`data:{"choices":[]}`, true, `{"choices":[]}`},
+		{`data: [DONE]`, true, `[DONE]`},
+		{`data:[DONE]`, true, `[DONE]`},
+		{`event: message`, false, ""},
+		{`: comment`, false, ""},
+		{``, false, ""},
+	}
+	for _, tc := range cases {
+		got, ok := sseDataPayload(tc.line)
+		if ok != tc.ok || got != tc.payload {
+			t.Errorf("sseDataPayload(%q) = (%q, %v), want (%q, %v)",
+				tc.line, got, ok, tc.payload, tc.ok)
+		}
+	}
+}
+
+func TestOpenAIParseSSENoSpaceAfterColon(t *testing.T) {
+	sse := strings.Join([]string{
+		`data:{"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}`,
+		`data:{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1}}`,
+		`data:[DONE]`,
+		``,
+	}, "\n")
+	p := &OpenAIProvider{}
+	resp, err := p.parseSSE(strings.NewReader(sse))
+	if err != nil {
+		t.Fatalf("parseSSE: %v", err)
+	}
+	if resp.Content != "hello" {
+		t.Errorf("content = %q, want %q (gateway emitted data: without a space)", resp.Content, "hello")
+	}
+}
+
+func TestAnthropicParseSSENoSpaceAfterColon(t *testing.T) {
+	sse := strings.Join([]string{
+		`data:{"type":"message_start","message":{"usage":{"input_tokens":5,"output_tokens":1}}}`,
+		`data:{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`data:{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+		`data:{"type":"message_delta","usage":{"input_tokens":5,"output_tokens":2}}`,
+		`data:{"type":"message_stop"}`,
+		``,
+	}, "\n")
+	p := &AnthropicProvider{}
+	resp, err := p.parseSSE(strings.NewReader(sse))
+	if err != nil {
+		t.Fatalf("parseSSE: %v", err)
+	}
+	if resp.Content != "hi" {
+		t.Errorf("content = %q, want %q (gateway emitted data: without a space)", resp.Content, "hi")
+	}
+}
+
 func TestOpenAIParseSSENoUsage(t *testing.T) {
 	sse := strings.Join([]string{
 		`data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`,

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fastclaw-ai/fastclaw/internal/config"
 	"github.com/fastclaw-ai/fastclaw/internal/provider"
 )
 
@@ -220,5 +221,90 @@ func TestCompressOlderMessagesNeverStartsTailWithTool(t *testing.T) {
 		if j < 0 || out[j].Role != "assistant" || len(out[j].ToolCalls) == 0 {
 			t.Errorf("tool at idx %d has no parent assistant.tool_calls in output", i)
 		}
+	}
+}
+
+func TestCompactThresholdUsesModelWindow(t *testing.T) {
+	got := CompactThreshold(200000, 8192)
+	want := 200000 - 8192 - compactPromptReserve
+	if got != want {
+		t.Fatalf("CompactThreshold(200000, 8192) = %d, want %d", got, want)
+	}
+}
+
+func TestCompactThresholdFallsBackToDefaultWindow(t *testing.T) {
+	got := CompactThreshold(0, 0)
+	want := CompactThreshold(DefaultContextWindow, 8192)
+	if got != want {
+		t.Fatalf("unset window = %d, want default %d", got, want)
+	}
+	if got <= 80000 {
+		t.Fatalf("default compact threshold %d is still the old 80k floor", got)
+	}
+}
+
+func TestCompactThresholdSmallWindowStillCompacts(t *testing.T) {
+	got := CompactThreshold(32000, 8192)
+	if got <= 0 || got >= 32000 {
+		t.Fatalf("32k window threshold %d should leave room inside the window", got)
+	}
+}
+
+func TestLookupContextWindowFallsBackToKnownPreset(t *testing.T) {
+	provs := map[string]config.ProviderConfig{
+		"openai": {Models: []config.ModelEntry{{ID: "gpt-5.5"}}},
+	}
+	if w := lookupContextWindow(provs, "openai/gpt-5.5"); w != 1_050_000 {
+		t.Fatalf("zero-saved window should use preset, got %d", w)
+	}
+	if w := lookupContextWindow(nil, "anthropic/claude-opus-4-7"); w != 1_000_000 {
+		t.Fatalf("no catalog should still resolve preset, got %d", w)
+	}
+	saved := map[string]config.ProviderConfig{
+		"openai": {Models: []config.ModelEntry{{ID: "gpt-5.5", ContextWindow: 128000}}},
+	}
+	if w := lookupContextWindow(saved, "openai/gpt-5.5"); w != 128000 {
+		t.Fatalf("saved window should win over preset, got %d", w)
+	}
+}
+
+func TestLookupContextWindowPrefersProviderPrefix(t *testing.T) {
+	provs := map[string]config.ProviderConfig{
+		"openai": {Models: []config.ModelEntry{{ID: "gpt-4o", ContextWindow: 128000}}},
+		"other":  {Models: []config.ModelEntry{{ID: "gpt-4o", ContextWindow: 32000}}},
+	}
+	if w := lookupContextWindow(provs, "openai/gpt-4o"); w != 128000 {
+		t.Fatalf("prefixed lookup = %d, want 128000", w)
+	}
+	if w := lookupContextWindow(provs, "other/gpt-4o"); w != 32000 {
+		t.Fatalf("other prefix = %d, want 32000", w)
+	}
+}
+
+func TestCompactMessagesRespectsThreshold(t *testing.T) {
+	msgs := []provider.Message{{Role: "user", Content: "hi"}}
+	res, err := CompactMessages(msgs, t.TempDir(), nil, "m", 1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Pruned {
+		t.Fatal("short history should not compact under a high threshold")
+	}
+
+	var long []provider.Message
+	for i := 0; i < 25; i++ {
+		long = append(long,
+			provider.Message{Role: "user", Content: "u"},
+			provider.Message{Role: "tool", ToolCallID: "t", Content: strings.Repeat("x", 400)},
+		)
+	}
+	// 2500 tokens before prune, ~1135 after. Stay above prune-after
+	// so we don't need an LLM summarizer, but below the raw size.
+	res, err = CompactMessages(long, t.TempDir(), nil, "m", 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Pruned {
+		t.Fatal("oversized history should compact when threshold is 2000")
 	}
 }

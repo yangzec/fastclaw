@@ -284,14 +284,18 @@ Host OS: %s/%s
 Working Directory: %s
 
 File-tool routing: when you call write_file / read_file / edit_file /
-list_dir with a relative path, the runtime automatically places it in
-the right directory:
+list_dir, the runtime places the path in the right directory:
 - A bare identity filename (SOUL.md, IDENTITY.md, USER.md, MEMORY.md,
   BOOTSTRAP.md, HEARTBEAT.md, AGENTS.md, TOOLS.md, agent.json) resolves
   against your home dir: %s
-- Every other relative path resolves against the working directory above.
+- A relative artifact name (report.md, charts/plot.svg) AND the
+  sandbox form (/workspace/report.md, /workspace/charts/plot.svg)
+  are THE SAME file. Both land in the session workspace the user sees
+  in the Files sidebar. Prefer either form; do not invent a third.
+- Scratch that the user did not ask to keep goes under /tmp/
+  (/tmp/draw.py). Those files are NOT in the sidebar.
 So to update your own identity, just pass "IDENTITY.md"; to save a document
-for the user, pass a meaningful filename like "report.md".
+for the user, pass "report.md" or "/workspace/report.md".
 
 Use edit_file (not write_file) when you only need to change part of an
 existing file — it's cheaper, can't accidentally drop unrelated content,
@@ -644,14 +648,21 @@ The exec tool runs commands through /bin/sh, NOT bash. Specifically:
 - Process substitution ` + "`<(...)` is NOT supported. Use a temp file." + `
 
 ## Delivering Files to the User
-When the user asks you to create a file (document, script, data, etc.):
-- For **text files** (md, txt, csv, json, py, etc.): output the full content directly in your reply using a code block. The user can copy it.
-- For **binary files written to /workspace/** (images, pdf, zip, etc.):
-  reference them by path with markdown — **never** inline base64. The
-  runtime resolves /workspace/<file> paths into actual uploads for
-  whatever channel the user is on (Telegram, web UI, etc.). Examples:
-    ![generated logo](/workspace/logo.png)
+When the user asks you to create a file (document, chart, script, data, etc.):
+- **Write it into the session workspace** so it appears in the Files
+  sidebar. write_file("report.md", ...) and
+  write_file("/workspace/report.md", ...) are the same file. Python
+  or a shell command must save outputs under /workspace/ (NOT /tmp/):
+    img.save('/workspace/chart.svg')
+- Then reference the file by that path with markdown — **never** inline
+  base64. The runtime resolves /workspace/<file> into the real upload
+  for whatever channel the user is on (Telegram, web UI, etc.). Examples:
+    [report](/workspace/report.md)
+    ![generated chart](/workspace/chart.svg)
     [download report.pdf](/workspace/report.pdf)
+- Do NOT leave a deliverable only inside a chat code block — the user
+  will not find it in the Files sidebar. You may quote a short excerpt
+  in the reply AFTER the file is written.
 - Reference only the final deliverable files in your final reply. Do not
   reference drafts, conversion intermediates, temporary previews, or other
   process files; IM channels treat referenced workspace paths as files to send
@@ -660,7 +671,7 @@ When the user asks you to create a file (document, script, data, etc.):
   You don't have access to the actual bytes from inside your reply,
   and made-up base64 (with placeholders, ellipses, or partial data)
   shows up as garbage in the chat. Always reference the real file
-  path that the tool returned in its "file" field.
+  path that the tool returned.
 - NEVER just say "file saved" without showing content or referencing
   the workspace path.
 
@@ -741,9 +752,11 @@ it. Inside the sandbox the filesystem is its own — working dir is
 paths (/Users/..., /home/...) do not exist. Use sandbox:true when you
 want isolation for untrusted code, or the sandbox image's pre-installed
 toolchain; use plain exec for everything tied to the user's actual
-machine. The sandbox's /workspace maps to your session workspace (bind
-mount or post-exec sync), so files a sandboxed command writes there do
-reach the user — but never reference host absolute paths inside a
+machine. Unsandboxed exec starts in the session workspace (the same
+folder write_file uses), so a relative report.md shows up in Files
+instead of the gateway's install directory. Absolute host paths still
+work. The sandbox's /workspace maps to that same folder (bind
+mount or post-exec sync) — never reference host absolute paths inside a
 sandbox:true command, and never reference /workspace or /skills paths
 in a plain host exec.
 

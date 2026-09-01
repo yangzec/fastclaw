@@ -11,6 +11,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { AgentSwitcher, AgentSwitcherItem } from "@/components/team-switcher";
 import { NavMain, NavItem } from "@/components/nav-main";
@@ -50,8 +51,10 @@ import {
 // missed when the project chat route was introduced and that left
 // the sidebar showing the platform nav for /agents/<id>/project/...
 function extractAgentId(pathname: string): string | null {
+  const bare = pathname.match(/^\/agents\/([^/]+)\/?$/);
+  if (bare) return bare[1];
   const match = pathname.match(
-    /^\/agents\/([^/]+)\/(chat|customize|skills|models|sessions|channels|chats|scheduler|project)/,
+    /^\/agents\/([^/]+)\/(chat|customize|skills|models|sessions|channels|chats|scheduler|project|knowledge|plugins|mcp|context|usage)/,
   );
   return match ? match[1] : null;
 }
@@ -99,12 +102,11 @@ const ADMIN_USER_GROUP: NavItem[] = [
 ];
 
 // "New chat" is active iff we're parked on the bare /chat/ page with
-// no session open. A session can be encoded two ways:
-//   - `?session=<id>` query param on `/chat/`
-//   - path segment: `/chat/<sessionId>/`
-// Either form means a specific session is open, so the New chat entry
-// must NOT light up. We check the exact pathname (rather than
-// startsWith) so the path-segment form falls through.
+// no session open. The canonical form is `/chat/<sessionId>/`; a
+// leftover `?session=<id>` query param on `/chat/` is still treated
+// as an open session so New chat does not light up. We check the
+// exact pathname (rather than startsWith) so the path-segment form
+// falls through.
 //
 // Configuration tabs (Customize / Models / Skills / Channels /
 // Scheduler) live in the footer Settings dialog — for owners only —
@@ -129,8 +131,17 @@ const AGENT_NAV = (
 export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const { setOpenMobile } = useSidebar();
   const activeAgentId = extractAgentId(pathname);
   const hasOpenSession = !!searchParams?.get("session");
+
+  // The mobile nav is a Sheet. Close it after any client navigation so
+  // tapping New chat / a session / Overview doesn't leave the drawer
+  // covering the page they just opened. searchParams covers ?session=
+  // and similar query-only transitions that leave pathname unchanged.
+  React.useEffect(() => {
+    setOpenMobile(false);
+  }, [pathname, searchParams, setOpenMobile]);
 
   const [status, setStatus] = React.useState<StatusResponse | null>(null);
   const [me, setMe] = React.useState<MeResponse | null>(null);
@@ -165,7 +176,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   React.useEffect(() => {
     getAgents()
       .then((list) => {
-        setAgents(list.map((a) => ({ id: a.id, name: a.name, model: a.model })));
+        setAgents(list.map((a) => ({ id: a.id, name: a.name, model: a.model, avatarUrl: a.avatarUrl })));
         const roles: Record<string, "owner" | "viewer"> = {};
         for (const a of list) {
           roles[a.id] = a.role === "viewer" ? "viewer" : "owner";
@@ -190,7 +201,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
         setAgents((prev) =>
           prev.some((x) => x.id === a.id)
             ? prev
-            : [...prev, { id: a.id, name: a.name, model: a.model }],
+            : [...prev, { id: a.id, name: a.name, model: a.model, avatarUrl: a.avatarUrl }],
         );
         if (a.role === "viewer" || a.role === "owner") {
           setAgentRoles((prev) => ({ ...prev, [a.id]: a.role as "owner" | "viewer" }));
@@ -269,6 +280,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   const quotaLocked = me?.user?.agentQuota === 0;
 
   return (
+    <>
     <Sidebar collapsible="icon" {...props}>
       <SidebarHeader>
         <AgentSwitcher
@@ -320,9 +332,11 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
           <SidebarMenuItem>
             <SidebarMenuButton
               tooltip="Settings"
+              isActive={!!pathname?.startsWith("/settings")}
               onClick={() => {
                 setSettingsUserOnly(!activeAgentId);
                 setSettingsOpen(true);
+                setOpenMobile(false);
               }}
             >
               <SettingsIcon />
@@ -340,6 +354,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
         />
       </SidebarFooter>
       <SidebarRail />
+    </Sidebar>
       <AgentSettingsDialog
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
@@ -351,6 +366,6 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
         }
         isAdmin={isAdmin}
       />
-    </Sidebar>
+    </>
   );
 }

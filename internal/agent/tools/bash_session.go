@@ -167,7 +167,7 @@ func newShellManager() *shellManager {
 // session lives until kill or natural exit; the caller's ctx does NOT
 // propagate to the child — that ctx dies at turn end and would take
 // every backgrounded process with it.
-func (m *shellManager) Start(command string, env []string) (*bashSession, error) {
+func (m *shellManager) Start(command string, env []string, dir string) (*bashSession, error) {
 	if command == "" {
 		return nil, errors.New("command is required")
 	}
@@ -187,6 +187,9 @@ func (m *shellManager) Start(command string, env []string) (*bashSession, error)
 	// is the only path that terminates it before natural exit.
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	// Fail closed: if the caller didn't pass an explicit env, build a
 	// scrubbed one rather than letting Go default to bare os.Environ()
 	// inheritance — that path is how daemon secrets reached chat replies.

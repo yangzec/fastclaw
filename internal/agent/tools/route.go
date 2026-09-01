@@ -23,8 +23,8 @@ const (
 
 	// RouteWorkspaceStore dispatches to the durable workspace.Store under
 	// (agentID, projectID, sessionID). Used for relative paths like
-	// `report.md` that the chatter expects to outlive the sandbox
-	// container and be visible in the UI's file browser.
+	// `report.md` AND the equivalent sandbox form `/workspace/report.md`
+	// so both land in the same object the UI's file browser lists.
 	RouteWorkspaceStore
 
 	// RouteSystemStore dispatches to the identity-files store

@@ -34,11 +34,13 @@ func TestWsPathSubdirRedirect(t *testing.T) {
 
 	r.SetCodingSubdir("app")
 	cases := map[string]string{
-		"src/x.tsx":     "app/src/x.tsx", // bare path gets prefixed
-		"app/src/x.tsx": "app/src/x.tsx", // already-prefixed is idempotent
-		"/src/x.tsx":    "app/src/x.tsx", // leading slash tolerated
-		"app":           "app",           // the subdir itself
-		"package.json":  "app/package.json",
+		"src/x.tsx":                "app/src/x.tsx", // bare path gets prefixed
+		"app/src/x.tsx":            "app/src/x.tsx", // already-prefixed is idempotent
+		"/src/x.tsx":               "app/src/x.tsx", // leading slash tolerated
+		"app":                      "app",           // the subdir itself
+		"package.json":             "app/package.json",
+		"/workspace/src/x.tsx":     "app/src/x.tsx", // sandbox prefix == relative
+		"/workspace/app/src/x.tsx": "app/src/x.tsx",
 	}
 	for in, want := range cases {
 		if got := r.wsPath(in); got != want {
@@ -49,6 +51,9 @@ func TestWsPathSubdirRedirect(t *testing.T) {
 	r.SetCodingSubdir("")
 	if got := r.wsPath("src/x.tsx"); got != "src/x.tsx" {
 		t.Fatalf("after disabling: want passthrough, got %q", got)
+	}
+	if got := r.wsPath("/workspace/report.md"); got != "report.md" {
+		t.Fatalf("sandbox prefix without coding subdir: want report.md, got %q", got)
 	}
 }
 

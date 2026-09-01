@@ -274,7 +274,7 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 			"name":        ar.Name,
 			"description": desc,
 			"model":       s.agentScopeModel(r, ar.ID),
-			"avatarUrl":   "/api/agents/" + ar.ID + "/files/avatar.png",
+			"avatarUrl":   s.agentAvatarURL(r.Context(), ar.ID),
 			"createdAt":   ar.CreatedAt,
 			"userId":      ar.UserID,
 			"role":        "owner",
@@ -699,7 +699,7 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 			"autoPersist":      s.agentScopeAutoPersist(r, rec.ID),
 			"sharedIdentity":   s.agentScopeSharedIdentity(r, rec.UserID, rec.ID),
 			"plugins":          s.agentScopePlugins(r, rec.ID),
-			"avatarUrl":        "/api/agents/" + rec.ID + "/files/avatar.png",
+			"avatarUrl":        s.agentAvatarURL(r.Context(), rec.ID),
 			"createdAt":        rec.CreatedAt,
 			"isPublic":         rec.IsPublic,
 			"shareModelConfig": share,
@@ -804,16 +804,21 @@ func (s *Server) handleGetAgentSystemFile(w http.ResponseWriter, r *http.Request
 	}
 
 	// Per-user files: prefer caller's own row, fall back to the owner's.
-	// `source: "db"` means the caller has authored an override; "owner"
-	// means we're showing the agent owner's row by fallback. The
+	// `source: "db"` means a non-owner chatter has authored an override;
+	// "owner" means we're showing the agent owner's canonical row. The
 	// frontend uses this to decide whether to show the "Edited" badge
-	// and enable the Revert action.
+	// and enable Revert. The owner reading their own USER.md / MEMORY.md
+	// is NOT an override — treating it as "db" made Customize paint
+	// Memory/User as dirty with a Revert that would delete the owner's
+	// files (https://github.com/fastclaw-ai/fastclaw/issues/91).
 	if data, err := s.dataStore.GetAgentFileExact(r.Context(), id, caller, name); err == nil {
+		if rec.UserID == caller {
+			jsonResponse(w, http.StatusOK, map[string]any{"content": string(data), "source": "owner"})
+			return
+		}
 		baseContent := ""
-		if rec.UserID != caller {
-			if base, err2 := s.dataStore.GetAgentFileExact(r.Context(), id, rec.UserID, name); err2 == nil {
-				baseContent = string(base)
-			}
+		if base, err2 := s.dataStore.GetAgentFileExact(r.Context(), id, rec.UserID, name); err2 == nil {
+			baseContent = string(base)
 		}
 		resp := map[string]any{"content": string(data), "source": "db"}
 		if baseContent != "" {
@@ -938,19 +943,17 @@ func (s *Server) resolveSystemFileTarget(w http.ResponseWriter, r *http.Request,
 // passes its own sessionID for in-chat tool calls; those land under the
 // session sub-prefix automatically.
 
-// workspaceSessionScope translates the URL `?sessionId=` token into
-// the directory name used under workspaces/<agent>/sessions/. The URL
-// token is the session_key (so the dashboard can address any session
-// uniformly), but workspace artifacts are namespaced by chat_id
-// instead — that's what the agent runtime passed at write time.
+// workspaceSessionScope translates a `?sessionId=` token into the
+// directory name used under workspaces/<agent>/sessions/. The token may
+// be the stored session_key (dashboard URL) or the chat_id
+// (X-Fastclaw-Session-Key on /v1/chat/completions). Artifacts are
+// namespaced by chat_id — that's what the agent runtime passed at write
+// time.
 //
-// Returns the chat_id when the session_key resolves under the caller's
+// Returns the chat_id when either form resolves under the caller's
 // (user_id, agent_id). Returns "" when the lookup fails — including
 // the case where the session belongs to a DIFFERENT user — so callers
-// don't accidentally widen scope into another user's files. Pre-fix
-// behavior was to fall back to the raw URL token; on a public agent
-// that let a non-owner caller pass a known chat_id of the owner and
-// read its files because the resulting scope was sessions/<their chat>/.
+// don't accidentally widen scope into another user's files.
 func (s *Server) workspaceSessionScope(ctx context.Context, agentID, urlToken string) string {
 	tok := strings.TrimSpace(urlToken)
 	if tok == "" || s.dataStore == nil {
@@ -960,11 +963,29 @@ func (s *Server) workspaceSessionScope(ctx context.Context, agentID, urlToken st
 	if uid == "" {
 		return ""
 	}
-	_, _, chatID, err := s.dataStore.LookupSessionTriple(ctx, uid, agentID, tok)
+	chatID, _, err := s.dataStore.LookupSessionScopeToken(ctx, uid, agentID, tok)
 	if err != nil || chatID == "" {
 		return ""
 	}
 	return chatID
+}
+
+// pendingOwnerSessionID is the store session dir to use when the caller
+// owns the agent and passed a sessionId that is not in the session table
+// yet. The web composer mints the id and uploads attachments BEFORE the
+// first /api/chat creates the row; write_file uses that same id. Falling
+// back for owners (never for public viewers) keeps attach + list + GET
+// on sessions/<id>/ instead of the agent root, where the model cannot
+// read the file and the workspace panel filters it out.
+func (s *Server) pendingOwnerSessionID(r *http.Request, agentID, rawSession string) string {
+	tok := strings.TrimSpace(rawSession)
+	if tok == "" || !s.callerOwnsAgent(r, agentID) {
+		return ""
+	}
+	if s.workspaceSessionScope(r.Context(), agentID, tok) != "" {
+		return ""
+	}
+	return tok
 }
 
 func (s *Server) handleAgentFileList(w http.ResponseWriter, r *http.Request) {
@@ -1093,6 +1114,24 @@ func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope 
 	}
 	chatID := s.workspaceSessionScope(r.Context(), agentID, rawSession)
 	if chatID == "" {
+		// Brand-new web chat: the composer already has a session id
+		// but the row is created on the first message. Owners may
+		// still list attachments they just uploaded under that id.
+		// Everyone else (public viewers, guessed tokens) sees nothing.
+		if pending := s.pendingOwnerSessionID(r, agentID, rawSession); pending != "" {
+			if pid := s.resolveSessionProject(r.Context(), r, agentID, rawSession); pid != "" {
+				prefix := "projects/" + pid + "/" + pending + "/"
+				return fileScope{
+					acceptPath:    func(p string) bool { return strings.HasPrefix(p, prefix) },
+					archiveSuffix: pid + "-" + pending,
+				}
+			}
+			prefix := "sessions/" + pending + "/"
+			return fileScope{
+				acceptPath:    func(p string) bool { return strings.HasPrefix(p, prefix) },
+				archiveSuffix: pending,
+			}
+		}
 		// sessionId didn't resolve to a chat THIS caller owns — either
 		// it doesn't exist or it belongs to another user. Either way,
 		// surface nothing. Pre-fix behavior was to widen back to
@@ -1315,6 +1354,29 @@ func openInFileBrowser(path string) error {
 	return nil
 }
 
+// agentAvatarURL returns the public files URL when the agent has an
+// uploaded avatar.png. An empty string means "no avatar" so clients
+// can skip the <img> request instead of 404-ing in the console.
+func (s *Server) agentAvatarURL(ctx context.Context, agentID string) string {
+	if agentID == "" {
+		return ""
+	}
+	if s.workspaceStore != nil {
+		if _, err := s.workspaceStore.Stat(ctx, agentID, "", "", "avatar.png"); err == nil {
+			return "/api/agents/" + agentID + "/files/avatar.png"
+		}
+		return ""
+	}
+	home, err := config.HomeDir()
+	if err != nil {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(home, "workspaces", agentID, "avatar.png")); err == nil {
+		return "/api/agents/" + agentID + "/files/avatar.png"
+	}
+	return ""
+}
+
 func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	rel := r.PathValue("path")
@@ -1366,14 +1428,58 @@ func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveFileFromWorkspaceStore(w http.ResponseWriter, r *http.Request, agentID, path string) {
-	rc, err := s.workspaceStore.Get(r.Context(), agentID, "", "", path)
+	projectID, sessionID, rel, ok := s.resolveWorkspaceFileGet(r, agentID, path)
+	if !ok {
+		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "file not found"})
+		return
+	}
+	rc, err := s.workspaceStore.Get(r.Context(), agentID, projectID, sessionID, rel)
 	if err != nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 		return
 	}
 	defer rc.Close()
-	setFileResponseHeaders(w, path)
+	setFileResponseHeaders(w, rel)
 	io.Copy(w, rc)
+}
+
+// resolveWorkspaceFileGet turns a files/{path} URL into workspace.Store
+// Get arguments. Full agent-relative keys (sessions/<chat>/…,
+// projects/<pid>/…) stay as-is against the agent root. A bare name
+// (report.md) or a leftover "workspace/report.md" from a /workspace/
+// markdown rewrite is scoped via ?sessionId= so chat bubbles resolve
+// the same object write_file("/workspace/report.md") stored.
+//
+// Returns ok=false when the caller passed sessionId but it does not
+// resolve to a chat they own. Owners may use a minted-but-not-yet-saved
+// session id (attachments land before the first /api/chat). Public
+// viewers never get that fallback — guessing a chat_id must 404.
+func (s *Server) resolveWorkspaceFileGet(r *http.Request, agentID, path string) (projectID, sessionID, rel string, ok bool) {
+	rel = strings.TrimPrefix(filepath.ToSlash(path), "/")
+	if strings.HasPrefix(rel, "workspace/") {
+		rel = strings.TrimPrefix(rel, "workspace/")
+	}
+	if rel == "" || rel == "." {
+		return "", "", "", false
+	}
+	if strings.HasPrefix(rel, "sessions/") || strings.HasPrefix(rel, "projects/") {
+		return "", "", rel, true
+	}
+	rawSession := strings.TrimSpace(r.URL.Query().Get("sessionId"))
+	if rawSession == "" {
+		return "", "", rel, true
+	}
+	chatID := s.workspaceSessionScope(r.Context(), agentID, rawSession)
+	if chatID == "" {
+		if pending := s.pendingOwnerSessionID(r, agentID, rawSession); pending != "" {
+			return s.resolveSessionProject(r.Context(), r, agentID, rawSession), pending, rel, true
+		}
+		return "", "", "", false
+	}
+	if pid := s.resolveSessionProject(r.Context(), r, agentID, rawSession); pid != "" {
+		return pid, chatID, rel, true
+	}
+	return "", chatID, rel, true
 }
 
 // setFileResponseHeaders picks the right Content-Type for a user-produced
@@ -1422,18 +1528,17 @@ func (s *Server) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "no file"})
 		return
 	}
-	// sessionId scopes the upload to the sandbox mount the agent actually
-	// sees. We resolve the session to find its project_id so uploads in
-	// a project chat land in projects/<pid>/ alongside the agent's own
-	// writes; loose chats keep the legacy sessions/<chat>/ subdir.
+	// sessionId + optional projectId pick the same store tuple write_file
+	// uses: loose → sessions/<sid>/, project chat → projects/<pid>/<sid>/.
 	sessionKey := r.URL.Query().Get("sessionId")
 	sessionID := s.workspaceSessionScope(r.Context(), id, sessionKey)
-	projectID := s.resolveSessionProject(r.Context(), r, id, sessionKey)
-	if projectID != "" {
-		// Project sessions don't use the per-chat subdir — clear it so
-		// the workspace store routes to projects/<pid>/.
-		sessionID = ""
+	if sessionID == "" {
+		// First-message attach: no session row yet. Owners store
+		// under the minted id so read_file("/workspace/<name>") and
+		// the files panel see the same object write_file would.
+		sessionID = s.pendingOwnerSessionID(r, id, sessionKey)
 	}
+	projectID := s.resolveSessionProject(r.Context(), r, id, sessionKey)
 	saved := make([]map[string]any, 0, len(headers))
 	for _, h := range headers {
 		fh, err := h.Open()

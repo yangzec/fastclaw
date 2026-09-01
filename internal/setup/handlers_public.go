@@ -53,7 +53,7 @@ func (s *Server) handlePublicAgents(w http.ResponseWriter, r *http.Request) {
 			ID:          ag.ID,
 			Name:        ag.Name,
 			Description: desc,
-			AvatarURL:   "/api/agents/" + ag.ID + "/files/avatar.png",
+			AvatarURL:   s.agentAvatarURL(r.Context(), ag.ID),
 			Category:    category,
 		})
 	}

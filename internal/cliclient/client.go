@@ -203,11 +203,12 @@ func (c *Client) StreamImages(ctx context.Context, agentID, sessionID, message s
 	scanner.Buffer(make([]byte, 4096), 4*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
+		payload, ok := sseDataPayload(line)
+		if !ok {
 			continue
 		}
 		var event Event
-		if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event) != nil {
+		if json.Unmarshal([]byte(payload), &event) != nil {
 			continue
 		}
 		switch event.Type {
@@ -239,6 +240,16 @@ func responseError(resp *http.Response) error {
 		return fmt.Errorf("gateway returned %d: %s", resp.StatusCode, payload.Error)
 	}
 	return fmt.Errorf("gateway returned %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+}
+
+// sseDataPayload returns the payload of an SSE `data:` line. The space
+// after the colon is optional; FastClaw's own gateway emits `data: `
+// but we accept both so a proxy that strips the space still works.
+func sseDataPayload(line string) (string, bool) {
+	if !strings.HasPrefix(line, "data:") {
+		return "", false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(line, "data:")), true
 }
 
 // NewSessionID mints a fresh terminal session key.

@@ -9,6 +9,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import type { LucideIcon } from "lucide-react";
 
@@ -45,6 +46,7 @@ export function NavMain({
 }) {
   const pathname = usePathname();
   const router = useRouter();
+  const { setOpenMobile } = useSidebar();
 
   // Prefetch target routes on idle so soft nav is ready when the user
   // clicks — mirrors what <Link> does automatically, but we're opting out
@@ -69,9 +71,15 @@ export function NavMain({
           const active =
             item.active ?? (item.url ? isActive(pathname, item.url) : false);
           const handleClick = item.onClick
-            ? item.onClick
+            ? () => {
+                setOpenMobile(false);
+                item.onClick!();
+              }
             : item.url
-              ? () => router.push(item.url!)
+              ? () => {
+                  setOpenMobile(false);
+                  router.push(item.url!);
+                }
               : undefined;
           return (
             <SidebarMenuItem key={item.url ?? item.title}>

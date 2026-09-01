@@ -307,7 +307,7 @@ func (a *Agent) slashCompact(msg bus.InboundMessage) slashResult {
 		return slashResult{handled: true, reply: "No messages to compact."}
 	}
 
-	result, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model)
+	result, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model, a.compactTokenThreshold(a.chatterUserID(msg)))
 	if err != nil {
 		return slashResult{handled: true, reply: fmt.Sprintf("Compaction error: %v", err)}
 	}
@@ -330,11 +330,15 @@ func (a *Agent) slashStatus(msg bus.InboundMessage) slashResult {
 
 	soul := a.loadSoulName()
 
+	chatterUID := a.chatterUserID(msg)
+	window := a.effectiveContextWindow(chatterUID)
 	status := fmt.Sprintf("⚡ FastClaw Status\n"+
 		"─────────────────\n"+
 		"Agent:       %s\n"+
 		"Model:       %s\n"+
 		"Personality: %s\n"+
+		"Context:     %d tokens\n"+
+		"Compact at:  %d tokens\n"+
 		"Max Tokens:  %d\n"+
 		"Temperature: %.1f\n"+
 		"Max Iter:    %d\n"+
@@ -342,6 +346,7 @@ func (a *Agent) slashStatus(msg bus.InboundMessage) slashResult {
 		"Memory:      %d lines\n"+
 		"Workspace:   %s",
 		a.name, a.model, soul,
+		window, a.compactTokenThreshold(chatterUID),
 		a.maxTokens, a.temperature, a.maxToolIterations,
 		len(sessionMsgs), memLines, a.homePath,
 	)

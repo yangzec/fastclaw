@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -102,6 +103,7 @@ function renderContentWithDataImages(
 import { usePageHeader } from "@/components/sidebar";
 import { useSidebarOptional } from "@/components/ui/sidebar";
 import { channelLabel } from "@/components/channel-icon";
+import { cn } from "@/lib/utils";
 
 interface ProducedFile {
   path: string; // path relative to workspace
@@ -203,6 +205,40 @@ function isSystemFile(path: string): boolean {
   return !path.includes("/") && SYSTEM_FILES.has(path);
 }
 
+// workspaceToolPath maps a write_file/edit_file argument onto the
+// session-store key. Relative names and /workspace/<name> are the same
+// artifact; /tmp/ scratch and identity files are not listed.
+function workspaceToolPath(path: string): string | null {
+  if (!path) return null;
+  let p = path;
+  if (p.startsWith("/workspace/")) p = p.slice("/workspace/".length);
+  else if (p.startsWith("/")) return null;
+  if (!p || isSystemFile(p)) return null;
+  return p;
+}
+
+function notifyWorkspaceChanged(agentId: string, sessionId?: string) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent("fastclaw:workspace-changed", {
+      detail: { agentId, sessionId },
+    }),
+  );
+}
+
+function workspaceTreePrefix(
+  files: WorkspaceFile[],
+  projectId?: string,
+  sessionId?: string,
+): string {
+  if (projectId) return `projects/${projectId}/`;
+  for (const f of files) {
+    const match = f.path.match(/^sessions\/[^/]+\//);
+    if (match) return match[0];
+  }
+  return sessionId ? `sessions/${sessionId}/` : "";
+}
+
 function parseWrittenSize(result: string): number | undefined {
   const m = result.match(/^Written (\d+) bytes/);
   return m ? parseInt(m[1], 10) : undefined;
@@ -222,6 +258,10 @@ interface ChatSession {
 
 function generateSessionId() {
   return `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function chatScopeKey(agent: string, sid: string) {
+  return `${agent}\t${sid}`;
 }
 
 const PASTED_IMAGE_EXTENSIONS: Record<string, string> = {
@@ -476,7 +516,10 @@ function TodoPanel({ items, active }: { items: TodoItem[]; active: boolean }) {
 // page tree) is what lets the component instance survive sidebar
 // navigations — sessionId / projectId become reactive values that
 // update in place rather than gating a remount.
-function parseAgentRoute(pathname: string): {
+function parseAgentRoute(
+  pathname: string,
+  searchParams?: URLSearchParams | null,
+): {
   sessionId: string;
   projectId: string;
 } {
@@ -492,6 +535,13 @@ function parseAgentRoute(pathname: string): {
     const pid = projMatch[1];
     return { sessionId: "", projectId: pid === "_" ? "" : pid };
   }
+  // Legacy `?session=` on /chat/ — keep working so old bookmarks and
+  // any leftover chats-list links still open the right thread instead
+  // of minting a blank conversation.
+  const q = searchParams?.get("session") || "";
+  if (q) {
+    return { sessionId: q, projectId: "" };
+  }
   return { sessionId: "", projectId: "" };
 }
 
@@ -506,8 +556,8 @@ export function ChatScreen() {
   const actAsUserId = searchParams?.get("actAs") || "";
   const isActAsView = !!actAsUserId;
   const { sessionId: urlSessionId, projectId: urlProjectId } = useMemo(
-    () => parseAgentRoute(pathname || ""),
-    [pathname],
+    () => parseAgentRoute(pathname || "", searchParams),
+    [pathname, searchParams],
   );
   // Reactive: re-derives from pathname so switching agents (sidebar
   // dropdown, browser back/forward) immediately updates downstream
@@ -552,15 +602,42 @@ export function ChatScreen() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [filesSheetOpen, setFilesSheetOpen] = useState(false);
   const [knowledgePreview, setKnowledgePreview] = useState<KnowledgeSource | null>(null);
+  const isMobile = useIsMobile();
   // Opening the workspace/preview panel collapses the platform sidebar to
   // free horizontal room (null when there's no provider, e.g. act-as view).
+  // Remember whether WE collapsed it, so closing the panel can restore
+  // the nav — otherwise first-send / Close left both sidebars gone.
+  // On mobile the nav is a Sheet — just dismiss it; don't touch desktop `open`.
   const sidebar = useSidebarOptional();
+  const collapsedNavForWorkspaceRef = useRef(false);
   useEffect(() => {
-    if (filesSheetOpen) sidebar?.setOpen(false);
+    if (filesSheetOpen) {
+      if (sidebar?.isMobile) {
+        sidebar.setOpenMobile(false);
+        return;
+      }
+      if (sidebar?.open) {
+        collapsedNavForWorkspaceRef.current = true;
+        sidebar.setOpen(false);
+      }
+      return;
+    }
+    if (collapsedNavForWorkspaceRef.current) {
+      collapsedNavForWorkspaceRef.current = false;
+      sidebar?.setOpen(true);
+    }
     // Intentionally keyed only on filesSheetOpen: collapse once when the
     // panel opens; don't fight the user if they re-expand while it's open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filesSheetOpen]);
+  useEffect(() => {
+    if (!filesSheetOpen || !isMobile) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [filesSheetOpen, isMobile]);
   const openKnowledgeCitation = useCallback((source: KnowledgeSource) => {
     setKnowledgePreview(source);
     setFilesSheetOpen(true);
@@ -629,6 +706,32 @@ export function ChatScreen() {
   // AbortController for the in-flight chat stream so the Stop button can
   // cancel both the upload and the SSE connection. Reset on every new turn.
   const abortRef = useRef<AbortController | null>(null);
+  // Session / agent the UI is showing right now. Stream callbacks close
+  // over the turn they started, not the latest render, so they must
+  // consult these before writing into `messages`.
+  const sessionIdRef = useRef(sessionId);
+  const selectedAgentRef = useRef(selectedAgent);
+  sessionIdRef.current = sessionId;
+  selectedAgentRef.current = selectedAgent;
+  const messagesCacheRef = useRef(new Map<string, ChatMessage[]>());
+  const inFlightSessionsRef = useRef(new Set<string>());
+  const abortBySessionRef = useRef(new Map<string, AbortController>());
+  const streamingMsgIdBySessionRef = useRef(new Map<string, string | null>());
+  const maxSeqBySessionRef = useRef(new Map<string, number>());
+
+  const patchMessages = useCallback((agent: string, sid: string, updater: (prev: ChatMessage[]) => ChatMessage[]) => {
+    const key = chatScopeKey(agent, sid);
+    if (sessionIdRef.current === sid && selectedAgentRef.current === agent) {
+      setMessages((prev) => {
+        const next = updater(prev);
+        messagesCacheRef.current.set(key, next);
+        return next;
+      });
+      return;
+    }
+    const prev = messagesCacheRef.current.get(key) ?? [];
+    messagesCacheRef.current.set(key, updater(prev));
+  }, []);
 
   // Gates the EventSource effect: holds the sessionId whose history has
   // been fetched and whose `subscribeSinceRef` is now accurate. Without
@@ -673,6 +776,7 @@ export function ChatScreen() {
     setSessionTitle("");
     setAgentName("");
     setAttachments([]);
+    setSending(false);
   }, [selectedAgent]);
 
   // Resolve the agent's display name once. The chat title and any
@@ -860,7 +964,7 @@ export function ChatScreen() {
         // transient slash bubble, then reload history on `done`; slash
         // replies are event-only, so that reload clears the visible
         // answer and makes the send look like it did nothing.
-        if (inFlightSendSessionRef.current === sessionId) return;
+        if (inFlightSessionsRef.current.has(chatScopeKey(selectedAgent, sessionId))) return;
         // CAREFUL: do NOT bump maxSeqRef before the switch. This handler
         // intentionally drops tool_call / tool_result during catch-up
         // (the post-`done` history reload renders them properly) — but
@@ -1040,7 +1144,10 @@ export function ChatScreen() {
       prevHadSessionRef.current = true;
       if (urlSessionId !== sessionId) {
         setSessionId(urlSessionId);
-        setMessages([]);
+        const cached = selectedAgent
+          ? messagesCacheRef.current.get(chatScopeKey(selectedAgent, urlSessionId))
+          : undefined;
+        setMessages(cached ?? []);
       }
       return;
     }
@@ -1053,11 +1160,38 @@ export function ChatScreen() {
 
   // Switching conversations (sidebar chat click, New chat, opening a project)
   // changes the URL ids — close the workspace panel so the previous chat's
-  // files don't linger over a different conversation. Keyed on the URL ids,
-  // not every render, so the user can still re-open it within the SAME chat.
+  // files don't linger over a different conversation. Do NOT close when the
+  // first send merely pins the already-minted id onto /chat/<sid>/; that
+  // used to make the panel vanish mid-turn ("sidebar mysteriously gone").
+  const prevWorkspaceScopeRef = useRef({
+    urlSession: urlSessionId,
+    urlProject: urlProjectId,
+    session: sessionId,
+    agent: selectedAgent,
+  });
   useEffect(() => {
-    setFilesSheetOpen(false);
-  }, [urlSessionId, urlProjectId]);
+    const prev = prevWorkspaceScopeRef.current;
+    prevWorkspaceScopeRef.current = {
+      urlSession: urlSessionId,
+      urlProject: urlProjectId,
+      session: sessionId,
+      agent: selectedAgent,
+    };
+    const firstSendPin =
+      prev.agent === selectedAgent &&
+      prev.session === sessionId &&
+      !prev.urlSession &&
+      !!urlSessionId &&
+      urlSessionId === sessionId;
+    if (firstSendPin) return;
+    if (
+      prev.agent !== selectedAgent ||
+      prev.urlSession !== urlSessionId ||
+      prev.urlProject !== urlProjectId
+    ) {
+      setFilesSheetOpen(false);
+    }
+  }, [urlSessionId, urlProjectId, sessionId, selectedAgent]);
 
   // Keep the local sessionTitle in sync with the session list. Unknown
   // sessions (brand-new, not saved yet) fall back to empty so the header
@@ -1066,6 +1200,17 @@ export function ChatScreen() {
     const s = sessions.find((x) => x.id === sessionId);
     setSessionTitle(s?.title || s?.preview || "");
   }, [sessionId, sessions]);
+
+  useEffect(() => {
+    setSending(inFlightSessionsRef.current.has(chatScopeKey(selectedAgent, sessionId)));
+    streamingMsgIdRef.current = streamingMsgIdBySessionRef.current.get(chatScopeKey(selectedAgent, sessionId)) ?? null;
+  }, [selectedAgent, sessionId]);
+
+  useEffect(() => {
+    if (selectedAgent && sessionId) {
+      messagesCacheRef.current.set(chatScopeKey(selectedAgent, sessionId), messages);
+    }
+  }, [selectedAgent, sessionId, messages]);
 
   // Channel of the currently-open session, derived from the sessions
   // list. Brand-new web chats don't have a row yet — the fallback to
@@ -1128,7 +1273,7 @@ export function ChatScreen() {
         <button
           type="button"
           onClick={() => setFilesSheetOpen((v) => !v)}
-          className={`shrink-0 inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors ${
+          className={`shrink-0 inline-flex h-9 w-9 items-center justify-center rounded-md transition-colors md:h-8 md:w-8 ${
             filesSheetOpen
               ? "bg-muted text-foreground"
               : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
@@ -1153,11 +1298,12 @@ export function ChatScreen() {
   // hanging it off the last agent message.
   useEffect(() => {
     if (!selectedAgent || !sessionId) return;
-    const sessionHasActivePost = inFlightSendSessionRef.current === sessionId;
+    const sessionHasActivePost = inFlightSessionsRef.current.has(chatScopeKey(selectedAgent, sessionId));
     // Reset dedup state when session changes — events from a previous
     // session must not bias the new session's seq filter, and any
-    // transient placeholder is no longer relevant.
-    maxSeqRef.current = -1;
+    // transient placeholder is no longer relevant. Restore this
+    // session's own cursor if we already streamed it in the background.
+    maxSeqRef.current = maxSeqBySessionRef.current.get(chatScopeKey(selectedAgent, sessionId)) ?? -1;
     subscribeSinceRef.current = -1;
     transientBubbleIdRef.current = null;
     // Close the SSE gate for this sessionId; reopens once the history
@@ -1172,10 +1318,15 @@ export function ChatScreen() {
     // Refresh todo.md alongside the history fetch. We don't gate the
     // rest of the load on it — a 404 (no todo.md yet) is the normal
     // empty-session case.
-    getChatTodo(selectedAgent, sessionId)
-      .then((todo) => setTodoItems(todo.items))
-      .catch(() => setTodoItems([]));
+    setTodoItems([]);
     let aborted = false;
+    getChatTodo(selectedAgent, sessionId)
+      .then((todo) => {
+        if (!aborted) setTodoItems(todo.items);
+      })
+      .catch(() => {
+        if (!aborted) setTodoItems([]);
+      });
     getChatHistoryWithCursor(selectedAgent, sessionId)
       .then(async ({ history, latestEventSeq }) => {
         if (aborted) return;
@@ -1212,7 +1363,13 @@ export function ChatScreen() {
           }
         } catch { /* listing failed — fall back to no panel */ }
         if (aborted) return;
-        setMessages(built);
+        // A live POST for this session already owns the bubbles (the
+        // user may have left and come back mid-turn). Don't replace
+        // them with a history snapshot that is still missing the
+        // in-flight reply.
+        if (!sessionHasActivePost) {
+          setMessages(built);
+        }
         setLoadedSessionId(sessionId);
       })
       .catch(() => {
@@ -1263,9 +1420,9 @@ export function ChatScreen() {
   // reconciling against the optimistic pendingSteer bubble (if any) so
   // the message isn't duplicated. seq-dedup is already applied upstream
   // by both event consumers.
-  const applySteerEvent = useCallback((content: string) => {
+  const applySteerEvent = useCallback((content: string, agent?: string, sid?: string) => {
     if (!content) return;
-    setMessages((prev) => {
+    const updater = (prev: ChatMessage[]) => {
       const idx = prev.findIndex(
         (m) => m.role === "user" && m.pendingSteer && m.content === content,
       );
@@ -1276,10 +1433,15 @@ export function ChatScreen() {
       }
       return [
         ...prev,
-        { id: `s-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, role: "user", content, timestamp: Date.now() },
+        { id: `s-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, role: "user" as const, content, timestamp: Date.now() },
       ];
-    });
-  }, []);
+    };
+    if (agent && sid) {
+      patchMessages(agent, sid, updater);
+      return;
+    }
+    setMessages(updater);
+  }, [patchMessages]);
 
   const handleSend = useCallback(async (overrideText?: string, force?: boolean) => {
     // overrideText lets caller post a message that didn't come from
@@ -1319,7 +1481,20 @@ export function ChatScreen() {
     // useSearchParams (and the sidebar's navigateOnce dedupe that
     // derives from them) still see the new URL.
     const target = `/agents/${selectedAgent}/chat/${sessionId}/`;
-    inFlightSendSessionRef.current = sessionId;
+    const turnSessionId = sessionId;
+    const turnAgent = selectedAgent;
+    const turnKey = chatScopeKey(turnAgent, turnSessionId);
+    const setTurnMessages = (updater: (prev: ChatMessage[]) => ChatMessage[]) => {
+      patchMessages(turnAgent, turnSessionId, updater);
+    };
+    const setStreamBubbleId = (id: string | null) => {
+      streamingMsgIdBySessionRef.current.set(turnKey, id);
+      if (sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+        streamingMsgIdRef.current = id;
+      }
+    };
+    inFlightSendSessionRef.current = turnSessionId;
+    inFlightSessionsRef.current.add(turnKey);
     if (pathname !== target) {
       window.history.replaceState(null, "", target);
     }
@@ -1345,12 +1520,21 @@ export function ChatScreen() {
       }));
 
       try {
-        await uploadAgentFiles(selectedAgent, sessionId, filesToUpload);
+        await uploadAgentFiles(selectedAgent, sessionId, filesToUpload, urlProjectId);
+        notifyWorkspaceChanged(selectedAgent, sessionId);
       } catch (err) {
-        setMessages((prev) => [
+        setTurnMessages((prev) => [
           ...prev,
           { id: `e-${Date.now()}`, role: "agent", content: `File upload failed: ${err instanceof Error ? err.message : "unknown error"}`, timestamp: Date.now() },
         ]);
+        inFlightSessionsRef.current.delete(turnKey);
+        if (inFlightSendSessionRef.current === turnSessionId) {
+          inFlightSendSessionRef.current = null;
+        }
+        abortBySessionRef.current.delete(turnKey);
+        if (sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+          setSending(false);
+        }
         return;
       }
 
@@ -1395,7 +1579,7 @@ export function ChatScreen() {
     // to bottom even if the user had scrolled up to read earlier in the
     // conversation.
     stickToBottomRef.current = true;
-    setMessages((prev) => [
+    setTurnMessages((prev) => [
       ...prev,
       {
         id: `u-${Date.now()}`,
@@ -1406,13 +1590,15 @@ export function ChatScreen() {
       },
     ]);
     setSending(true);
-    abortRef.current = new AbortController();
+    const turnAbort = new AbortController();
+    abortRef.current = turnAbort;
+    abortBySessionRef.current.set(turnKey, turnAbort);
 
     // Snapshot the workspace before the turn so we can diff at `done` and
     // attach newly-created / modified files (PDFs, images, …) to the
     // final reply. Fire-and-forget; if the snapshot fails we just won't
     // surface files this turn. `path → size|modTime` key.
-    const preTurnFilesPromise = listAgentFiles(selectedAgent)
+    const preTurnFilesPromise = listAgentFiles(selectedAgent, sessionId)
       .then((items) => {
         const m = new Map<string, string>();
         for (const f of items) m.set(f.path, `${f.size}|${f.modTime}`);
@@ -1437,12 +1623,12 @@ export function ChatScreen() {
       curGroupId = `tg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       curCalls = [];
       curContent = "";
-      streamingMsgIdRef.current = null;
+      setStreamBubbleId(null);
     };
     startNewGroup();
 
     try {
-      await sendChatStream(selectedAgent, sessionId, fullText, (evt: ChatStreamEvent) => {
+      await sendChatStream(selectedAgent, turnSessionId, fullText, (evt: ChatStreamEvent) => {
         // Dedup against /api/chat/subscribe SSE, which subscribes to
         // the same chat-events hub server-side. Whichever path arrives
         // first renders; the other skips. seq < 0 means persistence
@@ -1450,8 +1636,12 @@ export function ChatScreen() {
         // possibility of a double-render rather than dropping the
         // event entirely.
         if (typeof evt.seq === "number" && evt.seq >= 0) {
-          if (evt.seq <= maxSeqRef.current) return;
-          maxSeqRef.current = evt.seq;
+          const prevSeq = maxSeqBySessionRef.current.get(turnKey) ?? -1;
+          if (evt.seq <= prevSeq) return;
+          maxSeqBySessionRef.current.set(turnKey, evt.seq);
+          if (sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+            maxSeqRef.current = evt.seq;
+          }
         }
         switch (evt.type) {
           case "content_delta": {
@@ -1463,23 +1653,23 @@ export function ChatScreen() {
             // intact even though deltas aren't persisted.
             const delta = evt.data?.delta || "";
             if (!delta) break;
-            if (curCalls.length > 0 && !streamingMsgIdRef.current) {
+            if (curCalls.length > 0 && !streamingMsgIdBySessionRef.current.get(turnKey)) {
               // Content after tool calls = new round; reset state so
               // the new bubble is its own message, not appended onto
               // the previous tool-group's thinking text.
               startNewGroup();
             }
             curContent += delta;
-            if (!streamingMsgIdRef.current) {
+            if (!streamingMsgIdBySessionRef.current.get(turnKey)) {
               const id = `a-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-              streamingMsgIdRef.current = id;
-              setMessages((prev) => [
+              setStreamBubbleId(id);
+              setTurnMessages((prev) => [
                 ...prev,
                 { id, role: "agent", content: delta, timestamp: Date.now() },
               ]);
             } else {
-              const id = streamingMsgIdRef.current;
-              setMessages((prev) => {
+              const id = streamingMsgIdBySessionRef.current.get(turnKey)!;
+              setTurnMessages((prev) => {
                 const idx = prev.findIndex((m) => m.id === id);
                 if (idx < 0) return prev;
                 const updated = [...prev];
@@ -1493,8 +1683,10 @@ export function ChatScreen() {
             const content = evt.data?.content || "";
             const meta = evt.data?.metadata;
             if (content === "__NEW_SESSION__") {
-              handleNewChat();
-              loadSessions(selectedAgent);
+              if (sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+                handleNewChat();
+              }
+              loadSessions(turnAgent);
               return;
             }
             if (!content && !meta) {
@@ -1504,11 +1696,11 @@ export function ChatScreen() {
             // the final `content` carries the same text — just seal
             // the in-flight ID, optionally attach metadata, and skip
             // creating a duplicate bubble.
-            if (streamingMsgIdRef.current) {
-              const id = streamingMsgIdRef.current;
-              streamingMsgIdRef.current = null;
+            if (streamingMsgIdBySessionRef.current.get(turnKey)) {
+              const id = streamingMsgIdBySessionRef.current.get(turnKey)!;
+              setStreamBubbleId(null);
               if (meta) {
-                setMessages((prev) => {
+                setTurnMessages((prev) => {
                   const idx = prev.findIndex((m) => m.id === id);
                   if (idx < 0) return prev;
                   const updated = [...prev];
@@ -1526,7 +1718,7 @@ export function ChatScreen() {
             // Apply to the last agent message instead of creating an
             // empty new bubble.
             if (!content && meta) {
-              setMessages((prev) => {
+              setTurnMessages((prev) => {
                 for (let i = prev.length - 1; i >= 0; i--) {
                   if (prev[i].role === "agent") {
                     const updated = [...prev];
@@ -1544,7 +1736,7 @@ export function ChatScreen() {
             }
             // Store as thinking content (may become part of next tool-group, or stay as final answer)
             curContent = content;
-            setMessages((prev) => [
+            setTurnMessages((prev) => [
               ...prev,
               { id: `a-${Date.now()}`, role: "agent", content, timestamp: Date.now(), metadata: meta },
             ]);
@@ -1557,7 +1749,7 @@ export function ChatScreen() {
             // ID so a subsequent content_delta on the next round
             // spawns a fresh bubble instead of writing into the
             // now-defunct ID.
-            streamingMsgIdRef.current = null;
+            setStreamBubbleId(null);
             // New round starts if every tool in the current group has
             // already resolved. Without this, two assistant turns that
             // happen back-to-back with no intervening content event get
@@ -1574,7 +1766,7 @@ export function ChatScreen() {
             });
             const groupId = curGroupId;
             const calls = [...curCalls];
-            setMessages((prev) => {
+            setTurnMessages((prev) => {
               // Update existing tool-group for this round (additional
               // tool_call within the same assistant turn).
               const idx = prev.findIndex((m) => m.id === groupId);
@@ -1606,10 +1798,11 @@ export function ChatScreen() {
             if (tc && tc.name === "write_file" && /^Written \d+ bytes/.test(resultText)) {
               try {
                 const args = JSON.parse(tc.arguments);
-                const p: string = typeof args?.path === "string" ? args.path : "";
-                if (p && !p.startsWith("/") && !isSystemFile(p) && !seenPaths.has(p)) {
+                const p = workspaceToolPath(typeof args?.path === "string" ? args.path : "");
+                if (p && !seenPaths.has(p)) {
                   seenPaths.add(p);
                   turnFiles.push({ path: p, size: parseWrittenSize(resultText) });
+                  notifyWorkspaceChanged(selectedAgent, sessionId);
                 }
               } catch { /* ignore bad args */ }
             }
@@ -1625,15 +1818,19 @@ export function ChatScreen() {
                   (typeof args?.path === "string" ? args.path : "") ||
                   (typeof args?.file_path === "string" ? args.file_path : "");
                 if (path && /(^|\/)todo\.md$/i.test(path)) {
-                  getChatTodo(selectedAgent, sessionId)
-                    .then((todo) => setTodoItems(todo.items))
+                  getChatTodo(turnAgent, turnSessionId)
+                    .then((todo) => {
+                      if (sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+                        setTodoItems(todo.items);
+                      }
+                    })
                     .catch(() => {});
                 }
               } catch { /* ignore bad args */ }
             }
             const groupId = curGroupId;
             const calls = [...curCalls];
-            setMessages((prev) => {
+            setTurnMessages((prev) => {
               const idx = prev.findIndex((m) => m.id === groupId);
               if (idx < 0) return prev;
               const updated = [...prev];
@@ -1647,15 +1844,17 @@ export function ChatScreen() {
             // "current run state" since delegate_task is registered
             // serial — only one subagent in flight at any time.
             // phase="done" clears the indicator.
-            if (evt.data?.phase === "done") {
-              setSubagentProgress(null);
-            } else {
-              setSubagentProgress({
-                iteration: evt.data?.iteration,
-                max: evt.data?.max,
-                phase: evt.data?.phase,
-                tools: evt.data?.tools,
-              });
+            if (sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+              if (evt.data?.phase === "done") {
+                setSubagentProgress(null);
+              } else {
+                setSubagentProgress({
+                  iteration: evt.data?.iteration,
+                  max: evt.data?.max,
+                  phase: evt.data?.phase,
+                  tools: evt.data?.tools,
+                });
+              }
             }
             break;
           }
@@ -1663,7 +1862,7 @@ export function ChatScreen() {
             // A message the user injected mid-turn was folded into the
             // running turn server-side. Render it as a user bubble
             // (reconciled against the optimistic pendingSteer bubble).
-            applySteerEvent(evt.data?.content || "");
+            applySteerEvent(evt.data?.content || "", turnAgent, turnSessionId);
             break;
           }
           case "error": {
@@ -1673,20 +1872,20 @@ export function ChatScreen() {
             // gateway log line the user can't see.
             const msg = evt.data?.message || "Unknown error";
             if (/\bcontext canceled\b/i.test(msg)) break;
-            setMessages((prev) => [
+            setTurnMessages((prev) => [
               ...prev,
               { id: `e-${Date.now()}`, role: "agent", content: `Error: ${msg}`, timestamp: Date.now() },
             ]);
             break;
           }
         }
-      }, abortRef.current.signal, imageDataUrls, projectIdHint);
+      }, turnAbort.signal, imageDataUrls, projectIdHint);
       // Diff the workspace against the pre-turn snapshot so files
       // produced by *exec* (e.g. a Python script that saves PDFs) get
       // surfaced too — `turnFiles` only catches write_file tool calls
       // with relative, non-identity paths, which misses most real-
       // world flows. Union both sources by path.
-      const postTurnFiles = await listAgentFiles(selectedAgent).catch(() => []);
+      const postTurnFiles = await listAgentFiles(selectedAgent, sessionId).catch(() => []);
       const preSnap = await preTurnFilesPromise;
       const diffFiles: ProducedFile[] = [];
       for (const f of postTurnFiles) {
@@ -1713,7 +1912,7 @@ export function ChatScreen() {
         });
       }
       if (allFiles.length > 0) {
-        setMessages((prev) => {
+        setTurnMessages((prev) => {
           if (prev.length === 0) return prev;
           const updated = [...prev];
           const last = updated[updated.length - 1];
@@ -1729,6 +1928,7 @@ export function ChatScreen() {
         });
       }
       loadSessions(selectedAgent);
+      notifyWorkspaceChanged(selectedAgent, sessionId);
       // First-turn of a brand-new session just got persisted — tell the
       // global sidebar to refetch its Chats list so the new title shows
       // up without a full page reload.
@@ -1763,8 +1963,8 @@ export function ChatScreen() {
         // stop spinning. Server-side padOrphanToolResults will write a
         // matching record on its end; this just keeps the UI consistent
         // until the next history fetch overwrites it.
-        setMessages((prev) =>
-          prev.map((m) =>
+        setTurnMessages((prev) => {
+          const next = prev.map((m) =>
             m.role === "tool-group" && m.toolCalls
               ? {
                   ...m,
@@ -1773,14 +1973,24 @@ export function ChatScreen() {
                   ),
                 }
               : m,
-          ),
-        );
-        setMessages((prev) => [
-          ...prev,
-          { id: `e-${Date.now()}`, role: "agent", content: "(Stopped)", timestamp: Date.now() },
-        ]);
+          );
+          // Keyboard-stack / stream teardown can throw AbortError after
+          // a successful turn. Don't tack "(Stopped)" onto an answer
+          // the user already got.
+          const lastUser = [...next].reverse().findIndex((m) => m.role === "user");
+          if (lastUser >= 0) {
+            const replyAfter = next
+              .slice(next.length - lastUser)
+              .some((m) => m.role === "agent" || m.role === "tool-group");
+            if (replyAfter) return next;
+          }
+          return [
+            ...next,
+            { id: `e-${Date.now()}`, role: "agent", content: "(Stopped)", timestamp: Date.now() },
+          ];
+        });
       } else {
-        setMessages((prev) => {
+        setTurnMessages((prev) => {
           const lastUser = [...prev].reverse().findIndex((m) => m.role === "user");
           if (lastUser >= 0) {
             const replyAfter = prev
@@ -1803,22 +2013,28 @@ export function ChatScreen() {
         });
       }
     } finally {
-      if (inFlightSendSessionRef.current === sessionId) {
+      inFlightSessionsRef.current.delete(turnKey);
+      abortBySessionRef.current.delete(turnKey);
+      setStreamBubbleId(null);
+      if (inFlightSendSessionRef.current === turnSessionId) {
         inFlightSendSessionRef.current = null;
       }
-      abortRef.current = null;
-      setSending(false);
-      // Belt-and-suspenders: the subagent's done event clears this on
-      // the happy path, but if a network blip drops that event we don't
-      // want a stale "iteration 5/20" sitting under a finished turn.
-      setSubagentProgress(null);
-      textareaRef.current?.focus();
+      if (abortRef.current === turnAbort) {
+        abortRef.current = null;
+      }
+      if (sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+        setSending(false);
+        setSubagentProgress(null);
+        textareaRef.current?.focus();
+      }
     }
-  }, [input, attachments, selectedAgent, sessionId, sending, isReadOnlyView, isReadOnlySafeSlashCommand, loadSessions, pathname, router, urlProjectId]);
+  }, [input, attachments, selectedAgent, sessionId, sending, isReadOnlyView, isReadOnlySafeSlashCommand, loadSessions, pathname, router, urlProjectId, patchMessages, applySteerEvent]);
 
   const handleStop = useCallback(() => {
-    abortRef.current?.abort();
-  }, []);
+    const key = chatScopeKey(selectedAgent, sessionId);
+    const ac = abortBySessionRef.current.get(key) ?? abortRef.current;
+    ac?.abort();
+  }, [selectedAgent, sessionId]);
 
   // handleSteer fires while a turn is streaming: it buffers the message
   // into the running turn (the agent folds it in between tool rounds and
@@ -1930,7 +2146,9 @@ export function ChatScreen() {
       }
     }
 
-    if (e.key === "Enter" && !e.shiftKey) {
+    // Phones: the software-keyboard Enter is a newline. Send is the
+    // button. Shift+Enter still sends on desktop only.
+    if (e.key === "Enter" && !e.shiftKey && !isMobile) {
       e.preventDefault();
       // While a turn is streaming, Enter steers the running turn instead
       // of being blocked; otherwise it's a normal send.
@@ -1988,6 +2206,8 @@ export function ChatScreen() {
 
   const handleSelectSession = (sid: string) => {
     setSessionId(sid);
+    const cached = messagesCacheRef.current.get(chatScopeKey(selectedAgent, sid));
+    setMessages(cached ?? []);
     // history.replaceState (not router.replace) for the same reason as
     // handleSend: /chat/[session] is only pre-rendered for the `_`
     // placeholder under output:'export', so router-driven navigation to
@@ -2025,7 +2245,7 @@ export function ChatScreen() {
   const heroTitle = "What can I do for you?";
 
   return (
-    <div className="flex h-[calc(100vh-3rem)] flex-row">
+    <div className="flex h-[calc(100dvh-3rem-env(safe-area-inset-top,0px))] min-h-0 flex-row">
       <div
         className={
           "flex flex-1 min-w-0 flex-col" +
@@ -2048,14 +2268,14 @@ export function ChatScreen() {
             // so message rows keep a fixed content width that lines up with the
             // composer below (which gets a matching right inset) — otherwise the
             // scrollbar shifts message edges out of alignment on a narrow panel.
-            "min-h-0 px-4 [scrollbar-gutter:stable] " +
+            "min-h-0 px-3 [scrollbar-gutter:stable] overscroll-contain md:px-4 " +
             (isEmpty ? "shrink-0" : "flex-1 overflow-y-auto py-4")
           }
         >
           <div className="mx-auto max-w-2xl space-y-3">
             {isEmpty && (
               <div className="py-8 text-center">
-                <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">
+                <h1 className="text-2xl font-semibold tracking-tight md:text-4xl">
                   {heroTitle}
                 </h1>
               </div>
@@ -2345,13 +2565,13 @@ export function ChatScreen() {
                       {msg.role === "user" ? (
                         <>
                           {msg.timestamp > 0 && (
-                            <span className="opacity-0 group-hover:opacity-100 text-[10px] text-muted-foreground/60 transition-all">
+                            <span className="text-[10px] text-muted-foreground/60 md:opacity-0 md:group-hover:opacity-100">
                               {formatTime(msg.timestamp)}
                             </span>
                           )}
                           <button
                             onClick={() => handleCopy(msg)}
-                            className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-all"
+                            className="rounded p-1.5 text-muted-foreground/70 hover:bg-muted hover:text-muted-foreground md:p-0.5 md:opacity-0 md:group-hover:opacity-100"
                             title="Copy"
                           >
                             {copiedId === msg.id ? (
@@ -2362,7 +2582,7 @@ export function ChatScreen() {
                           </button>
                           <button
                             onClick={() => handleRetry(msg)}
-                            className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-all"
+                            className="rounded p-1.5 text-muted-foreground/70 hover:bg-muted hover:text-muted-foreground md:p-0.5 md:opacity-0 md:group-hover:opacity-100"
                             title="Resend (refills the composer)"
                           >
                             <RotateCcw className="h-3 w-3" />
@@ -2377,7 +2597,7 @@ export function ChatScreen() {
                           )}
                           <button
                             onClick={() => handleCopy(msg)}
-                            className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-all"
+                            className="rounded p-1.5 text-muted-foreground/70 hover:bg-muted hover:text-muted-foreground md:p-0.5 md:opacity-0 md:group-hover:opacity-100"
                             title="Copy"
                           >
                             {copiedId === msg.id ? (
@@ -2388,7 +2608,7 @@ export function ChatScreen() {
                           </button>
                           <button
                             onClick={() => setFilesSheetOpen(true)}
-                            className="opacity-0 group-hover:opacity-100 inline-flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-all"
+                            className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[10px] text-muted-foreground/70 hover:bg-muted hover:text-muted-foreground md:opacity-0 md:group-hover:opacity-100"
                             title="View task files"
                           >
                             <FolderOpen className="h-3 w-3" />
@@ -2430,7 +2650,7 @@ export function ChatScreen() {
 
         {/* Input — right inset matches the messages' reserved scrollbar gutter
             (6px) so the composer's edges line up with the message rows above. */}
-        <div className="shrink-0 pl-4 pr-[calc(1rem+6px)] pb-6 pt-2">
+        <div className="shrink-0 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] pt-2 md:px-4 md:pr-[calc(1rem+6px)] md:pb-6">
           <div className="mx-auto max-w-2xl relative">
             {isReadOnlyChannel && (
               // The web compose path can't deliver into upstream IM
@@ -2503,7 +2723,7 @@ export function ChatScreen() {
                           <button
                             type="button"
                             onClick={() => removeAttachment(i)}
-                            className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-background/80 text-muted-foreground opacity-0 transition group-hover:opacity-100 hover:text-foreground"
+                            className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-background/90 text-muted-foreground hover:text-foreground md:h-4 md:w-4 md:opacity-0 md:group-hover:opacity-100"
                             aria-label="Remove attachment"
                           >
                             <X className="h-3 w-3" />
@@ -2555,7 +2775,7 @@ export function ChatScreen() {
                     }
                     disabled={!canUseComposer}
                     rows={3}
-                    className="block w-full resize-none bg-transparent text-[15px] placeholder:text-muted-foreground/50 outline-none disabled:opacity-50"
+                    className="block w-full resize-none bg-transparent text-base placeholder:text-muted-foreground/50 outline-none disabled:opacity-50 md:text-[15px]"
                     style={{ maxHeight: 240, minHeight: 72 }}
                   />
                   <div className="mt-2 flex items-center justify-between">
@@ -2601,10 +2821,13 @@ export function ChatScreen() {
                       </Button>
                     ) : (
                       <Button
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          handleSend();
-                        }}
+                        type="button"
+                        // Keep the textarea focused, but send on click — not
+                        // mousedown. Send immediately swaps this slot to Stop;
+                        // a mousedown send lets the leftover click hit Stop
+                        // and abort the turn as "(Stopped)".
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => handleSend()}
                         disabled={(!input.trim() && attachments.length === 0) || !canSendComposer}
                         size="icon"
                         className="h-9 w-9 shrink-0 rounded-full"
@@ -2618,7 +2841,7 @@ export function ChatScreen() {
               ) : (
                 <div className="flex items-center gap-2">
                   <label
-                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors ${
+                    className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors md:h-8 md:w-8 ${
                       !canAttach
                         ? "opacity-50 cursor-not-allowed"
                         : "hover:bg-muted hover:text-foreground cursor-pointer"
@@ -2653,27 +2876,26 @@ export function ChatScreen() {
                     }
                     disabled={!canUseComposer}
                     rows={1}
-                    className="flex-1 resize-none bg-transparent text-[15px] leading-8 placeholder:text-muted-foreground/50 outline-none disabled:opacity-50"
+                    className="flex-1 resize-none bg-transparent text-base leading-8 placeholder:text-muted-foreground/50 outline-none disabled:opacity-50 md:text-[15px]"
                     style={{ maxHeight: 200, minHeight: 32 }}
                   />
                   {sending ? (
                     <Button
                       onClick={handleStop}
                       size="icon"
-                      className="h-8 w-8 shrink-0 rounded-lg"
+                      className="h-10 w-10 shrink-0 rounded-lg md:h-8 md:w-8"
                       aria-label="Stop generating"
                     >
                       <Square className="h-3.5 w-3.5 fill-current" />
                     </Button>
                   ) : (
                     <Button
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        handleSend();
-                      }}
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => handleSend()}
                       disabled={(!input.trim() && attachments.length === 0) || !canSendComposer}
                       size="icon"
-                      className="h-8 w-8 shrink-0 rounded-lg"
+                      className="h-10 w-10 shrink-0 rounded-lg md:h-8 md:w-8"
                       aria-label="Send message"
                     >
                       <Send className="h-4 w-4" />
@@ -2686,7 +2908,7 @@ export function ChatScreen() {
         </div>
         {lightboxSrc && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 cursor-zoom-out"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 cursor-zoom-out md:p-6"
             onClick={() => setLightboxSrc(null)}
             role="dialog"
             aria-modal="true"
@@ -2702,7 +2924,7 @@ export function ChatScreen() {
             <button
               type="button"
               onClick={() => setLightboxSrc(null)}
-              className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-background/80 text-foreground hover:bg-background"
+              className="absolute right-4 top-[max(1rem,env(safe-area-inset-top,0px))] flex h-10 w-10 items-center justify-center rounded-full bg-background/80 text-foreground hover:bg-background"
               aria-label="Close preview"
             >
               <X className="h-5 w-5" />
@@ -2710,15 +2932,26 @@ export function ChatScreen() {
           </div>
         )}
       </div>
+      {filesSheetOpen && (
+        <button
+          type="button"
+          className="fixed inset-0 z-30 bg-black/40 md:hidden"
+          aria-label="Close workspace"
+          onClick={() => {
+            setFilesSheetOpen(false);
+            setKnowledgePreview(null);
+          }}
+        />
+      )}
       {filesSheetOpen && selectedAgent && (sessionId || urlProjectId) && (
         <WorkspacePanel
           agentId={selectedAgent}
-          // On a project landing (no urlSessionId), sessionId here is the
-          // synthetic id chat-screen mints for the upcoming "New chat" —
-          // it doesn't correspond to anything on disk, so we suppress it
-          // and let projectId drive the scope. Inside an actual chat,
-          // urlSessionId is set and we pass the real sessionId.
-          sessionId={urlSessionId ? sessionId : ""}
+          // Brand-new /chat/ has no urlSessionId yet, but the composer
+          // already minted sessionId and uploads land under it — pass
+          // that id so the tree isn't empty until the first send pins
+          // the URL. Project landing is the exception: the minted id
+          // isn't a real chat, so suppress it and list the project.
+          sessionId={urlProjectId && !urlSessionId ? "" : sessionId}
           projectId={!urlSessionId && urlProjectId ? urlProjectId : undefined}
           knowledgePreview={knowledgePreview}
           onClearKnowledgePreview={() => setKnowledgePreview(null)}
@@ -2785,7 +3018,7 @@ function ChatHeaderTitle({ title, fallback, onSave }: ChatHeaderTitleProps) {
         }}
         onBlur={commit}
         style={{ fieldSizing: "content" } as React.CSSProperties}
-        className="h-7 min-w-[8ch] max-w-[40ch] rounded-md bg-transparent px-2 text-sm outline-none ring-1 ring-border focus:ring-primary/40"
+        className="h-8 min-w-[8ch] max-w-[min(calc(100vw-7.5rem),40ch)] rounded-md bg-transparent px-2 text-base outline-none ring-1 ring-border focus:ring-primary/40 md:h-7 md:text-sm"
       />
     );
   }
@@ -2801,11 +3034,11 @@ function ChatHeaderTitle({ title, fallback, onSave }: ChatHeaderTitleProps) {
       // arbitrary `min(...)` keeps narrow widths on phones (60vw) while
       // capping at ~32rem on desktop; sm:/md: bumps give intermediate
       // breakpoints a deterministic width too.
-      className="group flex min-w-0 max-w-[min(60vw,18rem)] sm:max-w-[24rem] md:max-w-[28rem] lg:max-w-[32rem] items-center gap-1.5 rounded-md px-2 py-1 text-sm text-foreground hover:bg-muted/50"
+      className="group flex min-w-0 max-w-[min(calc(100vw-7.5rem),18rem)] sm:max-w-[24rem] md:max-w-[28rem] lg:max-w-[32rem] items-center gap-1.5 rounded-md px-2 py-1 text-sm text-foreground hover:bg-muted/50"
       title={title || fallback}
     >
       <span className="truncate">{title || fallback}</span>
-      <Pencil className="h-3 w-3 shrink-0 text-muted-foreground/50 opacity-0 transition-opacity group-hover:opacity-100" />
+      <Pencil className="h-3 w-3 shrink-0 text-muted-foreground/50 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100" />
     </button>
   );
 }
@@ -3448,6 +3681,8 @@ function WorkspacePanel({
     return FILES_PANEL_DEFAULT;
   });
   const [resizing, setResizing] = useState(false);
+  const isMobile = useIsMobile();
+  const showingFile = !!(previewing || knowledgePreview);
 
   // Measure the panel's ACTUAL rendered width (not the `width` state, which
   // the CSS maxWidth cap can shrink below on small viewports) so the header
@@ -3511,10 +3746,12 @@ function WorkspacePanel({
     }
   }, [agentId, sessionId, projectId]);
 
+  const refreshGenRef = useRef(0);
   const refresh = useCallback(async () => {
     // Project scope (no session) is handled via projectId; chat scope
     // requires sessionId. With neither, there's nothing to fetch.
     if (!agentId || (!sessionId && !projectId)) return;
+    const gen = ++refreshGenRef.current;
     setLoading(true);
     try {
       // When projectId is set we skip sessionId — backend scope filter
@@ -3524,26 +3761,42 @@ function WorkspacePanel({
       const list = projectId
         ? await listAgentFiles(agentId, undefined, projectId)
         : await listAgentFiles(agentId, sessionId);
+      if (gen !== refreshGenRef.current) return;
       const cleaned = list
         .filter((f) => !isSystemFile(f.path))
         .sort((a, b) => (b.modTime || 0) - (a.modTime || 0));
       setFiles(cleaned);
       // Best-effort: is there a live app preview for this scope?
       getScopePreview(agentId, projectId ? undefined : sessionId, projectId)
-        .then(setAppPreview)
-        .catch(() => setAppPreview({ status: "none" }));
+        .then((p) => {
+          if (gen === refreshGenRef.current) setAppPreview(p);
+        })
+        .catch(() => {
+          if (gen === refreshGenRef.current) setAppPreview({ status: "none" });
+        });
       // Best-effort: which files did the agent change vs the template?
       getChangedFiles(agentId, projectId ? undefined : sessionId, projectId)
-        .then(setChanged)
-        .catch(() => setChanged({ files: [], available: false }));
+        .then((c) => {
+          if (gen === refreshGenRef.current) setChanged(c);
+        })
+        .catch(() => {
+          if (gen === refreshGenRef.current) setChanged({ files: [], available: false });
+        });
     } finally {
-      setLoading(false);
+      if (gen === refreshGenRef.current) setLoading(false);
     }
   }, [agentId, sessionId, projectId]);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    const onChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ agentId?: string; sessionId?: string }>).detail;
+      if (detail?.agentId && detail.agentId !== agentId) return;
+      if (detail?.sessionId && sessionId && detail.sessionId !== sessionId) return;
+      void refresh();
+    };
+    window.addEventListener("fastclaw:workspace-changed", onChange);
+    return () => window.removeEventListener("fastclaw:workspace-changed", onChange);
+  }, [refresh, agentId, sessionId]);
 
   // Workspace version history: load commits when the dropdown opens;
   // restore checks out the whole session workspace to that commit and
@@ -3555,10 +3808,13 @@ function WorkspacePanel({
     }
     if (!sessionId) return;
     setHistoryOpen(true);
+    const gen = refreshGenRef.current;
     try {
-      setHistory(await getSessionHistory(agentId, sessionId));
+      const rows = await getSessionHistory(agentId, sessionId);
+      if (gen !== refreshGenRef.current) return;
+      setHistory(rows);
     } catch {
-      setHistory([]);
+      if (gen === refreshGenRef.current) setHistory([]);
     }
   }, [historyOpen, agentId, sessionId]);
 
@@ -3583,12 +3839,23 @@ function WorkspacePanel({
     [agentId, sessionId, restoring, refresh],
   );
 
-  // Switching conversations swaps the file tree to the new scope — clear the
-  // selected file too, so the viewer never shows a file from the previous
-  // conversation (the tree refetches but `previewing` would otherwise linger).
+  // Switching conversations (or first mount) must clear the previous
+  // scope's tree AND then fetch. These used to be two effects: refresh()
+  // started a fetch (gen=N), then a later effect bumped refreshGenRef
+  // and wiped `files`. The in-flight list was discarded as stale, loading
+  // stayed true (Refresh spun forever), and the panel showed an empty
+  // tree even when /files returned rows. One effect keeps the cancel
+  // token and the fetch on the same generation.
   useEffect(() => {
     setPreviewing(null);
-  }, [agentId, sessionId, projectId]);
+    setFiles([]);
+    setChanged({ files: [], available: false });
+    setAppPreview({ status: "none" });
+    setBuildLogs("");
+    setHistory([]);
+    setHistoryOpen(false);
+    void refresh();
+  }, [refresh]);
 
   // While the Preview tab is open, poll the runtime so a "building" preview
   // flips to the live iframe on its own (and reflects sleep/crash). Cheap
@@ -3620,6 +3887,7 @@ function WorkspacePanel({
   // open) — capped by the 70% container maxWidth, so it never overflows. The
   // user can still drag narrower within the session; reopening re-widens.
   useEffect(() => {
+    if (isMobile) return;
     setWidth((w) => (w < PREVIEW_AUTO_WIDTH ? Math.min(PREVIEW_AUTO_WIDTH, FILES_PANEL_MAX) : w));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -3627,10 +3895,11 @@ function WorkspacePanel({
   // Also grow when entering Preview / opening a file (in case the user dragged
   // narrow earlier) so the iframe / viewer column isn't cramped.
   useEffect(() => {
+    if (isMobile) return;
     if (tab === "preview" || previewing || knowledgePreview) {
       setWidth((w) => (w < PREVIEW_AUTO_WIDTH ? Math.min(PREVIEW_AUTO_WIDTH, FILES_PANEL_MAX) : w));
     }
-  }, [tab, previewing, knowledgePreview]);
+  }, [tab, previewing, knowledgePreview, isMobile]);
 
   // The Preview tab only exists for coding projects with a live dev server.
   // When there's no app preview, hide the tab and snap back to Files.
@@ -3651,11 +3920,11 @@ function WorkspacePanel({
         // still bounds it to FILES_PANEL_MAX on very wide screens. overflow-
         // hidden is the belt-and-suspenders against inner content overflow.
         style={{ width, maxWidth: `min(${FILES_PANEL_MAX}px, 70%)` }}
-        className="relative z-30 hidden md:flex shrink-0 flex-col overflow-hidden border-l border-border bg-background -mt-12 h-screen"
+        className="relative z-30 flex shrink-0 flex-col overflow-hidden border-l border-border bg-background -mt-12 h-screen max-md:fixed max-md:inset-0 max-md:z-40 max-md:mt-0 max-md:!h-dvh max-md:!w-full max-md:!max-w-none max-md:shadow-xl"
       >
         <div
           onMouseDown={(e) => { e.preventDefault(); setResizing(true); }}
-          className={`absolute left-0 top-0 bottom-0 w-2 cursor-col-resize z-10 group ${resizing ? "" : ""}`}
+          className={`absolute left-0 top-0 bottom-0 w-2 cursor-col-resize z-10 group max-md:hidden ${resizing ? "" : ""}`}
           title="Drag to resize"
         >
           <div
@@ -3664,7 +3933,7 @@ function WorkspacePanel({
             }`}
           />
         </div>
-        <div className="flex h-12 items-center justify-between gap-2 border-b border-border px-4">
+        <div className="flex h-12 items-center justify-between gap-2 border-b border-border px-4 max-md:h-auto max-md:min-h-12 max-md:pt-[max(0.75rem,env(safe-area-inset-top,0px))]">
           <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
             <FolderOpen className="h-4 w-4 shrink-0" />
             {!compactHeader && <span className="truncate">{knowledgePreview ? "Knowledge" : "Workspace"}</span>}
@@ -3812,7 +4081,7 @@ function WorkspacePanel({
             )}
             <button
               onClick={onClose}
-              className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+              className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground max-md:p-2.5"
               title="Close"
             >
               <X className="h-4 w-4" />
@@ -3852,7 +4121,7 @@ function WorkspacePanel({
           ) : (
             <span className="px-1 text-xs font-medium text-muted-foreground">Files</span>
           )}
-          {tab === "code" && (
+          {tab === "code" && !isMobile && (
             <button
               onClick={() => setTreeCollapsed((c) => !c)}
               className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
@@ -3865,8 +4134,8 @@ function WorkspacePanel({
         {tab === "code" ? (
           <div className="flex min-h-0 flex-1">
             {/* Left: file tree (collapsible). */}
-            {!treeCollapsed && (
-            <div className="flex w-56 shrink-0 flex-col border-r border-border">
+            {(!treeCollapsed && !(isMobile && showingFile)) && (
+            <div className={cn("flex shrink-0 flex-col border-r border-border", isMobile ? "w-full border-r-0" : "w-56")}>
               {/* When there's a template baseline, default to showing only the
                   files THIS task changed; let the user flip to the full tree. */}
               {changed.available && (
@@ -3907,7 +4176,7 @@ function WorkspacePanel({
                   return (
                     <FileTreeView
                       files={list}
-                      rootPrefix={projectId ? `projects/${projectId}/` : `sessions/${sessionId}/`}
+                      rootPrefix={workspaceTreePrefix(list, projectId, sessionId)}
                       selectedPath={previewing?.path}
                       onSelect={(f) => {
                         onClearKnowledgePreview?.();
@@ -3921,7 +4190,7 @@ function WorkspacePanel({
             )}
             {/* Right: viewer for the selected file — overflow-hidden so wide
                 content (a PDF, long code lines) never scrolls the panel. */}
-            <div className="min-w-0 flex-1 overflow-hidden">
+            <div className={cn("min-w-0 flex-1 overflow-hidden", isMobile && !showingFile && "hidden")}>
               {knowledgePreview ? (
                 <KnowledgeFileViewer
                   key={`${knowledgePreview.id}-${knowledgePreview.path}`}
@@ -3935,6 +4204,7 @@ function WorkspacePanel({
                   // the new file's content is fetched (not the stale previous).
                   key={previewing.path}
                   agentId={agentId}
+                  sessionId={sessionId}
                   file={previewing}
                   onClose={() => setPreviewing(null)}
                 />
@@ -4085,13 +4355,14 @@ function KnowledgeFileViewer({ agentId, source, onClose }: { agentId: string; so
   );
 }
 
-function FileViewer({ agentId, file, onClose }: { agentId: string; file: ProducedFile; onClose?: () => void }) {
+function FileViewer({ agentId, file, sessionId, onClose }: { agentId: string; file: ProducedFile; sessionId?: string; onClose?: () => void }) {
   const { preview } = fileKind(file.path);
-  const src = fileUrl(agentId, file.path, false);
-  const downloadUrl = fileUrl(agentId, file.path, true);
+  const src = fileUrl(agentId, file.path, false, sessionId);
+  const downloadUrl = fileUrl(agentId, file.path, true, sessionId);
   const basename = file.path.split("/").pop() || file.path;
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [imgError, setImgError] = useState(false);
   // Default to SOURCE for markdown/html — clicking a file shows its code; the
   // toggle flips to rendered when wanted.
   const [view, setView] = useState<"rendered" | "source">("source");
@@ -4152,7 +4423,16 @@ function FileViewer({ agentId, file, onClose }: { agentId: string; file: Produce
         <div className="min-h-0 flex-1">
           {preview === "image" && (
             <div className="flex h-full items-center justify-center overflow-auto p-4">
-              <img src={src} alt={basename} className="max-h-full max-w-full object-contain" />
+              {imgError ? (
+                <p className="text-sm text-destructive">Failed to load image — the file is not a valid {basename.split(".").pop()?.toUpperCase() || "image"}.</p>
+              ) : (
+                <img
+                  src={src}
+                  alt={basename}
+                  className="max-h-full max-w-full object-contain"
+                  onError={() => setImgError(true)}
+                />
+              )}
             </div>
           )}
           {preview === "pdf" && (

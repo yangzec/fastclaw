@@ -114,6 +114,14 @@ type Store interface {
 	// carries the session_key, so workspace artifacts stay namespaced
 	// under the original conversation rather than re-keyed by session.
 	LookupSessionTriple(ctx context.Context, userID, agentID, sessionKey string) (channel, accountID, chatID string, err error)
+	// LookupSessionScopeToken maps a caller token to the workspace
+	// chat_id and the row's session_key. The token may be the
+	// session_key (dashboard URL / ListWebSessions id) or the chat_id
+	// (X-Fastclaw-Session-Key on /v1/chat/completions). Empty strings
+	// when this user has no matching row — never falls back to the raw
+	// token, so a public-agent viewer cannot reach another user's files
+	// by guessing a chat_id.
+	LookupSessionScopeToken(ctx context.Context, userID, agentID, token string) (chatID, sessionKey string, err error)
 	// LookupSessionProject returns the project_id of a session_key, or
 	// "" if the session is loose (no project). Used by the workspace
 	// path resolver to pick projects/<id>/ over sessions/<chat>/ when

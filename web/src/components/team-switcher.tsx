@@ -19,21 +19,22 @@ import {
 } from "@/components/ui/sidebar";
 import { Bot, ChevronsUpDownIcon, PlusIcon } from "lucide-react";
 
-// AgentAvatar shows the agent's uploaded /api/agents/{id}/files/avatar.png
-// when available, falls back to the FastClaw logo for the platform header
-// (no agent), and falls back to a Bot icon when an agent has no custom
-// avatar yet (the image 404s).
+// AgentAvatar shows the agent's uploaded avatar when the API gave us a
+// URL (file exists). No URL → Bot icon, without a speculative
+// avatar.png request that 404s. Platform header (no agent) uses logo.
 function AgentAvatar({
   agentId,
+  avatarUrl,
   size = 32,
 }: {
   agentId?: string | null;
+  avatarUrl?: string;
   size?: number;
 }) {
   const [failed, setFailed] = React.useState(false);
   React.useEffect(() => {
     setFailed(false);
-  }, [agentId]);
+  }, [agentId, avatarUrl]);
 
   if (!agentId) {
     return (
@@ -47,7 +48,7 @@ function AgentAvatar({
       />
     );
   }
-  if (failed) {
+  if (!avatarUrl || failed) {
     return (
       <div
         className="flex shrink-0 items-center justify-center rounded-lg bg-primary/10 dark:bg-primary/15 border border-primary/15"
@@ -60,7 +61,7 @@ function AgentAvatar({
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={`/api/agents/${agentId}/files/avatar.png`}
+      src={avatarUrl}
       alt=""
       width={size}
       height={size}
@@ -75,6 +76,7 @@ export interface AgentSwitcherItem {
   id: string;
   name?: string;
   model?: string;
+  avatarUrl?: string;
 }
 
 // AgentSwitcher renders the sidebar header.
@@ -125,7 +127,7 @@ export function AgentSwitcher({
       <SidebarMenu>
         <SidebarMenuItem>
           <SidebarMenuButton size="lg" className="cursor-default">
-            <AgentAvatar agentId={active?.id} size={32} />
+            <AgentAvatar agentId={active?.id} avatarUrl={active?.avatarUrl} size={32} />
             <div className="grid flex-1 text-left text-sm leading-tight">
               <span className="truncate font-medium">{headerLabel}</span>
             </div>
@@ -147,7 +149,7 @@ export function AgentSwitcher({
               />
             }
           >
-            <AgentAvatar agentId={active?.id} size={32} />
+            <AgentAvatar agentId={active?.id} avatarUrl={active?.avatarUrl} size={32} />
             <div className="grid flex-1 text-left text-sm leading-tight">
               <span className="truncate font-medium">{headerLabel}</span>
             </div>
@@ -171,7 +173,7 @@ export function AgentSwitcher({
                       onClick={() => goto(a.id)}
                       className="gap-2 p-2"
                     >
-                      <AgentAvatar agentId={a.id} size={24} />
+                      <AgentAvatar agentId={a.id} avatarUrl={a.avatarUrl} size={24} />
                       <span className="flex-1 truncate">{a.name || a.id}</span>
                     </DropdownMenuItem>
                   ))}

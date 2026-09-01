@@ -97,8 +97,8 @@ export function ChatRowActions({
   // left of the parent's chip.
   const triggerClass =
     variant === "menu-sub-item"
-      ? "absolute top-1 right-[-20px] flex h-5 w-5 items-center justify-center rounded-md text-sidebar-foreground outline-hidden transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground aria-expanded:opacity-100 md:opacity-0 group-hover/menu-sub-item:opacity-100 group-focus-within/menu-sub-item:opacity-100 [&>svg]:size-4"
-      : "absolute top-1.5 right-1 flex aspect-square w-5 items-center justify-center rounded-md p-0 text-sidebar-foreground outline-hidden transition-transform hover:bg-sidebar-accent hover:text-sidebar-accent-foreground aria-expanded:opacity-100 md:opacity-0 group-hover/menu-item:opacity-100 group-focus-within/menu-item:opacity-100 [&>svg]:size-4";
+      ? "absolute top-1 right-[-20px] flex h-8 w-8 items-center justify-center rounded-md text-sidebar-foreground outline-hidden transition-opacity hover:bg-sidebar-accent hover:text-sidebar-accent-foreground aria-expanded:opacity-100 md:h-5 md:w-5 md:opacity-0 group-hover/menu-sub-item:opacity-100 group-focus-within/menu-sub-item:opacity-100 [&>svg]:size-4"
+      : "absolute top-0.5 right-0.5 flex aspect-square h-8 w-8 items-center justify-center rounded-md p-0 text-sidebar-foreground outline-hidden transition-transform hover:bg-sidebar-accent hover:text-sidebar-accent-foreground aria-expanded:opacity-100 md:top-1.5 md:right-1 md:h-5 md:w-5 md:opacity-0 group-hover/menu-item:opacity-100 group-focus-within/menu-item:opacity-100 [&>svg]:size-4";
 
   return (
     <>

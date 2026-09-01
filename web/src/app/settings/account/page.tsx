@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Save, Check, Upload, X } from "lucide-react";
 import { getMe, updateMe, changeMyPassword } from "@/lib/api";
+import { MIN_PASSWORD_LENGTH } from "@/lib/password";
 import { logout as doLogout } from "@/lib/auth";
 
 const AVATAR_MAX_BYTES = 256 * 1024;
@@ -92,8 +93,12 @@ export default function AccountSettingsPage() {
   async function savePassword(e: React.FormEvent) {
     e.preventDefault();
     setPwError("");
-    if (!oldPassword || !newPassword) {
-      setPwError("Both fields required");
+    if (!oldPassword || !newPassword || !confirmPassword) {
+      setPwError("Current, new, and confirm password are required");
+      return;
+    }
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      setPwError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
       return;
     }
     if (newPassword !== confirmPassword) {

@@ -36,6 +36,7 @@ import {
   UserPlus,
 } from "lucide-react";
 import { getStatus, onboard, testProvider } from "@/lib/api";
+import { MIN_PASSWORD_LENGTH } from "@/lib/password";
 
 const STEPS = [
   { id: "welcome", label: "Welcome", icon: PartyPopper },
@@ -266,7 +267,7 @@ export default function OnboardPage() {
     true,
     username.trim() !== "" &&
       email.trim() !== "" &&
-      password.length >= 6 &&
+      password.length >= MIN_PASSWORD_LENGTH &&
       password === passwordConfirm,
     !providerEnabled ||
       (apiKey.trim() !== "" && model.trim() !== "" && apiBase.trim() !== "" && testStatus === "ok"),
@@ -346,7 +347,12 @@ export default function OnboardPage() {
           />
         )}
 
-        {step === 5 && <DoneStep onContinue={() => router.replace("/")} />}
+        {step === 5 && (
+          <DoneStep
+            providerConfigured={providerEnabled}
+            onContinue={() => router.replace("/")}
+          />
+        )}
 
         {submitError && (
           <Card className="border-destructive/40 bg-destructive/5">
@@ -479,7 +485,7 @@ function AdminStep(props: {
   setDisplayName: (v: string) => void;
 }) {
   const passwordTooShort =
-    props.password.length > 0 && props.password.length < 6;
+    props.password.length > 0 && props.password.length < MIN_PASSWORD_LENGTH;
   const mismatch =
     props.passwordConfirm.length > 0 && props.password !== props.passwordConfirm;
   return (
@@ -535,10 +541,10 @@ function AdminStep(props: {
               value={props.password}
               onChange={(e) => props.setPassword(e.target.value)}
               autoComplete="new-password"
-              placeholder="6+ characters"
+              placeholder={`${MIN_PASSWORD_LENGTH}+ characters`}
             />
             {passwordTooShort && (
-              <p className="text-xs text-destructive">at least 6 characters</p>
+              <p className="text-xs text-destructive">at least {MIN_PASSWORD_LENGTH} characters</p>
             )}
           </div>
           <div className="space-y-1.5">
@@ -919,7 +925,13 @@ function SandboxStep(props: {
   );
 }
 
-function DoneStep({ onContinue }: { onContinue: () => void }) {
+function DoneStep({
+  onContinue,
+  providerConfigured,
+}: {
+  onContinue: () => void;
+  providerConfigured: boolean;
+}) {
   return (
     <Card>
       <CardHeader>
@@ -928,13 +940,15 @@ function DoneStep({ onContinue }: { onContinue: () => void }) {
           You&apos;re in!
         </CardTitle>
         <CardDescription>
-          Admin account created, provider configured, first agent ready.
+          {providerConfigured
+            ? "Admin account created, provider configured, first agent ready."
+            : "Admin account created and first agent ready. Add a provider from Models when you want to chat."}
         </CardDescription>
       </CardHeader>
       <CardContent>
         <p className="text-sm text-muted-foreground">
-          The session cookie is already set — clicking continue takes you
-          straight to the dashboard.
+          The session cookie is already set — Open dashboard takes you
+          straight in.
         </p>
       </CardContent>
       <CardFooter>

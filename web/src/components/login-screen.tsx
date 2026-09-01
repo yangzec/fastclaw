@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { login as apiLogin, register, getStatus } from "@/lib/api";
+import { MIN_PASSWORD_LENGTH } from "@/lib/password";
 
 interface LoginScreenProps {
   onSuccess: () => void;
@@ -67,8 +68,8 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
       setError("All fields are required");
       return;
     }
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters");
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
       return;
     }
     if (password !== signupConfirm) {
@@ -100,7 +101,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
 
   if (mode === "signup") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-950 p-4">
+      <div className="flex min-h-dvh items-center justify-center bg-zinc-950 p-4">
         <div className="w-full max-w-sm space-y-6">
           <div className="text-center space-y-2">
             <h1 className="text-2xl font-bold text-zinc-100">Create your account</h1>
@@ -114,7 +115,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
               placeholder="username"
               autoFocus
               autoComplete="username"
-              className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+              className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-base text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
             />
             <input
               type="email"
@@ -122,7 +123,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
               onChange={(e) => setSignupEmail(e.target.value)}
               placeholder="email"
               autoComplete="email"
-              className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+              className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-base text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
             />
             <input
               type="password"
@@ -130,7 +131,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
               onChange={(e) => setPassword(e.target.value)}
               placeholder="password (min 8 chars)"
               autoComplete="new-password"
-              className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+              className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-base text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
             />
             <input
               type="password"
@@ -138,7 +139,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
               onChange={(e) => setSignupConfirm(e.target.value)}
               placeholder="confirm password"
               autoComplete="new-password"
-              className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+              className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-base text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
             />
             {error && <p className="text-sm text-red-400">{error}</p>}
             <button
@@ -165,7 +166,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-950 p-4">
+    <div className="flex min-h-dvh items-center justify-center bg-zinc-950 p-4">
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center space-y-2">
           <h1 className="text-2xl font-bold text-zinc-100">FastClaw</h1>
@@ -179,7 +180,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
             placeholder="username or email"
             autoFocus
             autoComplete="username"
-            className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+            className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-base text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
           />
           <input
             type="password"
@@ -187,7 +188,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
             onChange={(e) => setPassword(e.target.value)}
             placeholder="password"
             autoComplete="current-password"
-            className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+            className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-base text-zinc-100 placeholder-zinc-600 outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
           />
           {error && <p className="text-sm text-red-400">{error}</p>}
           <button

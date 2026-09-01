@@ -197,10 +197,8 @@ type changePasswordReq struct {
 }
 
 // handleChangeMyPassword is the self-service variant of admin's password
-// reset — requires the current password before accepting a new one. Min
-// length matches the implicit default elsewhere; we don't enforce strong
-// rules because the install is single-tenant and we don't want to be
-// the place that rejects "correcthorse" with a regex.
+// reset — requires the current password before accepting a new one.
+// Minimum length is users.MinPasswordLen (same as register / onboard).
 func (s *Server) handleChangeMyPassword(w http.ResponseWriter, r *http.Request) {
 	ident, ok := auth.FromContext(r.Context())
 	if !ok || ident.ReadOnly() {
@@ -216,8 +214,8 @@ func (s *Server) handleChangeMyPassword(w http.ResponseWriter, r *http.Request) 
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid request"})
 		return
 	}
-	if req.NewPassword == "" {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "new password required"})
+	if err := users.CheckPasswordLength(req.NewPassword); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
 	if err := s.accounts.VerifyPassword(r.Context(), ident.UserID, req.OldPassword); err != nil {
@@ -284,6 +282,10 @@ func (s *Server) handleOnboard(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "username, email, password required"})
 		return
 	}
+	if err := users.CheckPasswordLength(req.Password); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
 	acct, err := s.accounts.Create(r.Context(), users.CreateInput{
 		Username:    req.Username,
 		Email:       req.Email,
@@ -308,7 +310,11 @@ func (s *Server) handleOnboard(w http.ResponseWriter, r *http.Request) {
 		// and an inactive Test connection button, even though
 		// agents.defaults already names this model.
 		if req.Model != "" {
-			pcfg.Models = []config.ModelEntry{{ID: req.Model, Name: req.Model}}
+			pcfg.Models = []config.ModelEntry{{
+				ID:            req.Model,
+				Name:          req.Model,
+				ContextWindow: config.KnownContextWindow(req.Model),
+			}}
 		}
 		if err := scope.SaveProviderByScope(r.Context(), s.dataStore, scope.System, "", req.Provider, pcfg); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
