@@ -1337,6 +1337,10 @@ func (s *Server) handleChatSubscribe(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
+	if !s.canSubscribeSession(r, agentID, sessionID) {
+		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "session not found"})
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": "streaming unsupported"})
@@ -1398,7 +1402,7 @@ func (s *Server) handleChatSubscribe(w http.ResponseWriter, r *http.Request) {
 	var outbound <-chan bus.OutboundMessage
 	var unsubscribeOutbound func() = func() {}
 	if s.webChan != nil {
-		outbound, unsubscribeOutbound = s.webChan.Subscribe(agentID, sessionID)
+		outbound, unsubscribeOutbound = s.webChan.Subscribe(uid, agentID, sessionID)
 	}
 	defer unsubscribeOutbound()
 
@@ -1473,6 +1477,33 @@ func (s *Server) handleChatSubscribe(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// canSubscribeSession is the SSE counterpart of StoreAdapter's
+// resolveSessionOwner: a public-agent viewer may open a brand-new
+// chat (no row yet) or subscribe to a session they own (or that one
+// of their app_user children owns). A session that already belongs
+// to someone else 404s so knowing/guessing a chat_id cannot attach
+// to another tenant's live cron/outbound stream.
+func (s *Server) canSubscribeSession(r *http.Request, agentID, sessionID string) bool {
+	if s.dataStore == nil || sessionID == "" {
+		return true
+	}
+	uid := s.effectiveUserID(r)
+	if uid == "" {
+		return false
+	}
+	owner, err := s.dataStore.LookupSessionOwner(r.Context(), agentID, sessionID)
+	if err != nil || owner == "" {
+		return true
+	}
+	if owner == uid {
+		return true
+	}
+	if u, err := s.dataStore.GetUser(r.Context(), owner); err == nil && u != nil && u.OwnerUserID == uid {
+		return true
+	}
+	return false
 }
 
 // handleChatTodo reads the per-session todo.md the agent maintains and

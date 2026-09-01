@@ -88,4 +88,31 @@ func TestOwnerUserMemorySystemFileIsNotAnOverride(t *testing.T) {
 	if soul["source"] != "owner" {
 		t.Errorf("SOUL.md source = %v, want owner", soul["source"])
 	}
+
+	// Public viewers must not download the persona spec over HTTP.
+	req := authTestRequest(t, ctx, resolver, http.MethodGet, "/api/agents/"+agentID+"/system-files/SOUL.md", chatter.ID)
+	req.SetPathValue("id", agentID)
+	req.SetPathValue("name", "SOUL.md")
+	rr := httptest.NewRecorder()
+	s.authMiddleware(s.handleGetAgentSystemFile)(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("chatter GET SOUL.md = %d, want 403: %s", rr.Code, rr.Body.String())
+	}
+
+	// MEMORY.md has no owner fallback for a stranger — unlike USER.md.
+	memReq := authTestRequest(t, ctx, resolver, http.MethodGet, "/api/agents/"+agentID+"/system-files/MEMORY.md", chatter.ID)
+	memReq.SetPathValue("id", agentID)
+	memReq.SetPathValue("name", "MEMORY.md")
+	memRR := httptest.NewRecorder()
+	s.authMiddleware(s.handleGetAgentSystemFile)(memRR, memReq)
+	if memRR.Code != http.StatusOK {
+		t.Fatalf("chatter GET MEMORY.md = %d: %s", memRR.Code, memRR.Body.String())
+	}
+	var mem map[string]any
+	if err := json.Unmarshal(memRR.Body.Bytes(), &mem); err != nil {
+		t.Fatalf("decode MEMORY.md: %v", err)
+	}
+	if mem["source"] != "default" || mem["content"] != "" {
+		t.Fatalf("chatter MEMORY.md leaked owner row: %+v", mem)
+	}
 }

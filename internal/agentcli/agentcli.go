@@ -728,7 +728,31 @@ var systemSettingNamespaces = []string{
 // Agent-scope keys cover model/temperature/sandbox; everything else is
 // a system-wide namespace. The bool return is "isAgentScope" — true
 // means the row's agent_id should be set to the active agentID; false
-// means a system row (user_id='', agent_id='').
+// means a system row (user_id=”, agent_id=”).
+// AssertAgentScopedConfig rejects keys that would write a system-wide
+// configs row. configure_agent runs inside a tenant's chat; letting it
+// set provider.openai.apiKey (or tools.providers, plugins, …) used to
+// mutate user_id=” / agent_id=” and affect every other tenant.
+// The operator CLI (`fastclaw agents config`) still uses SetConfig
+// directly and may write system rows on purpose.
+func AssertAgentScopedConfig(key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return errors.New("config key is required")
+	}
+	if strings.HasPrefix(key, "provider.") {
+		return fmt.Errorf("config key %q is platform-wide; set providers in Models, not via configure_agent", key)
+	}
+	_, _, isAgentScope, err := settingKey(key)
+	if err != nil {
+		return err
+	}
+	if !isAgentScope {
+		return fmt.Errorf("config key %q is system-scoped and cannot be written from an agent session", key)
+	}
+	return nil
+}
+
 func settingKey(key string) (string, []string, bool, error) {
 	if ns, ok := agentScopeKeys[key]; ok {
 		path := []string{key}

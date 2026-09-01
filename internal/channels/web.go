@@ -2,6 +2,7 @@ package channels
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/fastclaw-ai/fastclaw/internal/bus"
@@ -11,7 +12,7 @@ import (
 // the Channel interface so channels.Manager can route bus.Outbound
 // messages with Channel="web" through it like any other channel — but
 // instead of pushing to an external service (Telegram / Discord / Slack)
-// it forwards to per-(agentID, sessionID) subscribers held open by SSE
+// it forwards to per-(userID, agentID, sessionID) subscribers held open by SSE
 // handlers.
 //
 // This is what fixes "WARN unknown outbound channel key=web:" for cron-
@@ -35,7 +36,7 @@ func NewWebChannel() *WebChannel {
 }
 
 // Subscribe registers a channel to receive every OutboundMessage whose
-// (AgentID, ChatID) matches. Returns the channel and a cleanup func the
+// (UserID, AgentID, ChatID) matches. Returns the channel and a cleanup func the
 // caller MUST defer to remove its slot — without it the slice grows
 // unbounded across reconnects.
 //
@@ -43,8 +44,8 @@ func NewWebChannel() *WebChannel {
 // pace, not high frequency, and falling behind is preferable to
 // unbounded memory growth on a stuck client. Drops are logged at the
 // send site.
-func (w *WebChannel) Subscribe(agentID, chatID string) (<-chan bus.OutboundMessage, func()) {
-	key := webKey(agentID, chatID)
+func (w *WebChannel) Subscribe(userID, agentID, chatID string) (<-chan bus.OutboundMessage, func()) {
+	key := webKey(userID, agentID, chatID)
 	ch := make(chan bus.OutboundMessage, 8)
 	w.mu.Lock()
 	w.subscribers[key] = append(w.subscribers[key], ch)
@@ -105,14 +106,19 @@ func (w *WebChannel) Send(chatID, text string) error {
 	})
 }
 
-// SendMessage fans out msg to every subscriber bound to (msg.AgentID,
-// msg.ChatID). Subscribers whose buffer is full are skipped (not
+// SendMessage fans out msg to every subscriber bound to (msg.UserID,
+// msg.AgentID, msg.ChatID). An empty UserID matches nobody — that is
+// deliberate so a missing recipient cannot fall back to "every tab on
+// this agent+chat". Subscribers whose buffer is full are skipped (not
 // blocked) so a single stuck client can't stall the cron scheduler.
 func (w *WebChannel) SendMessage(msg bus.OutboundMessage) error {
-	key := webKey(msg.AgentID, msg.ChatID)
 	w.mu.RLock()
-	subs := append([]chan bus.OutboundMessage(nil), w.subscribers[key]...)
 	pushHandler := w.pushHandler
+	var subs []chan bus.OutboundMessage
+	if strings.TrimSpace(msg.UserID) != "" {
+		key := webKey(msg.UserID, msg.AgentID, msg.ChatID)
+		subs = append([]chan bus.OutboundMessage(nil), w.subscribers[key]...)
+	}
 	w.mu.RUnlock()
 	if len(subs) == 0 && pushHandler != nil && msg.Text != "" {
 		pushHandler(msg)
@@ -131,6 +137,6 @@ func (w *WebChannel) SendMessage(msg bus.OutboundMessage) error {
 // dashboard's own UI state, not by a server signal.
 func (w *WebChannel) SendTyping(chatID string) error { return nil }
 
-func webKey(agentID, chatID string) string {
-	return agentID + ":" + chatID
+func webKey(userID, agentID, chatID string) string {
+	return userID + ":" + agentID + ":" + chatID
 }

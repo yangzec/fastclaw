@@ -33,7 +33,12 @@ func hydrateWorkspace(ctx context.Context, ws workspace.Store, ex Executor, agen
 	}
 	copied := 0
 	for _, obj := range objs {
-		target := path.Join(sandboxRoot, obj.Path)
+		safe := sanitizeSandboxPath(obj.Path)
+		if safe == "" || safe == "." || strings.Contains(safe, "..") {
+			slog.Warn("workspace hydrate: skipped unsafe path", "agent", agentID, "path", obj.Path)
+			continue
+		}
+		target := path.Join(sandboxRoot, safe)
 		rc, getErr := ws.Get(ctx, agentID, projectID, sessionID, obj.Path)
 		if getErr != nil {
 			slog.Warn("workspace hydrate: get failed", "agent", agentID, "project", projectID, "session", sessionID, "path", obj.Path, "error", getErr)

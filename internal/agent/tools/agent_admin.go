@@ -184,6 +184,9 @@ func RegisterAgentAdmin(r *Registry, deps AgentAdminDeps) {
 			}
 			done := make([]string, 0, 2)
 			if p.Key != "" {
+				if err := agentcli.AssertAgentScopedConfig(p.Key); err != nil {
+					return "", err
+				}
 				if err := agentcli.SetConfig(ctx, deps.Store, rec.ID, p.Key, p.Value); err != nil {
 					return "", err
 				}

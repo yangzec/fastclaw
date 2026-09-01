@@ -605,6 +605,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 			Channel:      task.Message.Channel,
 			AccountID:    task.AccountID,
 			AgentID:      task.AgentID,
+			UserID:       g.webRecipientUserID(ctx, task),
 			ChatID:       task.Message.ChatID,
 			Text:         outText,
 			ReplyToMsgID: task.Message.MessageID,
@@ -636,6 +637,28 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 	}
 
 	return g, nil
+}
+
+// webRecipientUserID is the user whose open web tab should receive a
+// bus.Outbound fan-out. Prefer the inbound chatter (cron stamps
+// ChatterID here; web chat stamps the logged-in visitor). Fall back to
+// the session row's user_id when the actor is a synthetic sentinel
+// ("cron", "web-user") so a legacy job still reaches the tab that
+// owns the chat — and never to "every subscriber of this chat_id".
+func (g *Gateway) webRecipientUserID(ctx context.Context, task *taskqueue.Task) string {
+	if task == nil {
+		return ""
+	}
+	uid := strings.TrimSpace(task.Message.UserID)
+	if uid != "" && uid != "cron" && uid != "web-user" {
+		return uid
+	}
+	if g.store != nil && task.AgentID != "" && task.Message.ChatID != "" {
+		if owner, err := g.store.LookupSessionOwner(ctx, task.AgentID, task.Message.ChatID); err == nil && owner != "" {
+			return owner
+		}
+	}
+	return strings.TrimSpace(task.OwnerUserID)
 }
 
 // UserSpaceFor returns the resolved user's UserSpace, lazy-loading on
