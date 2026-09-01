@@ -42,6 +42,13 @@ action on upgrade — read those notes before deploying.
 
 ### Fixed
 
+- **Chat bubbles swallowed the rest of a reply into one numbered
+  code card.** A stray or unclosed ` ``` ` (common when the model
+  quotes an `API error 400` dump) is a CommonMark fence that runs
+  to EOF, so later `**bold**`, lists, and `` `inline code` ``
+  rendered as literal text. Completed chat markdown now breaks
+  that fence when the body looks like prose, and mid-line ` ``` `
+  is no longer treated as a fence opener.
 - **Oversized sessions kept getting HTTP 400 after compaction
   failed.** Compression called the summarizer with a nil
   `context.Context`, which surfaced as `net/http: nil Context`. The
