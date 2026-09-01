@@ -34,7 +34,7 @@ import (
 type channelOut struct {
 	Type           string `json:"type"`
 	AccountID      string `json:"accountId"`
-	BotUsername     string `json:"botUsername,omitempty"`
+	BotUsername    string `json:"botUsername,omitempty"`
 	BotToken       string `json:"botToken"` // masked
 	Enabled        bool   `json:"enabled"`
 	SharedIdentity bool   `json:"sharedIdentity"`
@@ -225,7 +225,7 @@ func flattenChannelRecords(rows []store.ChannelRecord, source string) []channelO
 			out = append(out, channelOut{
 				Type:           rec.Type,
 				AccountID:      accountID,
-				BotUsername:     accountID,
+				BotUsername:    accountID,
 				BotToken:       maskAPIKey(tok),
 				Enabled:        rec.Enabled,
 				SharedIdentity: rec.SharedIdentity,
@@ -1091,36 +1091,13 @@ func (s *Server) handleConnectAgentFeishu(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	cc := config.ChannelConfig{
-		Enabled: true,
-		Accounts: map[string]config.AccountConfig{
-			appID: {
-				BotToken:    appSecret,
-				UserID:      verificationToken, // see channels/feishu.go field-mapping note
-				EncryptKey:  encryptKey,
-				UseLongConn: useLongConn,
-			},
-		},
-	}
-	credKey := appID
-	if err := s.assertChannelCredentialUniqueOpt(r, "feishu", credKey, "", uid, aid, true); err != nil {
-		jsonResponse(w, http.StatusConflict, map[string]any{"error": err.Error()})
+	if err := s.persistFeishuAccount(r, uid, aid, id, appID, appSecret, verificationToken, encryptKey, useLongConn); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "already connected") {
+			status = http.StatusConflict
+		}
+		jsonResponse(w, status, map[string]any{"error": err.Error()})
 		return
-	}
-	if err := s.saveChannelRecord(r.Context(), uid, aid, "feishu", appID, true, cc); err != nil {
-		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if err := s.appendBinding(r, "", "", config.Binding{
-		AgentID: id,
-		Match:   config.Match{Channel: "feishu", AccountID: appID},
-	}); err != nil {
-		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	s.invalidateOwner(uid, aid)
-	if ch, err := s.dataStore.LookupChannel(r.Context(), "feishu", credKey); err == nil && ch != nil {
-		s.hotRegisterChannelRecord(*ch)
 	}
 	resp := map[string]any{
 		"ok":          true,
@@ -1156,6 +1133,40 @@ func feishuWebhookPathFor(r *http.Request, appID string) string {
 		host = h
 	}
 	return scheme + "://" + host + "/api/feishu/webhook/" + appID
+}
+
+// persistFeishuAccount writes the channel row + binding and hot-registers
+// the adapter. Shared by the paste-credentials handler and the QR
+// scan-to-create flow.
+func (s *Server) persistFeishuAccount(r *http.Request, userID, agentIDArg, agentID, appID, appSecret, verificationToken, encryptKey string, useLongConn bool) error {
+	cc := config.ChannelConfig{
+		Enabled: true,
+		Accounts: map[string]config.AccountConfig{
+			appID: {
+				BotToken:    appSecret,
+				UserID:      verificationToken, // see channels/feishu.go field-mapping note
+				EncryptKey:  encryptKey,
+				UseLongConn: useLongConn,
+			},
+		},
+	}
+	if err := s.assertChannelCredentialUniqueOpt(r, "feishu", appID, "", userID, agentIDArg, true); err != nil {
+		return err
+	}
+	if err := s.saveChannelRecord(r.Context(), userID, agentIDArg, "feishu", appID, true, cc); err != nil {
+		return err
+	}
+	if err := s.appendBinding(r, "", "", config.Binding{
+		AgentID: agentID,
+		Match:   config.Match{Channel: "feishu", AccountID: appID},
+	}); err != nil {
+		return err
+	}
+	s.invalidateOwner(userID, agentIDArg)
+	if ch, err := s.dataStore.LookupChannel(r.Context(), "feishu", appID); err == nil && ch != nil {
+		s.hotRegisterChannelRecord(*ch)
+	}
+	return nil
 }
 
 // --- LINE ---
@@ -1235,11 +1246,11 @@ func (s *Server) handleConnectAgentLINE(w http.ResponseWriter, r *http.Request) 
 		s.hotRegisterChannelRecord(*ch)
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{
-		"ok":          true,
-		"botUserId":   userID,
-		"botName":     displayName,
-		"basicId":     basicID,
-		"webhookUrl":  lineWebhookPathFor(r, userID),
+		"ok":         true,
+		"botUserId":  userID,
+		"botName":    displayName,
+		"basicId":    basicID,
+		"webhookUrl": lineWebhookPathFor(r, userID),
 	})
 }
 

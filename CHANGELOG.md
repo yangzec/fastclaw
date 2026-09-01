@@ -5,6 +5,18 @@ action on upgrade — read those notes before deploying.
 
 ## [Unreleased]
 
+### Added
+
+- **Feishu / Lark scan-to-create.** Connecting a Feishu channel no
+  longer requires creating a custom app in the developer console.
+  The dashboard now uses the official OAuth 2.0 Device Authorization
+  Grant flow (`registration.RegisterApp`): scan a QR code in the
+  Feishu or Lark phone app and the platform creates a PersonalAgent
+  bot with the right scopes and `im.message.receive_v1`, then
+  FastClaw stores the issued App ID / Secret and starts long-connection
+  inbound. Manual App ID + Secret paste remains as a fallback.
+  See https://open.feishu.cn/document/mcp_open_tools/scan-to-create-an-app-in-one-click
+
 ### Fixed
 
 - **Cron jobs fired ~hours late on Postgres when the server ran in a

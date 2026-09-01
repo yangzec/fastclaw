@@ -1898,6 +1898,47 @@ export async function connectAgentLINE(
   return res.json();
 }
 
+export async function startAgentFeishuLogin(
+  agentId: string,
+  brand: "feishu" | "lark" = "feishu",
+): Promise<{ sessionId?: string; url?: string; expireIn?: number; brand?: string; error?: string }> {
+  const res = await apiFetch(`/api/agents/${agentId}/channels/feishu/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ brand }),
+  });
+  return res.json();
+}
+
+export async function pollAgentFeishuLoginStatus(
+  agentId: string,
+  sessionId: string,
+): Promise<{
+  status?: "wait" | "confirmed" | "expired" | "denied" | "error";
+  connected?: boolean;
+  accountId?: string;
+  appId?: string;
+  botName?: string;
+  botOpenId?: string;
+  error?: string;
+}> {
+  const res = await apiFetch(
+    `/api/agents/${agentId}/channels/feishu/login/status?session=${encodeURIComponent(sessionId)}`,
+  );
+  return res.json();
+}
+
+export async function cancelAgentFeishuLogin(
+  agentId: string,
+  sessionId: string,
+): Promise<{ ok?: boolean; error?: string }> {
+  const res = await apiFetch(
+    `/api/agents/${agentId}/channels/feishu/login?session=${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" },
+  );
+  return res.json();
+}
+
 export async function connectAgentFeishu(
   agentId: string,
   appId: string,
