@@ -141,6 +141,9 @@ export interface SkillInfo {
   location: string;
   type: string;
   envSpec?: SkillEnvSpec[];
+  // source is set on the agent Skills page: "agent" is installed in
+  // this agent's home, "inherited" comes from the global skills dir.
+  source?: "agent" | "inherited";
 }
 
 export interface SkillEntryCfg {
@@ -1483,8 +1486,8 @@ export async function deleteSkill(name: string) {
   return res.json();
 }
 
-// Per-agent skills: list what's installed in an agent's own home/skills dir.
-// Agent-scoped skills shadow global ones with the same name.
+// Per-agent skills: this agent's home/skills plus inherited global
+// skills (source=inherited). Agent-scoped copies shadow global ones.
 export async function getAgentSkills(agentId: string): Promise<SkillInfo[]> {
   const res = await apiFetch(`/api/agents/${encodeURIComponent(agentId)}/skills`);
   return res.json();

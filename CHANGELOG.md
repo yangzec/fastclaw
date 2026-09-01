@@ -7,9 +7,17 @@ action on upgrade — read those notes before deploying.
 
 ### Added
 
+<<<<<<< HEAD
 - **Chat composer drag-and-drop attachments.** Dropping files onto
   the message input attaches them the same way as the paperclip
   picker and image paste (chips, then upload on send).
+=======
+- **Inherited global skills on the agent Skills page.** The agent
+  Skills tab lists global `~/.fastclaw/skills` entries as
+  **Inherited** (same merge the runtime uses). An agent-local copy
+  with the same name still wins and can be removed without deleting
+  the global skill.
+>>>>>>> origin/cursor/agent-inherited-skills-16c5
 - **WeCom (企业微信) scan-to-create + long-connection.** New
   channel type `wecom` (does not reuse personal WeChat iLink).
   The dashboard opens Tencent's official `@wecom/wecom-aibot-sdk`

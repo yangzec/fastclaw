@@ -2,8 +2,10 @@ package setup
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -49,6 +51,93 @@ func TestListSkillsRequiresAuth(t *testing.T) {
 			t.Fatalf("body = %q, want []", got)
 		}
 	})
+}
+
+func TestListAgentSkillsIncludesInheritedGlobal(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, admin, _ := newAuthTestServer(t, ctx)
+	home := t.TempDir()
+	t.Setenv("FASTCLAW_HOME", home)
+
+	agentID := "agt_inherit"
+	if err := s.dataStore.SaveAgent(ctx, &store.AgentRecord{
+		ID: agentID, UserID: admin.ID, Name: "Office Bot",
+	}); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	writeSkill := func(dir, name, desc string) {
+		t.Helper()
+		root := filepath.Join(dir, name)
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "---\nname: " + name + "\ndescription: " + desc + "\n---\n# " + name + "\n"
+		if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSkill(filepath.Join(home, "skills"), "global-only", "from global")
+	writeSkill(filepath.Join(home, "skills"), "shared", "global copy")
+	writeSkill(filepath.Join(home, "agents", agentID, "agent", "skills"), "shared", "agent copy")
+	writeSkill(filepath.Join(home, "agents", agentID, "agent", "skills"), "agent-only", "from agent")
+
+	req := authTestRequest(t, ctx, resolver, http.MethodGet, "/api/agents/"+agentID+"/skills", admin.ID)
+	req.SetPathValue("id", agentID)
+	rr := httptest.NewRecorder()
+	s.authMiddleware(s.handleListAgentSkills)(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rr.Code, rr.Body.String())
+	}
+	var got []struct {
+		Name   string `json:"name"`
+		Source string `json:"source"`
+		Desc   string `json:"description"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v body = %s", err, rr.Body.String())
+	}
+	byName := map[string]struct {
+		Source string
+		Desc   string
+	}{}
+	for _, s := range got {
+		byName[s.Name] = struct {
+			Source string
+			Desc   string
+		}{s.Source, s.Desc}
+	}
+	if byName["global-only"].Source != "inherited" {
+		t.Fatalf("global-only = %+v", byName["global-only"])
+	}
+	if byName["agent-only"].Source != "agent" {
+		t.Fatalf("agent-only = %+v", byName["agent-only"])
+	}
+	if byName["shared"].Source != "agent" || byName["shared"].Desc != "agent copy" {
+		t.Fatalf("shared should be agent shadow, got %+v", byName["shared"])
+	}
+	if _, ok := byName["shared"]; !ok || len(got) != 3 {
+		t.Fatalf("want 3 skills (shadowed global omitted), got %+v", got)
+	}
+}
+
+func TestMergeAgentSkillList(t *testing.T) {
+	out := mergeAgentSkillList(
+		[]map[string]any{{"name": "local", "description": "a"}},
+		[]map[string]any{
+			{"name": "local", "description": "global-hidden"},
+			{"name": "shared", "description": "g"},
+		},
+	)
+	if len(out) != 2 {
+		t.Fatalf("len = %d", len(out))
+	}
+	if out[0]["source"] != "agent" || out[0]["name"] != "local" {
+		t.Fatalf("first = %+v", out[0])
+	}
+	if out[1]["source"] != "inherited" || out[1]["name"] != "shared" {
+		t.Fatalf("second = %+v", out[1])
+	}
 }
 
 func newAuthTestServer(t *testing.T, ctx context.Context) (*Server, *auth.Resolver, *users.Account, *users.Account) {
