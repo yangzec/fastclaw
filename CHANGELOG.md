@@ -7,6 +7,9 @@ action on upgrade — read those notes before deploying.
 
 ### Added
 
+- **Chat composer drag-and-drop attachments.** Dropping files onto
+  the message input attaches them the same way as the paperclip
+  picker and image paste (chips, then upload on send).
 - **WeCom (企业微信) scan-to-create + long-connection.** New
   channel type `wecom` (does not reuse personal WeChat iLink).
   The dashboard opens Tencent's official `@wecom/wecom-aibot-sdk`
