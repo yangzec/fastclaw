@@ -394,4 +394,7 @@ func TestCompactionNoticeSuggestsNew(t *testing.T) {
 			t.Errorf("method %s notice missing /new: %q", method, got)
 		}
 	}
+	if !strings.Contains(compactionNotice(&CompactResult{Pruned: true, Method: compactMethodHardTrim}), "dropped") {
+		t.Error("hard-trim notice should say older turns were dropped")
+	}
 }
