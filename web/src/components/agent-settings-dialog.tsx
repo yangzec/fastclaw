@@ -140,11 +140,12 @@ export function AgentSettingsDialog({
       <DialogContent
         className={cn(
           "p-0 gap-0 overflow-hidden",
-          "h-[85vh] w-[95vw] max-w-[1100px] sm:max-w-[1100px]",
-          "grid grid-cols-[220px_1fr] grid-rows-1",
+          "h-[85dvh] w-[95vw] max-w-[1100px] sm:max-w-[1100px]",
+          "flex flex-col md:grid md:grid-cols-[220px_1fr] md:grid-rows-1",
+          "max-md:inset-0 max-md:top-0 max-md:left-0 max-md:h-[100dvh] max-md:w-full max-md:max-w-none max-md:translate-x-0 max-md:translate-y-0 max-md:rounded-none",
         )}
       >
-        <aside className="flex flex-col gap-1 border-r bg-muted/40 p-3 overflow-y-auto">
+        <aside className="flex shrink-0 flex-row gap-1 overflow-x-auto border-b bg-muted/40 p-2 pr-14 pt-[max(0.5rem,env(safe-area-inset-top,0px))] md:flex-col md:overflow-y-auto md:border-b-0 md:border-r md:p-3 md:pt-3 md:pr-3">
           {agentTabs.length > 0 && (
             <>
               <SectionLabel>Agent</SectionLabel>
@@ -158,7 +159,7 @@ export function AgentSettingsDialog({
               ))}
             </>
           )}
-          <SectionLabel className={agentTabs.length > 0 ? "mt-3" : undefined}>
+          <SectionLabel className={agentTabs.length > 0 ? "md:mt-3" : undefined}>
             User
           </SectionLabel>
           {userTabs.map((t) => (
@@ -170,7 +171,7 @@ export function AgentSettingsDialog({
             />
           ))}
         </aside>
-        <div className="overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto max-md:pb-[env(safe-area-inset-bottom,0px)]">
           {tab === "profile" && <AgentProfilePanel />}
           {tab === "customize" && <AgentCustomizePage />}
           {tab === "models" &&
@@ -214,7 +215,7 @@ function SectionLabel({
   return (
     <div
       className={cn(
-        "px-2 pt-1 pb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground",
+        "hidden px-2 pt-1 pb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground md:block",
         className,
       )}
     >
@@ -238,7 +239,8 @@ function TabButton({
       type="button"
       onClick={() => onSelect(tab.id)}
       className={cn(
-        "flex items-center gap-2 rounded-md px-2.5 py-2 text-sm text-left transition-colors",
+        "flex shrink-0 items-center gap-2 rounded-md px-2.5 py-2 text-sm text-left transition-colors",
+        "max-md:px-3 max-md:py-2.5",
         active
           ? "bg-accent text-accent-foreground font-medium"
           : "text-foreground/80 hover:bg-accent/50",

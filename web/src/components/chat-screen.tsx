@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -102,6 +103,7 @@ function renderContentWithDataImages(
 import { usePageHeader } from "@/components/sidebar";
 import { useSidebarOptional } from "@/components/ui/sidebar";
 import { channelLabel } from "@/components/channel-icon";
+import { cn } from "@/lib/utils";
 
 interface ProducedFile {
   path: string; // path relative to workspace
@@ -600,14 +602,20 @@ export function ChatScreen() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [filesSheetOpen, setFilesSheetOpen] = useState(false);
   const [knowledgePreview, setKnowledgePreview] = useState<KnowledgeSource | null>(null);
+  const isMobile = useIsMobile();
   // Opening the workspace/preview panel collapses the platform sidebar to
   // free horizontal room (null when there's no provider, e.g. act-as view).
   // Remember whether WE collapsed it, so closing the panel can restore
   // the nav — otherwise first-send / Close left both sidebars gone.
+  // On mobile the nav is a Sheet — just dismiss it; don't touch desktop `open`.
   const sidebar = useSidebarOptional();
   const collapsedNavForWorkspaceRef = useRef(false);
   useEffect(() => {
     if (filesSheetOpen) {
+      if (sidebar?.isMobile) {
+        sidebar.setOpenMobile(false);
+        return;
+      }
       if (sidebar?.open) {
         collapsedNavForWorkspaceRef.current = true;
         sidebar.setOpen(false);
@@ -622,6 +630,14 @@ export function ChatScreen() {
     // panel opens; don't fight the user if they re-expand while it's open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filesSheetOpen]);
+  useEffect(() => {
+    if (!filesSheetOpen || !isMobile) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [filesSheetOpen, isMobile]);
   const openKnowledgeCitation = useCallback((source: KnowledgeSource) => {
     setKnowledgePreview(source);
     setFilesSheetOpen(true);
@@ -1257,7 +1273,7 @@ export function ChatScreen() {
         <button
           type="button"
           onClick={() => setFilesSheetOpen((v) => !v)}
-          className={`shrink-0 inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors ${
+          className={`shrink-0 inline-flex h-9 w-9 items-center justify-center rounded-md transition-colors md:h-8 md:w-8 ${}
             filesSheetOpen
               ? "bg-muted text-foreground"
               : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
@@ -2130,7 +2146,9 @@ export function ChatScreen() {
       }
     }
 
-    if (e.key === "Enter" && !e.shiftKey) {
+    // Phones: the software-keyboard Enter is a newline. Send is the
+    // button. Shift+Enter still sends on desktop only.
+    if (e.key === "Enter" && !e.shiftKey && !isMobile) {
       e.preventDefault();
       // While a turn is streaming, Enter steers the running turn instead
       // of being blocked; otherwise it's a normal send.
@@ -2227,7 +2245,7 @@ export function ChatScreen() {
   const heroTitle = "What can I do for you?";
 
   return (
-    <div className="flex h-[calc(100vh-3rem)] flex-row">
+    <div className="flex h-[calc(100dvh-3rem-env(safe-area-inset-top,0px))] min-h-0 flex-row">
       <div
         className={
           "flex flex-1 min-w-0 flex-col" +
@@ -2250,14 +2268,14 @@ export function ChatScreen() {
             // so message rows keep a fixed content width that lines up with the
             // composer below (which gets a matching right inset) — otherwise the
             // scrollbar shifts message edges out of alignment on a narrow panel.
-            "min-h-0 px-4 [scrollbar-gutter:stable] " +
+            "min-h-0 px-3 [scrollbar-gutter:stable] overscroll-contain md:px-4 " +
             (isEmpty ? "shrink-0" : "flex-1 overflow-y-auto py-4")
           }
         >
           <div className="mx-auto max-w-2xl space-y-3">
             {isEmpty && (
               <div className="py-8 text-center">
-                <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">
+                <h1 className="text-2xl font-semibold tracking-tight md:text-4xl">
                   {heroTitle}
                 </h1>
               </div>
@@ -2547,13 +2565,13 @@ export function ChatScreen() {
                       {msg.role === "user" ? (
                         <>
                           {msg.timestamp > 0 && (
-                            <span className="opacity-0 group-hover:opacity-100 text-[10px] text-muted-foreground/60 transition-all">
+                            <span className="text-[10px] text-muted-foreground/60 md:opacity-0 md:group-hover:opacity-100">
                               {formatTime(msg.timestamp)}
                             </span>
                           )}
                           <button
                             onClick={() => handleCopy(msg)}
-                            className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-all"
+                            className="rounded p-1.5 text-muted-foreground/70 hover:bg-muted hover:text-muted-foreground md:p-0.5 md:opacity-0 md:group-hover:opacity-100"
                             title="Copy"
                           >
                             {copiedId === msg.id ? (
@@ -2564,7 +2582,7 @@ export function ChatScreen() {
                           </button>
                           <button
                             onClick={() => handleRetry(msg)}
-                            className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-all"
+                            className="rounded p-1.5 text-muted-foreground/70 hover:bg-muted hover:text-muted-foreground md:p-0.5 md:opacity-0 md:group-hover:opacity-100"
                             title="Resend (refills the composer)"
                           >
                             <RotateCcw className="h-3 w-3" />
@@ -2579,7 +2597,7 @@ export function ChatScreen() {
                           )}
                           <button
                             onClick={() => handleCopy(msg)}
-                            className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-all"
+                            className="rounded p-1.5 text-muted-foreground/70 hover:bg-muted hover:text-muted-foreground md:p-0.5 md:opacity-0 md:group-hover:opacity-100"
                             title="Copy"
                           >
                             {copiedId === msg.id ? (
@@ -2590,7 +2608,7 @@ export function ChatScreen() {
                           </button>
                           <button
                             onClick={() => setFilesSheetOpen(true)}
-                            className="opacity-0 group-hover:opacity-100 inline-flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-all"
+                            className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[10px] text-muted-foreground/70 hover:bg-muted hover:text-muted-foreground md:opacity-0 md:group-hover:opacity-100"
                             title="View task files"
                           >
                             <FolderOpen className="h-3 w-3" />
@@ -2632,7 +2650,7 @@ export function ChatScreen() {
 
         {/* Input — right inset matches the messages' reserved scrollbar gutter
             (6px) so the composer's edges line up with the message rows above. */}
-        <div className="shrink-0 pl-4 pr-[calc(1rem+6px)] pb-6 pt-2">
+        <div className="shrink-0 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] pt-2 md:px-4 md:pr-[calc(1rem+6px)] md:pb-6">
           <div className="mx-auto max-w-2xl relative">
             {isReadOnlyChannel && (
               // The web compose path can't deliver into upstream IM
@@ -2705,7 +2723,7 @@ export function ChatScreen() {
                           <button
                             type="button"
                             onClick={() => removeAttachment(i)}
-                            className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-background/80 text-muted-foreground opacity-0 transition group-hover:opacity-100 hover:text-foreground"
+                            className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-background/90 text-muted-foreground hover:text-foreground md:h-4 md:w-4 md:opacity-0 md:group-hover:opacity-100"
                             aria-label="Remove attachment"
                           >
                             <X className="h-3 w-3" />
@@ -2757,7 +2775,7 @@ export function ChatScreen() {
                     }
                     disabled={!canUseComposer}
                     rows={3}
-                    className="block w-full resize-none bg-transparent text-[15px] placeholder:text-muted-foreground/50 outline-none disabled:opacity-50"
+                    className="block w-full resize-none bg-transparent text-base placeholder:text-muted-foreground/50 outline-none disabled:opacity-50 md:text-[15px]"
                     style={{ maxHeight: 240, minHeight: 72 }}
                   />
                   <div className="mt-2 flex items-center justify-between">
@@ -2823,7 +2841,7 @@ export function ChatScreen() {
               ) : (
                 <div className="flex items-center gap-2">
                   <label
-                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors ${
+                    className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors md:h-8 md:w-8 ${
                       !canAttach
                         ? "opacity-50 cursor-not-allowed"
                         : "hover:bg-muted hover:text-foreground cursor-pointer"
@@ -2858,14 +2876,14 @@ export function ChatScreen() {
                     }
                     disabled={!canUseComposer}
                     rows={1}
-                    className="flex-1 resize-none bg-transparent text-[15px] leading-8 placeholder:text-muted-foreground/50 outline-none disabled:opacity-50"
+                    className="flex-1 resize-none bg-transparent text-base leading-8 placeholder:text-muted-foreground/50 outline-none disabled:opacity-50 md:text-[15px]"
                     style={{ maxHeight: 200, minHeight: 32 }}
                   />
                   {sending ? (
                     <Button
                       onClick={handleStop}
                       size="icon"
-                      className="h-8 w-8 shrink-0 rounded-lg"
+                      className="h-10 w-10 shrink-0 rounded-lg md:h-8 md:w-8"
                       aria-label="Stop generating"
                     >
                       <Square className="h-3.5 w-3.5 fill-current" />
@@ -2877,7 +2895,7 @@ export function ChatScreen() {
                       onClick={() => handleSend()}
                       disabled={(!input.trim() && attachments.length === 0) || !canSendComposer}
                       size="icon"
-                      className="h-8 w-8 shrink-0 rounded-lg"
+                      className="h-10 w-10 shrink-0 rounded-lg md:h-8 md:w-8"
                       aria-label="Send message"
                     >
                       <Send className="h-4 w-4" />
@@ -2890,7 +2908,7 @@ export function ChatScreen() {
         </div>
         {lightboxSrc && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 cursor-zoom-out"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 cursor-zoom-out md:p-6"
             onClick={() => setLightboxSrc(null)}
             role="dialog"
             aria-modal="true"
@@ -2906,7 +2924,7 @@ export function ChatScreen() {
             <button
               type="button"
               onClick={() => setLightboxSrc(null)}
-              className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-background/80 text-foreground hover:bg-background"
+              className="absolute right-4 top-[max(1rem,env(safe-area-inset-top,0px))] flex h-10 w-10 items-center justify-center rounded-full bg-background/80 text-foreground hover:bg-background"
               aria-label="Close preview"
             >
               <X className="h-5 w-5" />
@@ -3000,7 +3018,7 @@ function ChatHeaderTitle({ title, fallback, onSave }: ChatHeaderTitleProps) {
         }}
         onBlur={commit}
         style={{ fieldSizing: "content" } as React.CSSProperties}
-        className="h-7 min-w-[8ch] max-w-[40ch] rounded-md bg-transparent px-2 text-sm outline-none ring-1 ring-border focus:ring-primary/40"
+        className="h-8 min-w-[8ch] max-w-[min(calc(100vw-7.5rem),40ch)] rounded-md bg-transparent px-2 text-base outline-none ring-1 ring-border focus:ring-primary/40 md:h-7 md:text-sm"
       />
     );
   }
@@ -3016,11 +3034,11 @@ function ChatHeaderTitle({ title, fallback, onSave }: ChatHeaderTitleProps) {
       // arbitrary `min(...)` keeps narrow widths on phones (60vw) while
       // capping at ~32rem on desktop; sm:/md: bumps give intermediate
       // breakpoints a deterministic width too.
-      className="group flex min-w-0 max-w-[min(60vw,18rem)] sm:max-w-[24rem] md:max-w-[28rem] lg:max-w-[32rem] items-center gap-1.5 rounded-md px-2 py-1 text-sm text-foreground hover:bg-muted/50"
+      className="group flex min-w-0 max-w-[min(calc(100vw-7.5rem),18rem)] sm:max-w-[24rem] md:max-w-[28rem] lg:max-w-[32rem] items-center gap-1.5 rounded-md px-2 py-1 text-sm text-foreground hover:bg-muted/50"
       title={title || fallback}
     >
       <span className="truncate">{title || fallback}</span>
-      <Pencil className="h-3 w-3 shrink-0 text-muted-foreground/50 opacity-0 transition-opacity group-hover:opacity-100" />
+      <Pencil className="h-3 w-3 shrink-0 text-muted-foreground/50 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100" />
     </button>
   );
 }
@@ -3663,6 +3681,8 @@ function WorkspacePanel({
     return FILES_PANEL_DEFAULT;
   });
   const [resizing, setResizing] = useState(false);
+  const isMobile = useIsMobile();
+  const showingFile = !!(previewing || knowledgePreview);
 
   // Measure the panel's ACTUAL rendered width (not the `width` state, which
   // the CSS maxWidth cap can shrink below on small viewports) so the header
@@ -3867,6 +3887,7 @@ function WorkspacePanel({
   // open) — capped by the 70% container maxWidth, so it never overflows. The
   // user can still drag narrower within the session; reopening re-widens.
   useEffect(() => {
+    if (isMobile) return;
     setWidth((w) => (w < PREVIEW_AUTO_WIDTH ? Math.min(PREVIEW_AUTO_WIDTH, FILES_PANEL_MAX) : w));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -3874,10 +3895,11 @@ function WorkspacePanel({
   // Also grow when entering Preview / opening a file (in case the user dragged
   // narrow earlier) so the iframe / viewer column isn't cramped.
   useEffect(() => {
+    if (isMobile) return;
     if (tab === "preview" || previewing || knowledgePreview) {
       setWidth((w) => (w < PREVIEW_AUTO_WIDTH ? Math.min(PREVIEW_AUTO_WIDTH, FILES_PANEL_MAX) : w));
     }
-  }, [tab, previewing, knowledgePreview]);
+  }, [tab, previewing, knowledgePreview, isMobile]);
 
   // The Preview tab only exists for coding projects with a live dev server.
   // When there's no app preview, hide the tab and snap back to Files.
@@ -3898,11 +3920,11 @@ function WorkspacePanel({
         // still bounds it to FILES_PANEL_MAX on very wide screens. overflow-
         // hidden is the belt-and-suspenders against inner content overflow.
         style={{ width, maxWidth: `min(${FILES_PANEL_MAX}px, 70%)` }}
-        className="relative z-30 flex shrink-0 flex-col overflow-hidden border-l border-border bg-background -mt-12 h-screen max-md:fixed max-md:inset-y-0 max-md:right-0 max-md:z-40 max-md:mt-0 max-md:max-w-full max-md:shadow-xl"
+        className="relative z-30 flex shrink-0 flex-col overflow-hidden border-l border-border bg-background -mt-12 h-screen max-md:fixed max-md:inset-0 max-md:z-40 max-md:mt-0 max-md:!h-dvh max-md:!w-full max-md:!max-w-none max-md:shadow-xl"
       >
         <div
           onMouseDown={(e) => { e.preventDefault(); setResizing(true); }}
-          className={`absolute left-0 top-0 bottom-0 w-2 cursor-col-resize z-10 group ${resizing ? "" : ""}`}
+          className={`absolute left-0 top-0 bottom-0 w-2 cursor-col-resize z-10 group max-md:hidden ${resizing ? "" : ""}`}
           title="Drag to resize"
         >
           <div
@@ -3911,7 +3933,7 @@ function WorkspacePanel({
             }`}
           />
         </div>
-        <div className="flex h-12 items-center justify-between gap-2 border-b border-border px-4">
+        <div className="flex h-12 items-center justify-between gap-2 border-b border-border px-4 max-md:h-auto max-md:min-h-12 max-md:pt-[max(0.75rem,env(safe-area-inset-top,0px))]">
           <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
             <FolderOpen className="h-4 w-4 shrink-0" />
             {!compactHeader && <span className="truncate">{knowledgePreview ? "Knowledge" : "Workspace"}</span>}
@@ -4059,7 +4081,7 @@ function WorkspacePanel({
             )}
             <button
               onClick={onClose}
-              className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+              className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground max-md:p-2.5"
               title="Close"
             >
               <X className="h-4 w-4" />
@@ -4099,7 +4121,7 @@ function WorkspacePanel({
           ) : (
             <span className="px-1 text-xs font-medium text-muted-foreground">Files</span>
           )}
-          {tab === "code" && (
+          {tab === "code" && !isMobile && (
             <button
               onClick={() => setTreeCollapsed((c) => !c)}
               className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
@@ -4112,8 +4134,8 @@ function WorkspacePanel({
         {tab === "code" ? (
           <div className="flex min-h-0 flex-1">
             {/* Left: file tree (collapsible). */}
-            {!treeCollapsed && (
-            <div className="flex w-56 shrink-0 flex-col border-r border-border">
+            {(!treeCollapsed && !(isMobile && showingFile)) && (
+            <div className={cn("flex shrink-0 flex-col border-r border-border", isMobile ? "w-full border-r-0" : "w-56")}>
               {/* When there's a template baseline, default to showing only the
                   files THIS task changed; let the user flip to the full tree. */}
               {changed.available && (
@@ -4168,7 +4190,7 @@ function WorkspacePanel({
             )}
             {/* Right: viewer for the selected file — overflow-hidden so wide
                 content (a PDF, long code lines) never scrolls the panel. */}
-            <div className="min-w-0 flex-1 overflow-hidden">
+            <div className={cn("min-w-0 flex-1 overflow-hidden", isMobile && !showingFile && "hidden")}>
               {knowledgePreview ? (
                 <KnowledgeFileViewer
                   key={`${knowledgePreview.id}-${knowledgePreview.path}`}

@@ -97,6 +97,7 @@ export function NavProjectsList({
 }) {
   const router = useRouter();
   const pathname = usePathname();
+  const { setOpenMobile } = useSidebar();
   const [createOpen, setCreateOpen] = React.useState(false);
   const [editTarget, setEditTarget] = React.useState<ProjectEntry | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<ProjectEntry | null>(
@@ -187,12 +188,13 @@ export function NavProjectsList({
     (target: string) => {
       const here =
         pathname === target || pathname === target.replace(/\/$/, "");
+      setOpenMobile(false);
       if (here) return;
       if (inFlightTargetRef.current === target) return;
       inFlightTargetRef.current = target;
       router.push(target);
     },
-    [pathname, router],
+    [pathname, router, setOpenMobile],
   );
 
   if (!agentId) return null;

@@ -11,6 +11,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { AgentSwitcher, AgentSwitcherItem } from "@/components/team-switcher";
 import { NavMain, NavItem } from "@/components/nav-main";
@@ -130,8 +131,17 @@ const AGENT_NAV = (
 export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const { setOpenMobile } = useSidebar();
   const activeAgentId = extractAgentId(pathname);
   const hasOpenSession = !!searchParams?.get("session");
+
+  // The mobile nav is a Sheet. Close it after any client navigation so
+  // tapping New chat / a session / Overview doesn't leave the drawer
+  // covering the page they just opened. searchParams covers ?session=
+  // and similar query-only transitions that leave pathname unchanged.
+  React.useEffect(() => {
+    setOpenMobile(false);
+  }, [pathname, searchParams, setOpenMobile]);
 
   const [status, setStatus] = React.useState<StatusResponse | null>(null);
   const [me, setMe] = React.useState<MeResponse | null>(null);
@@ -325,6 +335,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
               onClick={() => {
                 setSettingsUserOnly(!activeAgentId);
                 setSettingsOpen(true);
+                setOpenMobile(false);
               }}
             >
               <SettingsIcon />
