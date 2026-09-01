@@ -602,9 +602,22 @@ export function ChatScreen() {
   const [knowledgePreview, setKnowledgePreview] = useState<KnowledgeSource | null>(null);
   // Opening the workspace/preview panel collapses the platform sidebar to
   // free horizontal room (null when there's no provider, e.g. act-as view).
+  // Remember whether WE collapsed it, so closing the panel can restore
+  // the nav — otherwise first-send / Close left both sidebars gone.
   const sidebar = useSidebarOptional();
+  const collapsedNavForWorkspaceRef = useRef(false);
   useEffect(() => {
-    if (filesSheetOpen) sidebar?.setOpen(false);
+    if (filesSheetOpen) {
+      if (sidebar?.open) {
+        collapsedNavForWorkspaceRef.current = true;
+        sidebar.setOpen(false);
+      }
+      return;
+    }
+    if (collapsedNavForWorkspaceRef.current) {
+      collapsedNavForWorkspaceRef.current = false;
+      sidebar?.setOpen(true);
+    }
     // Intentionally keyed only on filesSheetOpen: collapse once when the
     // panel opens; don't fight the user if they re-expand while it's open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1131,11 +1144,38 @@ export function ChatScreen() {
 
   // Switching conversations (sidebar chat click, New chat, opening a project)
   // changes the URL ids — close the workspace panel so the previous chat's
-  // files don't linger over a different conversation. Keyed on the URL ids,
-  // not every render, so the user can still re-open it within the SAME chat.
+  // files don't linger over a different conversation. Do NOT close when the
+  // first send merely pins the already-minted id onto /chat/<sid>/; that
+  // used to make the panel vanish mid-turn ("sidebar mysteriously gone").
+  const prevWorkspaceScopeRef = useRef({
+    urlSession: urlSessionId,
+    urlProject: urlProjectId,
+    session: sessionId,
+    agent: selectedAgent,
+  });
   useEffect(() => {
-    setFilesSheetOpen(false);
-  }, [urlSessionId, urlProjectId]);
+    const prev = prevWorkspaceScopeRef.current;
+    prevWorkspaceScopeRef.current = {
+      urlSession: urlSessionId,
+      urlProject: urlProjectId,
+      session: sessionId,
+      agent: selectedAgent,
+    };
+    const firstSendPin =
+      prev.agent === selectedAgent &&
+      prev.session === sessionId &&
+      !prev.urlSession &&
+      !!urlSessionId &&
+      urlSessionId === sessionId;
+    if (firstSendPin) return;
+    if (
+      prev.agent !== selectedAgent ||
+      prev.urlSession !== urlSessionId ||
+      prev.urlProject !== urlProjectId
+    ) {
+      setFilesSheetOpen(false);
+    }
+  }, [urlSessionId, urlProjectId, sessionId, selectedAgent]);
 
   // Keep the local sessionTitle in sync with the session list. Unknown
   // sessions (brand-new, not saved yet) fall back to empty so the header
@@ -2874,15 +2914,26 @@ export function ChatScreen() {
           </div>
         )}
       </div>
+      {filesSheetOpen && (
+        <button
+          type="button"
+          className="fixed inset-0 z-30 bg-black/40 md:hidden"
+          aria-label="Close workspace"
+          onClick={() => {
+            setFilesSheetOpen(false);
+            setKnowledgePreview(null);
+          }}
+        />
+      )}
       {filesSheetOpen && selectedAgent && (sessionId || urlProjectId) && (
         <WorkspacePanel
           agentId={selectedAgent}
-          // On a project landing (no urlSessionId), sessionId here is the
-          // synthetic id chat-screen mints for the upcoming "New chat" —
-          // it doesn't correspond to anything on disk, so we suppress it
-          // and let projectId drive the scope. Inside an actual chat,
-          // urlSessionId is set and we pass the real sessionId.
-          sessionId={urlSessionId ? sessionId : ""}
+          // Brand-new /chat/ has no urlSessionId yet, but the composer
+          // already minted sessionId and uploads land under it — pass
+          // that id so the tree isn't empty until the first send pins
+          // the URL. Project landing is the exception: the minted id
+          // isn't a real chat, so suppress it and list the project.
+          sessionId={urlProjectId && !urlSessionId ? "" : sessionId}
           projectId={!urlSessionId && urlProjectId ? urlProjectId : undefined}
           knowledgePreview={knowledgePreview}
           onClearKnowledgePreview={() => setKnowledgePreview(null)}
@@ -3847,7 +3898,7 @@ function WorkspacePanel({
         // still bounds it to FILES_PANEL_MAX on very wide screens. overflow-
         // hidden is the belt-and-suspenders against inner content overflow.
         style={{ width, maxWidth: `min(${FILES_PANEL_MAX}px, 70%)` }}
-        className="relative z-30 hidden md:flex shrink-0 flex-col overflow-hidden border-l border-border bg-background -mt-12 h-screen"
+        className="relative z-30 flex shrink-0 flex-col overflow-hidden border-l border-border bg-background -mt-12 h-screen max-md:fixed max-md:inset-y-0 max-md:right-0 max-md:z-40 max-md:mt-0 max-md:max-w-full max-md:shadow-xl"
       >
         <div
           onMouseDown={(e) => { e.preventDefault(); setResizing(true); }}
