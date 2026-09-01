@@ -970,6 +970,24 @@ func (s *Server) workspaceSessionScope(ctx context.Context, agentID, urlToken st
 	return chatID
 }
 
+// pendingOwnerSessionID is the store session dir to use when the caller
+// owns the agent and passed a sessionId that is not in the session table
+// yet. The web composer mints the id and uploads attachments BEFORE the
+// first /api/chat creates the row; write_file uses that same id. Falling
+// back for owners (never for public viewers) keeps attach + list + GET
+// on sessions/<id>/ instead of the agent root, where the model cannot
+// read the file and the workspace panel filters it out.
+func (s *Server) pendingOwnerSessionID(r *http.Request, agentID, rawSession string) string {
+	tok := strings.TrimSpace(rawSession)
+	if tok == "" || !s.callerOwnsAgent(r, agentID) {
+		return ""
+	}
+	if s.workspaceSessionScope(r.Context(), agentID, tok) != "" {
+		return ""
+	}
+	return tok
+}
+
 func (s *Server) handleAgentFileList(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if s.workspaceStore == nil {
@@ -1096,6 +1114,17 @@ func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope 
 	}
 	chatID := s.workspaceSessionScope(r.Context(), agentID, rawSession)
 	if chatID == "" {
+		// Brand-new web chat: the composer already has a session id
+		// but the row is created on the first message. Owners may
+		// still list attachments they just uploaded under that id.
+		// Everyone else (public viewers, guessed tokens) sees nothing.
+		if pending := s.pendingOwnerSessionID(r, agentID, rawSession); pending != "" {
+			prefix := "sessions/" + pending + "/"
+			return fileScope{
+				acceptPath:    func(p string) bool { return strings.HasPrefix(p, prefix) },
+				archiveSuffix: pending,
+			}
+		}
 		// sessionId didn't resolve to a chat THIS caller owns — either
 		// it doesn't exist or it belongs to another user. Either way,
 		// surface nothing. Pre-fix behavior was to widen back to
@@ -1415,9 +1444,9 @@ func (s *Server) serveFileFromWorkspaceStore(w http.ResponseWriter, r *http.Requ
 // the same object write_file("/workspace/report.md") stored.
 //
 // Returns ok=false when the caller passed sessionId but it does not
-// resolve to a chat they own — never fall back to the raw token, or a
-// public-agent viewer could read another chatter's files by guessing
-// a chat_id.
+// resolve to a chat they own. Owners may use a minted-but-not-yet-saved
+// session id (attachments land before the first /api/chat). Public
+// viewers never get that fallback — guessing a chat_id must 404.
 func (s *Server) resolveWorkspaceFileGet(r *http.Request, agentID, path string) (projectID, sessionID, rel string, ok bool) {
 	rel = strings.TrimPrefix(filepath.ToSlash(path), "/")
 	if strings.HasPrefix(rel, "workspace/") {
@@ -1435,6 +1464,9 @@ func (s *Server) resolveWorkspaceFileGet(r *http.Request, agentID, path string) 
 	}
 	chatID := s.workspaceSessionScope(r.Context(), agentID, rawSession)
 	if chatID == "" {
+		if pending := s.pendingOwnerSessionID(r, agentID, rawSession); pending != "" {
+			return "", pending, rel, true
+		}
 		return "", "", "", false
 	}
 	if pid := s.resolveSessionProject(r.Context(), r, agentID, rawSession); pid != "" {
@@ -1495,6 +1527,12 @@ func (s *Server) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
 	// writes; loose chats keep the legacy sessions/<chat>/ subdir.
 	sessionKey := r.URL.Query().Get("sessionId")
 	sessionID := s.workspaceSessionScope(r.Context(), id, sessionKey)
+	if sessionID == "" {
+		// First-message attach: no session row yet. Owners store
+		// under the minted id so read_file("/workspace/<name>") and
+		// the files panel see the same object write_file would.
+		sessionID = s.pendingOwnerSessionID(r, id, sessionKey)
+	}
 	projectID := s.resolveSessionProject(r.Context(), r, id, sessionKey)
 	if projectID != "" {
 		// Project sessions don't use the per-chat subdir — clear it so
