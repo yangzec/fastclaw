@@ -1520,7 +1520,7 @@ export function ChatScreen() {
       }));
 
       try {
-        await uploadAgentFiles(selectedAgent, sessionId, filesToUpload);
+        await uploadAgentFiles(selectedAgent, sessionId, filesToUpload, urlProjectId);
         notifyWorkspaceChanged(selectedAgent, sessionId);
       } catch (err) {
         setTurnMessages((prev) => [

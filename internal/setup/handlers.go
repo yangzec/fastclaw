@@ -259,19 +259,12 @@ func authIdentity(r *http.Request) (auth.Identity, bool) {
 	return auth.FromContext(r.Context())
 }
 
-// resolveAgent returns the AgentHandle for the given agent within the
-// caller's user space. Apikey callers are additionally checked against
-// their access list before the handle is returned. super_admin without
-// an actAs override gets the foreign agent injected into their OWN
-// UserSpace — sessions, memory, and provider scope stay caller-keyed
-// (admin doesn't see the owner's chats), while the agent's persistent
-// resolveSessionProject reads sessions.project_id for the chat
-// the request is targeting so attachments and other workspace IO can
-// route to projects/<pid>/ when the chat belongs to a project. Returns
-// "" on any failure (caller treats as loose chat) — non-existent
-// session, no auth context, and "no datastore" all collapse to the
-// same outcome and we don't want a path lookup to break the chat
-// hot-path.
+// resolveSessionProject reads sessions.project_id for the chat the
+// request is targeting so workspace IO can route to
+// projects/<pid>/<sid>/ when the chat belongs to a project. A missing
+// session row falls back to ?projectId= (first-message project
+// attach). Returns "" on any other failure — caller treats that as a
+// loose chat.
 func (s *Server) resolveSessionProject(ctx context.Context, r *http.Request, agentID, sessionKey string) string {
 	if sessionKey == "" || s.dataStore == nil {
 		return ""
@@ -289,12 +282,22 @@ func (s *Server) resolveSessionProject(ctx context.Context, r *http.Request, age
 		resolvedKey = sessionKey
 	}
 	pid, err := s.dataStore.LookupSessionProject(ctx, uid, agentID, resolvedKey)
-	if err != nil {
-		return ""
+	if err == nil && pid != "" {
+		return pid
 	}
-	return pid
+	// First-message project chat: the session row does not exist yet,
+	// but the composer already knows the project. Honor ?projectId=
+	// so uploads land at projects/<pid>/<minted-sid>/ instead of a
+	// loose sessions/ folder that the agent will never read.
+	return strings.TrimSpace(r.URL.Query().Get("projectId"))
 }
 
+// resolveAgent returns the AgentHandle for the given agent within the
+// caller's user space. Apikey callers are additionally checked against
+// their access list before the handle is returned. super_admin without
+// an actAs override gets the foreign agent injected into their OWN
+// UserSpace — sessions, memory, and provider scope stay caller-keyed
+// (admin doesn't see the owner's chats), while the agent's persistent
 // identity (system prompt, agent-scope config, skills, files — all
 // keyed by agent_id) is reused.
 func (s *Server) resolveAgent(r *http.Request, agentID string) AgentHandle {

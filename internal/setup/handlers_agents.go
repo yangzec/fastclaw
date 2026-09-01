@@ -1119,6 +1119,13 @@ func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope 
 		// still list attachments they just uploaded under that id.
 		// Everyone else (public viewers, guessed tokens) sees nothing.
 		if pending := s.pendingOwnerSessionID(r, agentID, rawSession); pending != "" {
+			if pid := s.resolveSessionProject(r.Context(), r, agentID, rawSession); pid != "" {
+				prefix := "projects/" + pid + "/" + pending + "/"
+				return fileScope{
+					acceptPath:    func(p string) bool { return strings.HasPrefix(p, prefix) },
+					archiveSuffix: pid + "-" + pending,
+				}
+			}
 			prefix := "sessions/" + pending + "/"
 			return fileScope{
 				acceptPath:    func(p string) bool { return strings.HasPrefix(p, prefix) },
@@ -1465,7 +1472,7 @@ func (s *Server) resolveWorkspaceFileGet(r *http.Request, agentID, path string) 
 	chatID := s.workspaceSessionScope(r.Context(), agentID, rawSession)
 	if chatID == "" {
 		if pending := s.pendingOwnerSessionID(r, agentID, rawSession); pending != "" {
-			return "", pending, rel, true
+			return s.resolveSessionProject(r.Context(), r, agentID, rawSession), pending, rel, true
 		}
 		return "", "", "", false
 	}
@@ -1521,10 +1528,8 @@ func (s *Server) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "no file"})
 		return
 	}
-	// sessionId scopes the upload to the sandbox mount the agent actually
-	// sees. We resolve the session to find its project_id so uploads in
-	// a project chat land in projects/<pid>/ alongside the agent's own
-	// writes; loose chats keep the legacy sessions/<chat>/ subdir.
+	// sessionId + optional projectId pick the same store tuple write_file
+	// uses: loose → sessions/<sid>/, project chat → projects/<pid>/<sid>/.
 	sessionKey := r.URL.Query().Get("sessionId")
 	sessionID := s.workspaceSessionScope(r.Context(), id, sessionKey)
 	if sessionID == "" {
@@ -1534,11 +1539,6 @@ func (s *Server) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
 		sessionID = s.pendingOwnerSessionID(r, id, sessionKey)
 	}
 	projectID := s.resolveSessionProject(r.Context(), r, id, sessionKey)
-	if projectID != "" {
-		// Project sessions don't use the per-chat subdir — clear it so
-		// the workspace store routes to projects/<pid>/.
-		sessionID = ""
-	}
 	saved := make([]map[string]any, 0, len(headers))
 	for _, h := range headers {
 		fh, err := h.Open()

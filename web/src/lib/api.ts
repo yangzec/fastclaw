@@ -1253,10 +1253,14 @@ export async function uploadAgentFiles(
   agentId: string,
   sessionId: string,
   files: File[],
+  projectId?: string,
 ): Promise<UploadedFile[]> {
   const fd = new FormData();
   for (const f of files) fd.append("file", f, f.name);
-  const qs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+  const params = new URLSearchParams();
+  if (sessionId) params.set("sessionId", sessionId);
+  if (projectId) params.set("projectId", projectId);
+  const qs = params.toString() ? `?${params.toString()}` : "";
   const res = await apiFetch(`/api/agents/${encodeURIComponent(agentId)}/files${qs}`, {
     method: "POST",
     body: fd,

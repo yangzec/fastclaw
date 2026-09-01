@@ -752,9 +752,11 @@ it. Inside the sandbox the filesystem is its own — working dir is
 paths (/Users/..., /home/...) do not exist. Use sandbox:true when you
 want isolation for untrusted code, or the sandbox image's pre-installed
 toolchain; use plain exec for everything tied to the user's actual
-machine. The sandbox's /workspace maps to your session workspace (bind
-mount or post-exec sync), so files a sandboxed command writes there do
-reach the user — but never reference host absolute paths inside a
+machine. Unsandboxed exec starts in the session workspace (the same
+folder write_file uses), so a relative report.md shows up in Files
+instead of the gateway's install directory. Absolute host paths still
+work. The sandbox's /workspace maps to that same folder (bind
+mount or post-exec sync) — never reference host absolute paths inside a
 sandbox:true command, and never reference /workspace or /skills paths
 in a plain host exec.
 

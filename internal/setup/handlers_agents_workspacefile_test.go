@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fastclaw-ai/fastclaw/internal/auth"
 	"github.com/fastclaw-ai/fastclaw/internal/store"
 	"github.com/fastclaw-ai/fastclaw/internal/workspace"
 )
@@ -231,5 +232,153 @@ func TestAgentFileUploadLandsInPendingSession(t *testing.T) {
 	s.authMiddleware(s.handleAgentFile)(viewGetRR, viewGet)
 	if viewGetRR.Code != http.StatusNotFound {
 		t.Fatalf("viewer get = %d, want 404: %s", viewGetRR.Code, viewGetRR.Body.String())
+	}
+}
+
+func postAgentUpload(t *testing.T, ctx context.Context, s *Server, resolver *auth.Resolver, userID, agentID, query, filename, payload string) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, err := mw.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatalf("form file: %v", err)
+	}
+	if _, err := fw.Write([]byte(payload)); err != nil {
+		t.Fatalf("write part: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart: %v", err)
+	}
+	req := authTestRequest(t, ctx, resolver, http.MethodPost,
+		"/api/agents/"+agentID+"/files"+query, userID)
+	req.SetPathValue("id", agentID)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
+	req.ContentLength = int64(body.Len())
+	rr := httptest.NewRecorder()
+	s.authMiddleware(s.handleAgentFileUpload)(rr, req)
+	return rr
+}
+
+func listAgentFilePaths(t *testing.T, ctx context.Context, s *Server, resolver *auth.Resolver, userID, agentID, query string) []string {
+	t.Helper()
+	req := authTestRequest(t, ctx, resolver, http.MethodGet,
+		"/api/agents/"+agentID+"/files"+query, userID)
+	req.SetPathValue("id", agentID)
+	rr := httptest.NewRecorder()
+	s.authMiddleware(s.handleAgentFileList)(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list = %d: %s", rr.Code, rr.Body.String())
+	}
+	var listed struct {
+		Files []struct {
+			Path string `json:"path"`
+		} `json:"files"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&listed); err != nil {
+		t.Fatalf("list decode: %v", err)
+	}
+	out := make([]string, 0, len(listed.Files))
+	for _, f := range listed.Files {
+		out = append(out, f.Path)
+	}
+	return out
+}
+
+// Project-chat uploads must land next to write_file: projects/<pid>/<chat>/.
+// Clearing sessionID used to dump them at the project root, where the
+// agent could not read_file("/workspace/<name>").
+func TestAgentFileUploadLandsInProjectChatSession(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, owner, _ := newAuthTestServer(t, ctx)
+
+	const (
+		agentID    = "agt_proj_upload"
+		sessionKey = "s-proj-url"
+		chatID     = "web-proj-chat"
+		projectID  = "proj_upload"
+		payload    = "project-attach\n"
+	)
+	now := time.Now().UTC()
+	if err := s.dataStore.SaveAgent(ctx, &store.AgentRecord{
+		ID: agentID, UserID: owner.ID, Name: "proj upload",
+		Config: map[string]any{}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("save agent: %v", err)
+	}
+	if err := s.dataStore.SaveSession(ctx, owner.ID, agentID, sessionKey, &store.SessionRecord{
+		Channel: "web", ChatID: chatID, ProjectID: projectID,
+	}); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	ws := workspace.NewLocalFS(t.TempDir())
+	s.SetWorkspaceStore(ws)
+
+	rr := postAgentUpload(t, ctx, s, resolver, owner.ID, agentID, "?sessionId="+sessionKey, "notes.md", payload)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("upload = %d: %s", rr.Code, rr.Body.String())
+	}
+	want := "projects/" + projectID + "/" + chatID + "/notes.md"
+	got := listAgentFilePaths(t, ctx, s, resolver, owner.ID, agentID, "?sessionId="+sessionKey)
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("list = %v, want [%s]", got, want)
+	}
+	rc, err := ws.Get(ctx, agentID, projectID, chatID, "notes.md")
+	if err != nil {
+		t.Fatalf("store get: %v", err)
+	}
+	defer rc.Close()
+	body, _ := io.ReadAll(rc)
+	if string(body) != payload {
+		t.Fatalf("store body = %q, want %q", body, payload)
+	}
+}
+
+// First message on a project landing page: no session row yet, but the
+// composer already knows projectId. Upload + list + GET must use
+// projects/<pid>/<minted>/ — not sessions/<minted>/ (which write_file
+// will never see after the row is created with a project_id).
+func TestAgentFileUploadLandsInPendingProjectSession(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, owner, _ := newAuthTestServer(t, ctx)
+
+	const (
+		agentID   = "agt_pending_proj"
+		sessionID = "s-minted-proj"
+		projectID = "proj_pending"
+		payload   = "pending-proj-attach\n"
+	)
+	now := time.Now().UTC()
+	if err := s.dataStore.SaveAgent(ctx, &store.AgentRecord{
+		ID: agentID, UserID: owner.ID, Name: "pending proj",
+		Config: map[string]any{}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("save agent: %v", err)
+	}
+	ws := workspace.NewLocalFS(t.TempDir())
+	s.SetWorkspaceStore(ws)
+
+	q := "?sessionId=" + sessionID + "&projectId=" + projectID
+	rr := postAgentUpload(t, ctx, s, resolver, owner.ID, agentID, q, "brief.md", payload)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("upload = %d: %s", rr.Code, rr.Body.String())
+	}
+	want := "projects/" + projectID + "/" + sessionID + "/brief.md"
+	got := listAgentFilePaths(t, ctx, s, resolver, owner.ID, agentID, q)
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("list = %v, want [%s]", got, want)
+	}
+
+	getReq := authTestRequest(t, ctx, resolver, http.MethodGet,
+		"/api/agents/"+agentID+"/files/brief.md"+q, owner.ID)
+	getReq.SetPathValue("id", agentID)
+	getReq.SetPathValue("path", "brief.md")
+	getRR := httptest.NewRecorder()
+	s.authMiddleware(s.handleAgentFile)(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("get = %d: %s", getRR.Code, getRR.Body.String())
+	}
+	if got := getRR.Body.String(); got != payload {
+		t.Fatalf("get body = %q, want %q", got, payload)
 	}
 }

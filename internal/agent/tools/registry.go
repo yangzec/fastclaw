@@ -196,10 +196,9 @@ type Registry struct {
 	// the agent loop via SetSessionID; an empty value falls back to
 	// agent-shared scope (admin uploads, fixtures, tests).
 	sessionID string
-	// projectID, when set, overrides sessionID-based scoping so all
-	// tool calls land in workspaces/<agent>/projects/<pid>/. That's
-	// the whole value of "project": notes/files persist across the
-	// project's chats. Set per-turn alongside sessionID.
+	// projectID, when set with sessionID, scopes tool writes to
+	// projects/<pid>/<sid>/. Empty sessionID (coding root / project
+	// landing) is the only case that writes at projects/<pid>/.
 	projectID string
 	// codingRootScope, when true, drops the session segment from
 	// workspace store scoping so file tools address the project ROOT
@@ -556,9 +555,8 @@ func (r *Registry) SetCallerIsAdmin(v bool) {
 }
 
 // SetProjectID scopes the registry's workspace.Store calls to a project
-// folder when non-empty, taking priority over the session scope so all
-// chats inside a project share files. Pair with SetSessionID at the top
-// of every turn.
+// when non-empty. Pair with SetSessionID: both set → projects/<pid>/<sid>/;
+// project only → projects/<pid>/ (coding root / landing).
 func (r *Registry) SetProjectID(projectID string) {
 	r.projectID = projectID
 }
@@ -610,6 +608,26 @@ func (r *Registry) scopeSessionID() string {
 		return ""
 	}
 	return r.sessionID
+}
+
+// localWorkspaceDir is the host directory that matches write_file /
+// upload / attachment scope. Unsandboxed exec uses it as cwd so a
+// relative `echo hi > report.md` lands in the Files panel instead of
+// the gateway's repo checkout. Empty when the store is not local
+// (S3) or the registry has no agent id — callers keep the process cwd.
+func (r *Registry) localWorkspaceDir() string {
+	if r == nil || r.workspaceStore == nil || r.agentID == "" {
+		return ""
+	}
+	ls, ok := r.workspaceStore.(workspace.LocalScoper)
+	if !ok {
+		return ""
+	}
+	dir, ok := ls.LocalScopeDir(r.agentID, r.projectID, r.scopeSessionID())
+	if !ok || dir == "" {
+		return ""
+	}
+	return dir
 }
 
 // SetCodingSubdir redirects the file tools into a subfolder of the scope

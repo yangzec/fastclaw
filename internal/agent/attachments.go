@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/fastclaw-ai/fastclaw/internal/workspace"
 )
 
 // maxAttachmentBytes caps a single attachment regardless of whether it
@@ -60,9 +62,10 @@ type Attachment struct {
 //
 // Why three writes:
 //
-//   - Host workspace dir: covers the no-sandbox case (host exec uses this
-//     dir as cwd) AND the docker case (a.workspacePath is bind-mounted at
-//     /workspace inside the container).
+//   - Host workspace dir: session/project scope when the store is
+//     LocalFS (same cwd unsandboxed exec uses). Docker bind-mounts that
+//     folder at /workspace. Agent-root workspacePath is the fallback
+//     when the store is not local.
 //   - workspace.Store.Put: durable handoff for E2B / multi-pod — the
 //     LifecyclePool's hydrate-on-create copies it into /workspace on the
 //     next sandbox spin-up.
@@ -103,10 +106,21 @@ func (a *Agent) WriteSessionAttachments(ctx context.Context, sessionID, projectI
 		name := buildAttachmentName(att.Name, token, i, ext, used)
 		used[name] = struct{}{}
 
-		// 1. Host workspace dir (covers no-sandbox + docker via bind mount)
-		if a.workspacePath != "" {
-			full := filepath.Join(a.workspacePath, name)
-			if mkErr := os.MkdirAll(a.workspacePath, 0o755); mkErr == nil {
+		// 1. Host workspace dir (covers no-sandbox + docker via bind mount).
+		// Prefer the session/project scope so relative exec and write_file
+		// see the same folder; fall back to the agent root only when the
+		// store isn't a local filesystem.
+		hostDir := a.workspacePath
+		if a.workspaceStore != nil {
+			if ls, ok := a.workspaceStore.(workspace.LocalScoper); ok {
+				if d, ok := ls.LocalScopeDir(a.agentID, projectID, sessionID); ok && d != "" {
+					hostDir = d
+				}
+			}
+		}
+		if hostDir != "" {
+			full := filepath.Join(hostDir, name)
+			if mkErr := os.MkdirAll(hostDir, 0o755); mkErr == nil {
 				if wErr := os.WriteFile(full, data, 0o644); wErr != nil {
 					slog.Warn("attachment host write failed", "agent", a.name, "session", sessionID, "path", full, "error", wErr)
 				}
