@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -49,7 +50,7 @@ func TestCompactionDropsGoalContextFromSummary(t *testing.T) {
 	}
 
 	f := &fakeSummarizer{}
-	out, err := compressOlderMessages(msgs, f, "fake-model")
+	out, err := compressOlderMessages(context.Background(), msgs, f, "fake-model")
 	if err != nil {
 		t.Fatalf("compress: %v", err)
 	}
@@ -83,7 +84,7 @@ func TestCompactionPreservesContentWhenShortCircuits(t *testing.T) {
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello"},
 	}
-	out, err := compressOlderMessages(in, nil, "")
+	out, err := compressOlderMessages(context.Background(), in, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,7 +195,7 @@ func TestCompressOlderMessagesNeverStartsTailWithTool(t *testing.T) {
 	}
 
 	f := &fakeSummarizer{}
-	out, err := compressOlderMessages(msgs, f, "fake-model")
+	out, err := compressOlderMessages(context.Background(), msgs, f, "fake-model")
 	if err != nil {
 		t.Fatalf("compress: %v", err)
 	}
@@ -220,5 +221,159 @@ func TestCompressOlderMessagesNeverStartsTailWithTool(t *testing.T) {
 		if j < 0 || out[j].Role != "assistant" || len(out[j].ToolCalls) == 0 {
 			t.Errorf("tool at idx %d has no parent assistant.tool_calls in output", i)
 		}
+	}
+}
+
+// ctxProbe records whether compressOlderMessages passed a nil context —
+// the production bug that surfaced as `net/http: nil Context`.
+type ctxProbe struct {
+	gotNil bool
+}
+
+func (c *ctxProbe) Chat(ctx context.Context, _ []provider.Message, _ []provider.Tool, _ string, _ int, _ float64) (*provider.Response, error) {
+	if ctx == nil {
+		c.gotNil = true
+		return nil, fmt.Errorf("net/http: nil Context")
+	}
+	return &provider.Response{Content: "ok"}, nil
+}
+
+func (c *ctxProbe) ChatStream(context.Context, []provider.Message, []provider.Tool, string, int, float64) (*provider.StreamReader, error) {
+	return nil, nil
+}
+
+func TestCompressOlderMessagesPassesNonNilContext(t *testing.T) {
+	var msgs []provider.Message
+	for i := 0; i < PruneTurnAge+3; i++ {
+		msgs = append(msgs,
+			provider.Message{Role: "user", Content: "u"},
+			provider.Message{Role: "assistant", Content: "a"},
+		)
+	}
+	p := &ctxProbe{}
+	if _, err := compressOlderMessages(context.Background(), msgs, p, "m"); err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	if p.gotNil {
+		t.Fatal("summarizer received a nil context — that is net/http: nil Context")
+	}
+}
+
+func TestCompressOlderMessagesNilContextFallsBackToBackground(t *testing.T) {
+	var msgs []provider.Message
+	for i := 0; i < PruneTurnAge+3; i++ {
+		msgs = append(msgs, provider.Message{Role: "user", Content: "u"})
+	}
+	p := &ctxProbe{}
+	if _, err := compressOlderMessages(nil, msgs, p, "m"); err != nil {
+		t.Fatalf("nil ctx should be replaced with Background: %v", err)
+	}
+	if p.gotNil {
+		t.Fatal("nil ctx leaked through to Chat")
+	}
+}
+
+type failSummarizer struct{}
+
+func (failSummarizer) Chat(context.Context, []provider.Message, []provider.Tool, string, int, float64) (*provider.Response, error) {
+	return nil, fmt.Errorf("API error 400: invalid_request_error")
+}
+
+func (failSummarizer) ChatStream(context.Context, []provider.Message, []provider.Tool, string, int, float64) (*provider.StreamReader, error) {
+	return nil, nil
+}
+
+func oversizedHistory() []provider.Message {
+	var msgs []provider.Message
+	// Far above DefaultTokenThreshold even after old-tool prune:
+	// 40 user+assistant pairs × 8k chars ≈ 160k tokens.
+	blob := strings.Repeat("x", 8000)
+	for i := 0; i < 40; i++ {
+		msgs = append(msgs,
+			provider.Message{Role: "user", Content: blob},
+			provider.Message{Role: "assistant", Content: blob},
+		)
+	}
+	return msgs
+}
+
+func TestCompactMessagesHardTrimsWhenSummarizeFails(t *testing.T) {
+	msgs := oversizedHistory()
+	before := EstimateTokens(msgs)
+	if before < DefaultTokenThreshold {
+		t.Fatalf("fixture too small: tokens=%d", before)
+	}
+	res, err := CompactMessages(context.Background(), msgs, t.TempDir(), failSummarizer{}, "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res == nil || !res.Pruned {
+		t.Fatal("expected a pruned result after failed compression")
+	}
+	got := EstimateTokens(res.Messages)
+	if got >= DefaultTokenThreshold {
+		t.Fatalf("hard-trim left %d tokens (threshold %d) — session would still 400", got, DefaultTokenThreshold)
+	}
+	if len(res.Messages) == 0 {
+		t.Fatal("hard-trim dropped the entire history")
+	}
+	if res.Messages[0].Content != droppedHistoryNotice && got > 0 {
+		// notice is prepended unless the whole list already fit after tool prune
+		if EstimateTokens(msgs) >= DefaultTokenThreshold && res.Messages[0].Role != "user" {
+			t.Errorf("expected dropped-history notice or a user tail start, got %+v", res.Messages[0])
+		}
+	}
+}
+
+func TestCapSummaryTextTruncatesOversizedInput(t *testing.T) {
+	long := strings.Repeat("你", summarizeMaxRunes+50)
+	got := capSummaryText(long)
+	if len([]rune(got)) <= summarizeMaxRunes {
+		t.Fatalf("capped text should include the omission marker, got %d runes", len([]rune(got)))
+	}
+	if !strings.Contains(got, "omitted from summarizer") {
+		t.Fatalf("missing omission marker: %s", got[len(got)-80:])
+	}
+	if !strings.HasPrefix(got, strings.Repeat("你", 8)) {
+		t.Fatal("cap should keep the start of the conversation")
+	}
+}
+
+func TestHardTrimMessagesNeverStartsWithTool(t *testing.T) {
+	var msgs []provider.Message
+	blob := strings.Repeat("y", 4000)
+	for i := 0; i < 30; i++ {
+		msgs = append(msgs,
+			provider.Message{Role: "user", Content: blob},
+			provider.Message{Role: "assistant", ToolCalls: []provider.ToolCall{{ID: "t"}}},
+			provider.Message{Role: "tool", ToolCallID: "t", Content: blob},
+		)
+	}
+	out := hardTrimMessages(msgs, 2000)
+	if EstimateTokens(out) > 2000 {
+		t.Fatalf("tokens=%d want <= 2000", EstimateTokens(out))
+	}
+	for i := 1; i < len(out); i++ {
+		if out[i].Role != "tool" {
+			continue
+		}
+		j := i - 1
+		for j >= 0 && out[j].Role == "tool" {
+			j--
+		}
+		if j < 0 || out[j].Role != "assistant" || len(out[j].ToolCalls) == 0 {
+			t.Fatalf("tool at %d has no parent assistant.tool_calls", i)
+		}
+	}
+}
+
+func TestEstimateTokensCountsThinkingAndParts(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: "assistant", Content: strings.Repeat("a", 40), Thinking: strings.Repeat("t", 40)},
+		{Role: "user", ContentParts: []provider.ContentPart{{Type: "text", Text: strings.Repeat("p", 40)}}},
+	}
+	got := EstimateTokens(msgs)
+	if got != 30 { // 40/4 + 40/4 + 40/4
+		t.Fatalf("EstimateTokens = %d, want 30", got)
 	}
 }

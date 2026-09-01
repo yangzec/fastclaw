@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -18,13 +19,27 @@ const (
 	PruneTurnAge = 20
 	// truncatedPlaceholder replaces pruned tool results.
 	truncatedPlaceholder = "[Result truncated - see memory logs]"
+	// summarizeMaxRunes caps the text shipped to the summarizer so the
+	// compression call itself cannot 400 on an oversized prompt. ~20k
+	// tokens at chars/4 — enough to keep key facts, not the whole dump.
+	summarizeMaxRunes    = 80000
+	droppedHistoryNotice = "[Earlier turns were dropped to fit the model context window. Full history is in memory logs.]"
 )
 
 // EstimateTokens provides a rough token estimate: chars/4.
 func EstimateTokens(messages []provider.Message) int {
 	total := 0
 	for _, m := range messages {
-		total += len(m.Content) / 4
+		if m.Content != "" {
+			total += len(m.Content) / 4
+		} else {
+			for _, p := range m.ContentParts {
+				total += len(p.Text) / 4
+			}
+		}
+		if m.Thinking != "" {
+			total += len(m.Thinking) / 4
+		}
 		for _, tc := range m.ToolCalls {
 			total += len(tc.Function.Arguments) / 4
 			total += len(tc.Function.Name) / 4
@@ -44,7 +59,15 @@ type CompactResult struct {
 // Step 1 (Pruning): For messages older than PruneTurnAge, strip tool result content.
 // Step 2 (Compression): If still over threshold after pruning, summarize older messages
 // using the LLM and write full history to a log file.
-func CompactMessages(messages []provider.Message, workspace string, prov provider.Provider, model string) (*CompactResult, error) {
+// Step 3 (Hard trim): If compression fails or the result is still over
+// the threshold, drop oldest turns (keeping a valid tool-call tail)
+// until the history fits. Without this step a 400k-token session that
+// failed to summarize would keep sending 400k-token requests and the
+// upstream gateway would 400 every turn.
+func CompactMessages(ctx context.Context, messages []provider.Message, workspace string, prov provider.Provider, model string) (*CompactResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	tokens := EstimateTokens(messages)
 	if tokens < DefaultTokenThreshold {
 		return &CompactResult{Messages: messages}, nil
@@ -73,17 +96,22 @@ func CompactMessages(messages []provider.Message, workspace string, prov provide
 	}
 
 	// Step 2: Compression - summarize older messages
-	compressed, err := compressOlderMessages(pruned, prov, model)
+	compressed, err := compressOlderMessages(ctx, pruned, prov, model)
 	if err != nil {
-		slog.Warn("compression failed, using pruned messages", "error", err)
+		slog.Warn("compression failed, hard-trimming to fit window", "error", err)
 		return &CompactResult{
-			Messages: pruned,
+			Messages: hardTrimMessages(pruned, DefaultTokenThreshold),
 			Pruned:   true,
 			LogFile:  logFile,
 		}, nil
 	}
 
-	slog.Info("after compression", "tokens_before", prunedTokens, "tokens_after", EstimateTokens(compressed))
+	after := EstimateTokens(compressed)
+	slog.Info("after compression", "tokens_before", prunedTokens, "tokens_after", after)
+	if after >= DefaultTokenThreshold {
+		slog.Warn("compression still over threshold, hard-trimming", "tokens", after, "threshold", DefaultTokenThreshold)
+		compressed = hardTrimMessages(compressed, DefaultTokenThreshold)
+	}
 
 	return &CompactResult{
 		Messages: compressed,
@@ -125,8 +153,16 @@ func pruneOldToolResults(messages []provider.Message) []provider.Message {
 	if len(messages) <= PruneTurnAge {
 		return messages
 	}
+	return pruneToolResultsBefore(messages, len(messages)-PruneTurnAge)
+}
 
-	cutoff := len(messages) - PruneTurnAge
+func pruneToolResultsBefore(messages []provider.Message, cutoff int) []provider.Message {
+	if cutoff <= 0 {
+		return messages
+	}
+	if cutoff > len(messages) {
+		cutoff = len(messages)
+	}
 	result := make([]provider.Message, len(messages))
 	copy(result, messages)
 
@@ -144,10 +180,81 @@ func pruneOldToolResults(messages []provider.Message) []provider.Message {
 	return result
 }
 
+// hardTrimMessages is the last-resort fit: truncate every oversized
+// tool result, then drop oldest messages until EstimateTokens is
+// under threshold. The tail never starts with a lone "tool" role.
+func hardTrimMessages(messages []provider.Message, threshold int) []provider.Message {
+	if threshold <= 0 {
+		threshold = DefaultTokenThreshold
+	}
+	trimmed := pruneToolResultsBefore(messages, len(messages))
+	if EstimateTokens(trimmed) <= threshold {
+		return trimmed
+	}
+
+	notice := provider.Message{Role: "user", Content: droppedHistoryNotice}
+	budget := threshold - EstimateTokens([]provider.Message{notice})
+	if budget < 1 {
+		budget = threshold
+	}
+
+	cutoff := 0
+	for cutoff < len(trimmed) && EstimateTokens(trimmed[cutoff:]) > budget {
+		cutoff++
+	}
+	cutoff = safeCompactionCutoff(trimmed, cutoff)
+	if cutoff <= 0 {
+		return trimmed
+	}
+	if cutoff >= len(trimmed) {
+		last := trimmed[len(trimmed)-1]
+		for i := len(trimmed) - 1; i >= 0; i-- {
+			if trimmed[i].Role != "tool" {
+				last = trimmed[i]
+				break
+			}
+		}
+		return []provider.Message{notice, shrinkMessage(last, budget)}
+	}
+	return append([]provider.Message{notice}, trimmed[cutoff:]...)
+}
+
+func shrinkMessage(m provider.Message, tokenBudget int) provider.Message {
+	if tokenBudget < 1 {
+		m.Content = truncatedPlaceholder
+		m.Thinking = ""
+		m.ContentParts = nil
+		m.ToolCalls = nil
+		return m
+	}
+	maxChars := tokenBudget * 4
+	if len(m.Content) > maxChars {
+		m.Content = m.Content[:maxChars] + "…"
+	}
+	if len(m.Thinking) > maxChars/4 {
+		m.Thinking = ""
+	}
+	return m
+}
+
+func capSummaryText(text string) string {
+	runes := []rune(text)
+	if len(runes) <= summarizeMaxRunes {
+		return text
+	}
+	return string(runes[:summarizeMaxRunes]) + "\n\n[... older turns omitted from summarizer input ...]"
+}
+
 // compressOlderMessages asks the LLM to summarize older messages into a compact summary.
-func compressOlderMessages(messages []provider.Message, prov provider.Provider, model string) ([]provider.Message, error) {
+func compressOlderMessages(ctx context.Context, messages []provider.Message, prov provider.Provider, model string) ([]provider.Message, error) {
 	if len(messages) <= PruneTurnAge {
 		return messages, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if prov == nil {
+		return nil, fmt.Errorf("summarize conversation: no provider")
 	}
 
 	cutoff := safeCompactionCutoff(messages, len(messages)-PruneTurnAge)
@@ -162,9 +269,14 @@ func compressOlderMessages(messages []provider.Message, prov provider.Provider, 
 	// pinned-head protection design §5.3 (b) calls for: old
 	// goal_context messages are dropped entirely from the
 	// compaction output; the live one rides through unchanged.
+	// Tool results are already placeholders after pruning and add
+	// noise to the summarizer prompt, so they are skipped too.
 	var text string
 	for _, m := range olderMessages {
 		if m.Origin != provider.OriginUser {
+			continue
+		}
+		if m.Role == "tool" {
 			continue
 		}
 		text += fmt.Sprintf("[%s] %s\n", m.Role, m.Content)
@@ -177,11 +289,11 @@ func compressOlderMessages(messages []provider.Message, prov provider.Provider, 
 		},
 		{
 			Role:    "user",
-			Content: fmt.Sprintf("Summarize this conversation:\n\n%s", text),
+			Content: fmt.Sprintf("Summarize this conversation:\n\n%s", capSummaryText(text)),
 		},
 	}
 
-	resp, err := prov.Chat(nil, summaryPrompt, nil, model, 2048, 0.3)
+	resp, err := prov.Chat(ctx, summaryPrompt, nil, model, 2048, 0.3)
 	if err != nil {
 		return nil, fmt.Errorf("summarize conversation: %w", err)
 	}
