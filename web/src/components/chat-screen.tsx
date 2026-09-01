@@ -11,6 +11,7 @@ import { fileUrl, getAgent, getAgentKnowledgeFile, getChangedFiles, getChatHisto
 import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, Folder, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal, ExternalLink, MoreHorizontal, PanelLeftClose, PanelLeftOpen, BookOpen } from "lucide-react";
 import Link from "next/link";
 import { ChatMarkdown } from "@/components/chat-markdown";
+import { applyToolCallEvent, applyToolResultEvent } from "@/lib/resume-tool-events";
 
 // Split a string on `![alt](data:image/...;base64,...)` markdown.
 //
@@ -287,7 +288,10 @@ function namePastedImage(file: File, pasteId: number, index: number): File {
 }
 
 /** Convert raw history messages into UI ChatMessages, grouping tool calls with results. */
-function buildChatMessages(history: ChatHistoryMessage[]): ChatMessage[] {
+function buildChatMessages(
+  history: ChatHistoryMessage[],
+  opts?: { keepRunningTools?: boolean },
+): ChatMessage[] {
   const msgs: ChatMessage[] = [];
   let i = 0;
   while (i < history.length) {
@@ -337,12 +341,15 @@ function buildChatMessages(history: ChatHistoryMessage[]): ChatMessage[] {
       // Defensive: any tool_use that still has no result by the time
       // we leave the tool-result run got orphaned (client aborted, server
       // crashed mid-turn, persistence path raced). Mark them stopped so
-      // the UI shows a terminal state instead of spinning forever.
-      // Newer turns will have these padded server-side via
+      // the UI shows a terminal state instead of spinning forever —
+      // unless this session still has a live turn (page reload mid-tool).
+      // Newer finished turns will have these padded server-side via
       // padOrphanToolResults; this catches sessions that pre-date the fix.
-      for (const c of calls) {
-        if (c.result === undefined) {
-          c.result = "(stopped)";
+      if (!opts?.keepRunningTools) {
+        for (const c of calls) {
+          if (c.result === undefined) {
+            c.result = "(stopped)";
+          }
         }
       }
       // If this assistant turn produced text alongside its tool calls
@@ -690,6 +697,10 @@ export function ChatScreen() {
   // reload, which replaces the placeholder with the canonical message
   // pulled from session_messages.
   const transientBubbleIdRef = useRef<string | null>(null);
+  // True after a history load that reported an in-flight server turn.
+  // Subscribe uses this to render tool_call / tool_result live and to
+  // reload history on `done` even when no content bubble was created.
+  const resumeTurnRef = useRef(false);
   // streamingMsgIdRef holds the id of the assistant bubble currently
   // accreting content_delta chunks via the active POST sendChatStream.
   // Shared with the parallel /api/chat/subscribe SSE handler so that
@@ -944,6 +955,10 @@ export function ChatScreen() {
           content?: string;
           message?: string;
           metadata?: ToolResultMetadata;
+          id?: string;
+          name?: string;
+          arguments?: string;
+          result?: string;
           // subagent_progress fields
           iteration?: number;
           max?: number;
@@ -967,13 +982,10 @@ export function ChatScreen() {
         // replies are event-only, so that reload clears the visible
         // answer and makes the send look like it did nothing.
         if (inFlightSessionsRef.current.has(chatScopeKey(selectedAgent, sessionId))) return;
-        // CAREFUL: do NOT bump maxSeqRef before the switch. This handler
-        // intentionally drops tool_call / tool_result during catch-up
-        // (the post-`done` history reload renders them properly) — but
-        // a pre-switch bump would mark those seqs as "rendered" and the
-        // parallel POST sendChatStream callback would dedup-skip the
-        // very same events when it tries to actually render them. Bump
-        // only inside cases that really took ownership of this seq.
+        // CAREFUL: do NOT bump maxSeqRef before the switch. Bump only
+        // inside cases that really took ownership of this seq so a
+        // dropped event can still be rendered by the parallel POST
+        // sendChatStream callback.
         const claim = () => {
           if (seq >= 0) maxSeqRef.current = seq;
         };
@@ -1070,17 +1082,17 @@ export function ChatScreen() {
             // the ref dangling and cause the next turn's first
             // content_delta to write into the stale id.
             streamingMsgIdRef.current = null;
-            // Only reload history when we actually built a transient
-            // bubble from subscribe-replayed content events (i.e. the
-            // user reloaded mid-turn and we need to swap the
-            // placeholder for the canonical message saved in
-            // session_messages). When the active POST stream rendered
-            // the turn directly, transient bubble is null — a reload
-            // here would clobber any rendered error bubbles too,
+            // Reload history when we actually built a transient bubble
+            // from subscribe-replayed content, OR when we resumed an
+            // in-flight turn (tools were still running after refresh).
+            // Skip when the active POST stream rendered the turn
+            // directly — a reload here would clobber error bubbles
             // because LLM-error turns never write an assistant
             // message to session_messages.
-            if (transientBubbleIdRef.current) {
+            if (transientBubbleIdRef.current || resumeTurnRef.current) {
               transientBubbleIdRef.current = null;
+              resumeTurnRef.current = false;
+              setSending(false);
               getChatHistoryWithCursor(selectedAgent, sessionId)
                 .then(({ history, latestEventSeq }) => {
                   if (latestEventSeq > maxSeqRef.current) maxSeqRef.current = latestEventSeq;
@@ -1100,9 +1112,29 @@ export function ChatScreen() {
             }
             break;
           }
-          // tool_call / tool_result during catch-up are skipped here —
-          // the next history reload (on `done`) will render them
-          // properly via buildChatMessages.
+          case "tool_call": {
+            claim();
+            setMessages((prev) =>
+              applyToolCallEvent(prev, {
+                id: data.data?.id,
+                name: data.data?.name,
+                arguments: data.data?.arguments,
+              }),
+            );
+            break;
+          }
+          case "tool_result": {
+            claim();
+            setMessages((prev) =>
+              applyToolResultEvent(prev, {
+                id: data.data?.id,
+                name: data.data?.name,
+                result: data.data?.result,
+                metadata: data.data?.metadata,
+              }),
+            );
+            break;
+          }
         }
         return;
       }
@@ -1313,6 +1345,7 @@ export function ChatScreen() {
     maxSeqRef.current = maxSeqBySessionRef.current.get(chatScopeKey(selectedAgent, sessionId)) ?? -1;
     subscribeSinceRef.current = -1;
     transientBubbleIdRef.current = null;
+    resumeTurnRef.current = false;
     // Close the SSE gate for this sessionId; reopens once the history
     // fetch lands and subscribeSinceRef has been set to the real cursor.
     setLoadedSessionId(null);
@@ -1335,12 +1368,16 @@ export function ChatScreen() {
         if (!aborted) setTodoItems([]);
       });
     getChatHistoryWithCursor(selectedAgent, sessionId)
-      .then(async ({ history, latestEventSeq }) => {
+      .then(async ({ history, latestEventSeq, turnActive }) => {
         if (aborted) return;
         if (!sessionHasActivePost && latestEventSeq > maxSeqRef.current) {
           maxSeqRef.current = latestEventSeq;
         }
         subscribeSinceRef.current = latestEventSeq;
+        if (turnActive && !sessionHasActivePost) {
+          resumeTurnRef.current = true;
+          setSending(true);
+        }
         if (!history || history.length === 0) {
           if (!sessionHasActivePost) {
             setMessages([]);
@@ -1348,7 +1385,7 @@ export function ChatScreen() {
           setLoadedSessionId(sessionId);
           return;
         }
-        const built = buildChatMessages(history);
+        const built = buildChatMessages(history, { keepRunningTools: turnActive });
         try {
           // listAgentFiles(agentId, sessionId) lets the backend pick
           // the right prefix — projects/<pid>/ for project chats,

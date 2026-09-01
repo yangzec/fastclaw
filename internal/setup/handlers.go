@@ -1160,15 +1160,18 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	// Detach the agent's ctx from the request: when the browser tab
 	// disconnects (refresh, close, network blip) we want the agent to
-	// keep running so its already-paid-for LLM call finishes and the
-	// reply lands in session_events. The 15-minute cap is the only thing
-	// that can kill it.
-	agentCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), agentTurnTimeout)
-	// cancel lives on the handler, not the agent goroutine: when a slash
-	// queues a continuation we keep the SSE open past HandleMessage's
-	// return, and inner-scope cancel would tear down agentCtx before the
-	// continuation's events can reach this handler's safety-net check.
-	defer cancel()
+	// keep running so its already-paid-for LLM call and in-flight tools
+	// finish and the reply lands in session_events. The 45-minute cap
+	// is the only thing that can kill a detached turn.
+	//
+	// cancel() must NOT run on client disconnect. The previous
+	// `defer cancel()` did — so a refresh canceled exec/fetch/subagent
+	// mid-tool even though agentCtx was built with WithoutCancel.
+	// releaseAgentCtx cancels only when this handler still owns the
+	// turn (normal completion / timeout). detachAgentCtx() on client
+	// gone leaves the timeout as the sole bound.
+	agentCtx, releaseAgentCtx, detachAgentCtx := newDetachedAgentCtx(r.Context())
+	defer releaseAgentCtx()
 	agentCtx = agent.ContextWithStream(agentCtx, nil, s.dataStore, hub, uid, agentID, req.SessionID)
 
 	agentDone := make(chan struct{})
@@ -1200,10 +1203,11 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-clientGone:
-			// Client dropped; the agent goroutine keeps running on
-			// its detached ctx and persists every event it emits.
-			// User reloading the chat page will pick up the rest via
-			// /api/chat/subscribe?since=N.
+			// Client dropped; do not cancel agentCtx. The goroutine
+			// keeps running on the detached timeout and persists
+			// every event it emits. User reloading the chat page
+			// picks up the rest via /api/chat/subscribe?since=N.
+			detachAgentCtx()
 			return
 		case <-agentDone:
 			// Race: HandleMessage publishes `turn_pending` to the hub
@@ -1238,7 +1242,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				// HandleMessage returned silent after queueing a
 				// continuation. Don't close; wait for the continuation's
 				// `done` event over the hub instead. agentCtx.Done()
-				// (15-min timeout) is the upper bound if it never lands.
+				// (agentTurnTimeout) is the upper bound if it never lands.
 				agentDone = nil
 				continue
 			}
@@ -1639,6 +1643,29 @@ func parseTodoMarkdown(s string) []map[string]any {
 	return out
 }
 
+// newDetachedAgentCtx builds the per-turn context used by
+// handleChatStream / team chat. It ignores HTTP request cancellation
+// (refresh, tab close, proxy drop) and is bounded only by
+// agentTurnTimeout.
+//
+// release() cancels the context when the handler still owns the turn
+// (normal completion). detach() marks the turn as surviving the
+// handler so a later release() is a no-op — required so in-flight
+// tools are not killed when the browser goes away.
+func newDetachedAgentCtx(reqCtx context.Context) (ctx context.Context, release, detach func()) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(reqCtx), agentTurnTimeout)
+	var detached bool
+	release = func() {
+		if !detached {
+			cancel()
+		}
+	}
+	detach = func() {
+		detached = true
+	}
+	return ctx, release, detach
+}
+
 func (s *Server) handleChatHistory(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agentId")
 	sessionID := r.URL.Query().Get("sessionId")
@@ -1647,7 +1674,10 @@ func (s *Server) handleChatHistory(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not found"})
 		return
 	}
-	resp := map[string]any{"history": ag.WebChatHistory(sessionID)}
+	resp := map[string]any{
+		"history":    ag.WebChatHistory(sessionID),
+		"turnActive": ag.WebChatTurnActive(sessionID),
+	}
 	// latestEventSeq is the resume cursor for /api/chat/subscribe — the
 	// client opens that endpoint with `since=<latestEventSeq>` so a
 	// fresh page load picks up only deltas it hasn't already rendered.

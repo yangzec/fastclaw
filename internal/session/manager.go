@@ -535,6 +535,18 @@ func (s *Session) BeginTurn() {
 	s.turnDepth++
 }
 
+// TurnActive reports whether at least one HandleMessage turn is
+// currently running on this session. Used by the web history endpoint
+// so a refresh mid-tool does not paint in-flight calls as stopped.
+func (s *Session) TurnActive() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.turnDepth > 0
+}
+
 // EndTurn marks a turn as finished. When the last in-flight turn ends it
 // returns any steer messages still buffered (the end-of-turn race: a
 // message pushed after the loop's final drain). Callers redispatch the

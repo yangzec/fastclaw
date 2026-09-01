@@ -37,6 +37,11 @@ type AgentHandle interface {
 	// normal send).
 	SteerWeb(sessionId, projectIDHint, text string) bool
 	WebChatHistory(sessionId string) []map[string]any
+	// WebChatTurnActive is true while HandleMessage is running for
+	// this session. The history endpoint uses it so a page reload
+	// can keep in-progress tools spinning instead of marking them
+	// stopped.
+	WebChatTurnActive(sessionId string) bool
 	WebChatSessions() []session.WebSession
 	DeleteWebChatSession(sessionId string) error
 	RenameWebChatSession(sessionId, title string) error

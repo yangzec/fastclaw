@@ -891,18 +891,23 @@ export async function getChatHistory(agentId: string, sessionId: string): Promis
 export interface ChatHistoryResult {
   history: ChatHistoryMessage[];
   latestEventSeq: number; // -1 when there's nothing logged yet
+  // True while HandleMessage is still running for this session. A
+  // freshly reloaded page uses this to keep in-progress tools spinning
+  // and to treat the subscribe SSE as a live resume, not a finished
+  // history snapshot.
+  turnActive: boolean;
 }
 
 export async function getChatHistoryWithCursor(agentId: string, sessionId: string): Promise<ChatHistoryResult> {
   const res = await apiFetch(`/api/chat/history?agentId=${encodeURIComponent(agentId)}&sessionId=${encodeURIComponent(sessionId)}`);
-  if (!res.ok) return { history: [], latestEventSeq: -1 };
+  if (!res.ok) return { history: [], latestEventSeq: -1, turnActive: false };
   const data = await res.json();
   const history: ChatHistoryMessage[] = Array.isArray(data?.history)
     ? data.history
     : Array.isArray(data) ? data : [];
   const seqRaw = data?.latestEventSeq;
   const latestEventSeq = typeof seqRaw === "number" ? seqRaw : -1;
-  return { history, latestEventSeq };
+  return { history, latestEventSeq, turnActive: data?.turnActive === true };
 }
 
 export interface ChatSessionEntry {
