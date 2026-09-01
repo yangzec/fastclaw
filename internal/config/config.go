@@ -524,6 +524,12 @@ type AccountConfig struct {
 	CorpID      string `json:"corpId,omitempty"`
 	CorpSecret  string `json:"corpSecret,omitempty"`
 	CorpAgentID string `json:"corpAgentId,omitempty"`
+	// CorpCallbackToken / CorpCallbackAESKey are the 自建应用
+	// 「接收消息」Token + EncodingAESKey. Needed to pass WeCom's
+	// GET echostr check (doc 10514) so 企业可信IP can be set without
+	// a 备案域名. Empty until the user pastes them from the admin console.
+	CorpCallbackToken  string `json:"corpCallbackToken,omitempty"`
+	CorpCallbackAESKey string `json:"corpCallbackAesKey,omitempty"`
 }
 
 // ChannelConfigFromData decodes the JSON blob stored on a ChannelRecord.

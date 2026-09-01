@@ -159,6 +159,29 @@ func TestConnectWeComOAPersistsAndLists(t *testing.T) {
 	if bytes.Contains(rr.Body.Bytes(), []byte("corp-secret")) {
 		t.Fatalf("list leaked corp secret: %s", rr.Body.String())
 	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte(`/api/wecom/oa/callback/bot_oa_1`)) {
+		t.Fatalf("list missing callbackUrl: %s", rr.Body.String())
+	}
+
+	cbBody, _ := json.Marshal(map[string]any{
+		"token": "tok_cb", "encodingAESKey": "0123456789abcdef0123456789abcdef0123456789a",
+	})
+	req = httptest.NewRequest(http.MethodPost, "/api/agents/"+agentID+"/channels/wecom/bot_oa_1/oa/callback", bytes.NewReader(cbBody))
+	req.SetPathValue("id", agentID)
+	req.SetPathValue("accountId", "bot_oa_1")
+	req.AddCookie(cookie)
+	rr = httptest.NewRecorder()
+	s.authMiddleware(s.handleSaveWeComOACallback)(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("save callback status = %d body = %s", rr.Code, rr.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/wecom/oa/callback/bot_oa_1?msg_signature=bad&timestamp=1&nonce=2&echostr=e", nil)
+	req.SetPathValue("accountId", "bot_oa_1")
+	rr = httptest.NewRecorder()
+	s.handleWeComOACallback(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("bad echostr status = %d body = %s", rr.Code, rr.Body.String())
+	}
 
 	req = httptest.NewRequest(http.MethodDelete, "/api/agents/"+agentID+"/channels/wecom/bot_oa_1/oa", nil)
 	req.SetPathValue("id", agentID)

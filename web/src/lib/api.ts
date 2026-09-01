@@ -1757,6 +1757,8 @@ export interface AgentChannel {
   /** WeCom 自建应用 official calendar, when enabled. */
   oaEnabled?: boolean;
   corpId?: string;
+  callbackUrl?: string;
+  callbackReady?: boolean;
 }
 
 // AgentCronJob mirrors store.CronJobRecord. Returned by GET
@@ -2008,6 +2010,23 @@ export async function connectAgentWeComOA(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ corpId, secret, agentId: appAgentId }),
+    },
+  );
+  return res.json();
+}
+
+export async function saveAgentWeComOACallback(
+  agentId: string,
+  accountId: string,
+  token: string,
+  encodingAESKey: string,
+): Promise<{ ok: boolean; callbackReady?: boolean; callbackUrl?: string; error?: string }> {
+  const res = await apiFetch(
+    `/api/agents/${agentId}/channels/wecom/${encodeURIComponent(accountId)}/oa/callback`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, encodingAESKey }),
     },
   );
   return res.json();

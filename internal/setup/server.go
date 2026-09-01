@@ -348,7 +348,10 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("DELETE /api/agents/{id}/channels/feishu/login", auth(s.handleCancelAgentFeishuLogin))
 	mux.HandleFunc("POST /api/agents/{id}/channels/wecom", auth(s.handleConnectAgentWeCom))
 	mux.HandleFunc("POST /api/agents/{id}/channels/wecom/{accountId}/oa", auth(s.handleConnectAgentWeComOA))
+	mux.HandleFunc("POST /api/agents/{id}/channels/wecom/{accountId}/oa/callback", auth(s.handleSaveWeComOACallback))
 	mux.HandleFunc("DELETE /api/agents/{id}/channels/wecom/{accountId}/oa", auth(s.handleDisconnectAgentWeComOA))
+	mux.HandleFunc("GET /api/wecom/oa/callback/{accountId}", s.handleWeComOACallback)
+	mux.HandleFunc("POST /api/wecom/oa/callback/{accountId}", s.handleWeComOACallback)
 	mux.HandleFunc("DELETE /api/agents/{id}/channels/{type}/{accountId}", auth(s.handleDisconnectAgentChannel))
 	mux.HandleFunc("PATCH /api/agents/{id}/channels/{type}/{accountId}", auth(s.handleUpdateAgentChannel))
 

@@ -43,6 +43,9 @@ type channelOut struct {
 	// WeCom 自建应用 official calendar. Secret is never returned.
 	OAEnabled bool   `json:"oaEnabled,omitempty"`
 	CorpID    string `json:"corpId,omitempty"`
+	// WeCom 自建应用 receive-message URL (no secrets).
+	CallbackURL   string `json:"callbackUrl,omitempty"`
+	CallbackReady bool   `json:"callbackReady,omitempty"`
 }
 
 // resolveChannelBindingScope authorizes a connect/disconnect call and
@@ -226,6 +229,7 @@ func flattenChannelRecords(rows []store.ChannelRecord, source string) []channelO
 				tok = rec.BotToken
 			}
 			oaOn, corpID := wecomOAPublic(rec.Type, acct)
+			cbURL, cbReady := wecomCallbackPublic(rec.Type, accountID, acct)
 			out = append(out, channelOut{
 				Type:           rec.Type,
 				AccountID:      accountID,
@@ -237,6 +241,8 @@ func flattenChannelRecords(rows []store.ChannelRecord, source string) []channelO
 				Source:         source,
 				OAEnabled:      oaOn,
 				CorpID:         corpID,
+				CallbackURL:    cbURL,
+				CallbackReady:  cbReady,
 			})
 		}
 	}
@@ -1245,6 +1251,13 @@ func wecomOAPublic(channelType string, acct config.AccountConfig) (bool, string)
 	return true, acct.CorpID
 }
 
+func wecomCallbackPublic(channelType, accountID string, acct config.AccountConfig) (url string, ready bool) {
+	if channelType != "wecom" || accountID == "" {
+		return "", false
+	}
+	return "/api/wecom/oa/callback/" + accountID, strings.TrimSpace(acct.CorpCallbackToken) != "" && strings.TrimSpace(acct.CorpCallbackAESKey) != ""
+}
+
 // persistWeComAccount writes the channel row + binding and hot-registers
 // the adapter. Shared by the official scan popup (frontend POSTs the
 // issued botid/secret) and the paste-credentials fallback. Reconnecting
@@ -1261,6 +1274,8 @@ func (s *Server) persistWeComAccount(ctx context.Context, userID, agentIDArg, ag
 			acct.CorpID = prev.CorpID
 			acct.CorpSecret = prev.CorpSecret
 			acct.CorpAgentID = prev.CorpAgentID
+			acct.CorpCallbackToken = prev.CorpCallbackToken
+			acct.CorpCallbackAESKey = prev.CorpCallbackAESKey
 		}
 	}
 	cc := config.ChannelConfig{
@@ -1343,9 +1358,10 @@ func (s *Server) handleConnectAgentWeComOA(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{
-		"ok":        true,
-		"oaEnabled": true,
-		"corpId":    corpID,
+		"ok":          true,
+		"oaEnabled":   true,
+		"corpId":      corpID,
+		"callbackUrl": "/api/wecom/oa/callback/" + accountID,
 	})
 }
 
@@ -1370,11 +1386,102 @@ func (s *Server) handleDisconnectAgentWeComOA(w http.ResponseWriter, r *http.Req
 		acct.CorpID = ""
 		acct.CorpSecret = ""
 		acct.CorpAgentID = ""
+		acct.CorpCallbackToken = ""
+		acct.CorpCallbackAESKey = ""
 	}); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "oaEnabled": false})
+}
+
+type saveWeComCallbackRequest struct {
+	Token          string `json:"token"`
+	EncodingAESKey string `json:"encodingAESKey"`
+}
+
+// handleSaveWeComOACallback stores the 自建应用 receive-message Token +
+// EncodingAESKey so WeCom's GET echostr check can unlock 企业可信IP
+// without a 备案域名.
+func (s *Server) handleSaveWeComOACallback(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWritable(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	accountID := strings.TrimSpace(r.PathValue("accountId"))
+	uid, aid, ok := s.resolveChannelBindingScope(w, r, id)
+	if !ok {
+		return
+	}
+	var req saveWeComCallbackRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	token := strings.TrimSpace(req.Token)
+	aesKey := strings.TrimSpace(req.EncodingAESKey)
+	if token == "" || aesKey == "" {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "token and encodingAESKey required"})
+		return
+	}
+	ch, err := s.findAgentWeComChannel(r.Context(), uid, aid, accountID)
+	if err != nil {
+		jsonResponse(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+	cc := config.ChannelConfigFromData(ch.Data)
+	acct := cc.Accounts[ch.AccountID]
+	if strings.TrimSpace(acct.CorpID) == "" {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "enable official calendar (CorpID) first"})
+		return
+	}
+	if err := s.patchWeComAccount(r.Context(), ch, func(a *config.AccountConfig) {
+		a.CorpCallbackToken = token
+		a.CorpCallbackAESKey = aesKey
+	}); err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"ok":            true,
+		"callbackReady": true,
+		"callbackUrl":   "/api/wecom/oa/callback/" + accountID,
+	})
+}
+
+// handleWeComOACallback is the public 接收消息 URL. GET verifies
+// echostr (WeCom admin "保存"); POST is ACKed so the URL stays valid.
+func (s *Server) handleWeComOACallback(w http.ResponseWriter, r *http.Request) {
+	accountID := strings.TrimSpace(r.PathValue("accountId"))
+	if accountID == "" {
+		http.Error(w, "accountId required", http.StatusBadRequest)
+		return
+	}
+	if r.Method == http.MethodPost {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("success"))
+		return
+	}
+	ch, err := s.dataStore.LookupChannel(r.Context(), "wecom", accountID)
+	if err != nil || ch == nil {
+		http.Error(w, "wecom channel not found", http.StatusNotFound)
+		return
+	}
+	creds, err := channels.WeComCallbackFromChannel(ch)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	q := r.URL.Query()
+	echostr := q.Get("echostr")
+	plain, err := channels.WeComVerifyCallbackURL(creds, q.Get("msg_signature"), q.Get("timestamp"), q.Get("nonce"), echostr)
+	if err != nil {
+		slog.Warn("wecom oa callback verify failed", "account", accountID, "error", err)
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte(plain))
 }
 
 func (s *Server) findAgentWeComChannel(ctx context.Context, userID, agentID, accountID string) (*store.ChannelRecord, error) {

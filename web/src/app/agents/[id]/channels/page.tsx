@@ -45,6 +45,7 @@ import {
   connectAgentFeishu,
   connectAgentWeCom,
   connectAgentWeComOA,
+  saveAgentWeComOACallback,
   disconnectAgentWeComOA,
   startAgentFeishuLogin,
   pollAgentFeishuLoginStatus,
@@ -126,6 +127,7 @@ export default function AgentChannelsPage() {
   const [feishuOpen, setFeishuOpen] = useState(false);
   const [wecomOpen, setWecomOpen] = useState(false);
   const [wecomOATarget, setWecomOATarget] = useState<AgentChannel | null>(null);
+  const [wecomCBTarget, setWecomCBTarget] = useState<AgentChannel | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AgentChannel | null>(null);
 
   const refresh = useCallback(() => {
@@ -199,6 +201,7 @@ export default function AgentChannelsPage() {
                 channel={connected}
                 onDelete={() => setDeleteTarget(connected)}
                 onEnableWeComOA={() => setWecomOATarget(connected)}
+                onConfigureWeComCallback={() => setWecomCBTarget(connected)}
                 onDisableWeComOA={async () => {
                   if (!agentId) return;
                   const res = await disconnectAgentWeComOA(agentId, connected.accountId);
@@ -288,6 +291,17 @@ export default function AgentChannelsPage() {
         }}
       />
 
+      <ConnectWeComCallbackDialog
+        open={!!wecomCBTarget}
+        onOpenChange={(v) => !v && setWecomCBTarget(null)}
+        agentId={agentId}
+        channel={wecomCBTarget}
+        onSaved={() => {
+          setWecomCBTarget(null);
+          refresh();
+        }}
+      />
+
       <AlertDialog open={!!deleteTarget} onOpenChange={(v) => !v && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -355,12 +369,14 @@ function ConnectedCard({
   channel,
   onDelete,
   onEnableWeComOA,
+  onConfigureWeComCallback,
   onDisableWeComOA,
 }: {
   label: string;
   channel: AgentChannel;
   onDelete: () => void;
   onEnableWeComOA?: () => void;
+  onConfigureWeComCallback?: () => void;
   onDisableWeComOA?: () => void;
 }) {
   // Telegram is the only provider with a public profile URL pattern
@@ -416,6 +432,7 @@ function ConnectedCard({
             {channel.oaEnabled ? (
               <p className="text-xs text-muted-foreground truncate">
                 自建应用 {channel.corpId}
+                {channel.callbackReady ? " · receive URL ready" : ""}
               </p>
             ) : (
               <p className="text-xs text-muted-foreground">
@@ -428,9 +445,14 @@ function ConnectedCard({
 
       {channel.type === "wecom" && (
         channel.oaEnabled ? (
-          <Button size="sm" variant="outline" onClick={onDisableWeComOA} className="w-full">
-            Disconnect calendar
-          </Button>
+          <>
+            <Button size="sm" variant="outline" onClick={onConfigureWeComCallback} className="w-full">
+              Unlock trusted IP
+            </Button>
+            <Button size="sm" variant="outline" onClick={onDisableWeComOA} className="w-full">
+              Disconnect calendar
+            </Button>
+          </>
         ) : (
           <Button size="sm" variant="outline" onClick={onEnableWeComOA} className="w-full">
             Enable official calendar
@@ -1990,6 +2012,108 @@ function ConnectWeComOADialog({
             disabled={submitting || !corpId.trim() || !secret.trim()}
           >
             {submitting ? "Validating…" : "Enable calendar"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ConnectWeComCallbackDialog({
+  open,
+  onOpenChange,
+  agentId,
+  channel,
+  onSaved,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  agentId: string;
+  channel: AgentChannel | null;
+  onSaved: () => void;
+}) {
+  const [token, setToken] = useState("");
+  const [aesKey, setAesKey] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const path = channel?.callbackUrl || (channel?.accountId ? `/api/wecom/oa/callback/${channel.accountId}` : "");
+  const fullUrl = typeof window !== "undefined" && path ? `${window.location.origin}${path}` : path;
+
+  useEffect(() => {
+    if (!open) {
+      setToken("");
+      setAesKey("");
+      setSubmitting(false);
+      setError("");
+    }
+  }, [open]);
+
+  const submit = async () => {
+    if (!agentId || !channel?.accountId || !token.trim() || !aesKey.trim()) return;
+    setSubmitting(true);
+    setError("");
+    const res = await saveAgentWeComOACallback(agentId, channel.accountId, token.trim(), aesKey.trim());
+    setSubmitting(false);
+    if (res.error || !res.ok) {
+      setError(res.error || "Failed to save receive-message credentials");
+      return;
+    }
+    onSaved();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Unlock WeCom trusted IP</DialogTitle>
+          <DialogDescription>
+            No 备案域名 needed. Save Token + EncodingAESKey here first, then paste this URL into
+            接收消息 so WeCom can verify GET echostr. After that, 企业可信IP unlocks.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 py-2">
+          <ol className="text-xs text-muted-foreground list-decimal pl-4 space-y-1">
+            <li>FastClaw must be reachable from the public internet (FASTCLAW_BIND=all, 公网 IP or reverse proxy).</li>
+            <li>应用详情 → 接收消息 → 随机获取 Token 和 EncodingAESKey，先填到下面并保存。</li>
+            <li>同一页 URL 填：</li>
+          </ol>
+          <code className="block text-xs font-mono break-all rounded-md border bg-muted/40 p-2">
+            {fullUrl || "—"}
+          </code>
+          <p className="text-xs text-muted-foreground">
+            保存后企微会 GET 校验。通过后再打开企业可信IP，填 FastClaw 出口公网 IP。
+          </p>
+          <div className="space-y-1.5">
+            <Label htmlFor="wecom-cb-token">Token</Label>
+            <Input
+              id="wecom-cb-token"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              className="font-mono text-sm"
+              autoFocus
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="wecom-cb-aes">EncodingAESKey</Label>
+            <Input
+              id="wecom-cb-aes"
+              value={aesKey}
+              onChange={(e) => setAesKey(e.target.value)}
+              className="font-mono text-sm"
+              placeholder="43 characters from the WeCom console"
+            />
+          </div>
+          {error && <p className="text-xs text-destructive">{error}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => void submit()}
+            disabled={submitting || !token.trim() || !aesKey.trim()}
+          >
+            {submitting ? "Saving…" : "Save receive URL"}
           </Button>
         </DialogFooter>
       </DialogContent>
