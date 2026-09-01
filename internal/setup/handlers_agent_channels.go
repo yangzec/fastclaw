@@ -1091,7 +1091,7 @@ func (s *Server) handleConnectAgentFeishu(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := s.persistFeishuAccount(r, uid, aid, id, appID, appSecret, verificationToken, encryptKey, useLongConn); err != nil {
+	if err := s.persistFeishuAccount(r.Context(), uid, aid, id, appID, appSecret, verificationToken, encryptKey, useLongConn); err != nil {
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "already connected") {
 			status = http.StatusConflict
@@ -1138,7 +1138,7 @@ func feishuWebhookPathFor(r *http.Request, appID string) string {
 // persistFeishuAccount writes the channel row + binding and hot-registers
 // the adapter. Shared by the paste-credentials handler and the QR
 // scan-to-create flow.
-func (s *Server) persistFeishuAccount(r *http.Request, userID, agentIDArg, agentID, appID, appSecret, verificationToken, encryptKey string, useLongConn bool) error {
+func (s *Server) persistFeishuAccount(ctx context.Context, userID, agentIDArg, agentID, appID, appSecret, verificationToken, encryptKey string, useLongConn bool) error {
 	cc := config.ChannelConfig{
 		Enabled: true,
 		Accounts: map[string]config.AccountConfig{
@@ -1150,20 +1150,24 @@ func (s *Server) persistFeishuAccount(r *http.Request, userID, agentIDArg, agent
 			},
 		},
 	}
-	if err := s.assertChannelCredentialUniqueOpt(r, "feishu", appID, "", userID, agentIDArg, true); err != nil {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/", nil)
+	if err != nil {
 		return err
 	}
-	if err := s.saveChannelRecord(r.Context(), userID, agentIDArg, "feishu", appID, true, cc); err != nil {
+	if err := s.assertChannelCredentialUniqueOpt(req, "feishu", appID, "", userID, agentIDArg, true); err != nil {
 		return err
 	}
-	if err := s.appendBinding(r, "", "", config.Binding{
+	if err := s.saveChannelRecord(ctx, userID, agentIDArg, "feishu", appID, true, cc); err != nil {
+		return err
+	}
+	if err := s.appendBinding(req, "", "", config.Binding{
 		AgentID: agentID,
 		Match:   config.Match{Channel: "feishu", AccountID: appID},
 	}); err != nil {
 		return err
 	}
 	s.invalidateOwner(userID, agentIDArg)
-	if ch, err := s.dataStore.LookupChannel(r.Context(), "feishu", appID); err == nil && ch != nil {
+	if ch, err := s.dataStore.LookupChannel(ctx, "feishu", appID); err == nil && ch != nil {
 		s.hotRegisterChannelRecord(*ch)
 	}
 	return nil

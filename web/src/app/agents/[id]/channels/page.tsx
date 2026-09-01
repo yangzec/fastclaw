@@ -1346,15 +1346,14 @@ function ConnectFeishuDialog({
               <p className="text-sm">
                 Live as{" "}
                 <strong>{qrConnected.botName || qrConnected.accountId || "(unnamed)"}</strong>.
-                Search for it in Feishu / Lark and send a DM, or add it to a group.
+                FastClaw DMs you a welcome on Feishu — reply there, or @ the bot in a group.
               </p>
             </div>
             <p className="text-xs text-muted-foreground">
-              Inbound uses long-connection (WebSocket) — no public URL needed.
-              If messages do not arrive, open the developer console and set{" "}
-              <strong>事件与回调 → 订阅方式</strong> to{" "}
-              <strong>使用长连接接收事件</strong>, then subscribe to{" "}
-              <code>im.message.receive_v1</code>.
+              If you already scanned earlier and got no replies, disconnect
+              this channel and scan again so the new receive scopes
+              (<code>im:message.p2p_msg:readonly</code>) take effect. Inbound
+              uses long-connection — no public URL needed.
             </p>
           </div>
         ) : connected ? (

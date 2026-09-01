@@ -183,7 +183,7 @@ func (l *Feishu) sendMediaItem(tok, chatID string, item bus.MediaItem) error {
 		return err
 	}
 	content, _ := json.Marshal(map[string]string{kind + "_key": key})
-	return l.doSend(tok, map[string]string{"receive_id": chatID, "content": string(content), "msg_type": kind})
+	return l.doSend(tok, "chat_id", map[string]string{"receive_id": chatID, "content": string(content), "msg_type": kind})
 }
 
 func (l *Feishu) uploadMedia(tok, endpoint, fileField string, item bus.MediaItem, fields map[string]string, responseKey string) (string, error) {
@@ -252,7 +252,7 @@ func (l *Feishu) sendMarkdownCard(tok, chatID, text string) error {
 		"content":    string(cardJSON),
 		"msg_type":   "interactive",
 	}
-	return l.doSend(tok, payload)
+	return l.doSend(tok, "chat_id", payload)
 }
 
 func buildFeishuMarkdownCardJSON(text string) ([]byte, error) {
@@ -286,17 +286,29 @@ func (l *Feishu) sendPlainTextMessage(tok, chatID, text string) error {
 		"content":    string(contentJSON),
 		"msg_type":   "text",
 	}
-	return l.doSend(tok, payload)
+	return l.doSend(tok, "chat_id", payload)
+}
+
+func (l *Feishu) sendPlainTextTo(tok, receiveIDType, receiveID, text string) error {
+	contentJSON, err := json.Marshal(map[string]string{"text": text})
+	if err != nil {
+		return fmt.Errorf("feishu marshal content: %w", err)
+	}
+	return l.doSend(tok, receiveIDType, map[string]string{
+		"receive_id": receiveID,
+		"content":    string(contentJSON),
+		"msg_type":   "text",
+	})
 }
 
 // doSend posts a message payload to Feishu's send API.
-func (l *Feishu) doSend(tok string, payload map[string]string) error {
+func (l *Feishu) doSend(tok, receiveIDType string, payload map[string]string) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("feishu marshal: %w", err)
 	}
 	req, err := http.NewRequest(http.MethodPost,
-		l.apiBaseURL+"/open-apis/im/v1/messages?receive_id_type=chat_id",
+		l.apiBaseURL+"/open-apis/im/v1/messages?receive_id_type="+receiveIDType,
 		bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -744,6 +756,26 @@ func (l *Feishu) fetchBotInfo(ctx context.Context) (name, openID string, err err
 // mints a tenant_access_token to confirm app_id/app_secret are good,
 // then fetches /bot/v3/info to capture the bot's display name. No
 // adapter state created — caller persists and hot-registers.
+// FeishuSendWelcome DMs the user who scanned the QR (receive_id_type=
+// open_id). Opens the 1:1 chat so they do not have to search for the
+// bot, and proves outbound works immediately after create.
+func FeishuSendWelcome(ctx context.Context, appID, appSecret, openID string) error {
+	if openID == "" {
+		return errors.New("feishu: open_id required")
+	}
+	stub := &Feishu{
+		appID:      appID,
+		appSecret:  appSecret,
+		httpClient: &http.Client{Timeout: feishuSendTimeout},
+		apiBaseURL: feishuBaseURL,
+	}
+	tok, err := stub.tenantAccessToken(ctx)
+	if err != nil {
+		return err
+	}
+	return stub.sendPlainTextTo(tok, "open_id", openID, "已连接到 FastClaw。直接发消息即可，群聊里请 @我。")
+}
+
 func FeishuValidateCredentials(ctx context.Context, appID, appSecret string) (botName, botOpenID string, err error) {
 	stub := &Feishu{
 		appID:      appID,

@@ -45,6 +45,7 @@ func TestFeishuQRLoginCreatesChannelOnConfirm(t *testing.T) {
 		func(context.Context, string, string) (string, string, error) {
 			return "Office Bot", "ou_scanner", nil
 		},
+		func(context.Context, string, string, string) error { return nil },
 	)
 	defer restore()
 	t.Cleanup(func() { close(release) })
@@ -73,6 +74,9 @@ func TestFeishuQRLoginCreatesChannelOnConfirm(t *testing.T) {
 	}
 	if got := captured.Addons.Events.Items.Tenant; len(got) != 1 || got[0] != "im.message.receive_v1" {
 		t.Fatalf("events = %v", got)
+	}
+	if !containsStr(captured.Addons.Scopes.Tenant, "im:message.p2p_msg:readonly") {
+		t.Fatalf("missing p2p receive scope: %v", captured.Addons.Scopes.Tenant)
 	}
 
 	wait := doFeishuLogin(t, s, resolver, admin.ID, http.MethodGet,
@@ -165,6 +169,7 @@ func TestFeishuQRLoginDeniedAndExpired(t *testing.T) {
 				func(context.Context, string, string) (string, string, error) {
 					return "", "", nil
 				},
+				func(context.Context, string, string, string) error { return nil },
 			)
 			defer restore()
 
@@ -219,6 +224,7 @@ func TestFeishuQRLoginSessionIsolationAndCancel(t *testing.T) {
 			return nil, errors.New("should have been canceled")
 		},
 		func(context.Context, string, string) (string, string, error) { return "", "", nil },
+		func(context.Context, string, string, string) error { return nil },
 	)
 	defer restore()
 	t.Cleanup(func() { close(block) })
@@ -266,6 +272,7 @@ func TestFeishuQRLoginLarkBrandSetsDomain(t *testing.T) {
 			return nil, context.Canceled
 		},
 		func(context.Context, string, string) (string, string, error) { return "", "", nil },
+		func(context.Context, string, string, string) error { return nil },
 	)
 	defer restore()
 
@@ -287,32 +294,98 @@ func TestFeishuRegistrationOptionsDefaults(t *testing.T) {
 	if opts.Source != "fastclaw" || !opts.CreateOnly {
 		t.Fatalf("opts = %+v", opts)
 	}
-	want := []string{"im:message", "im:message:send_as_bot", "im:resource"}
-	if got := opts.Addons.Scopes.Tenant; len(got) != len(want) {
-		t.Fatalf("scopes = %v", got)
-	}
-	for i, s := range want {
-		if opts.Addons.Scopes.Tenant[i] != s {
-			t.Fatalf("scopes = %v", opts.Addons.Scopes.Tenant)
+	for _, scope := range []string{
+		"im:message.p2p_msg:readonly",
+		"im:message.group_at_msg:readonly",
+		"im:message:send_as_bot",
+	} {
+		if !containsStr(opts.Addons.Scopes.Tenant, scope) {
+			t.Fatalf("missing scope %s in %v", scope, opts.Addons.Scopes.Tenant)
 		}
+	}
+}
+
+func TestFeishuQRLoginPersistsWithoutPoll(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, admin, _ := newAuthTestServer(t, ctx)
+	agentID := "agent-feishu-nopoll"
+	if err := s.dataStore.SaveAgent(ctx, &store.AgentRecord{
+		ID: agentID, UserID: admin.ID, Name: "No Poll",
+	}); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	release := make(chan struct{})
+	restore := swapFeishuLoginHooks(
+		func(_ context.Context, opts *registration.Options) (*registration.RegisterAppResult, error) {
+			opts.OnQRCode(&registration.QRCodeInfo{URL: "https://example.test/qr", ExpireIn: 60})
+			<-release
+			return &registration.RegisterAppResult{
+				ClientID:     "cli_nopoll",
+				ClientSecret: "secret-nopoll",
+				UserInfo:     &registration.UserInfo{OpenID: "ou_scanner"},
+			}, nil
+		},
+		func(context.Context, string, string) (string, string, error) {
+			return "No Poll Bot", "ou_bot", nil
+		},
+		func(context.Context, string, string, string) error { return nil },
+	)
+	defer restore()
+	t.Cleanup(func() { close(release) })
+
+	start := doFeishuLogin(t, s, resolver, admin.ID, http.MethodPost,
+		"/api/agents/"+agentID+"/channels/feishu/login", agentID, map[string]any{})
+	if start.Code != http.StatusOK {
+		t.Fatalf("start status = %d body = %s", start.Code, start.Body.String())
+	}
+	release <- struct{}{}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		ch, err := s.dataStore.LookupChannel(ctx, "feishu", "cli_nopoll")
+		if err == nil && ch != nil && ch.BotToken == "secret-nopoll" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("credentials were not persisted without a status poll, last err=%v ch=%v", err, ch)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
 func swapFeishuLoginHooks(
 	reg func(context.Context, *registration.Options) (*registration.RegisterAppResult, error),
 	validate func(context.Context, string, string) (string, string, error),
+	welcome func(context.Context, string, string, string) error,
 ) (restore func()) {
 	origReg := feishuRegisterApp
 	origVal := feishuValidateCredentials
+	origWelcome := feishuSendWelcome
 	origWait := feishuQRWait
 	feishuRegisterApp = reg
 	feishuValidateCredentials = validate
+	if welcome != nil {
+		feishuSendWelcome = welcome
+	} else {
+		feishuSendWelcome = func(context.Context, string, string, string) error { return nil }
+	}
 	feishuQRWait = 2 * time.Second
 	return func() {
 		feishuRegisterApp = origReg
 		feishuValidateCredentials = origVal
+		feishuSendWelcome = origWelcome
 		feishuQRWait = origWait
 	}
+}
+
+func containsStr(xs []string, want string) bool {
+	for _, s := range xs {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 func doFeishuLogin(t *testing.T, s *Server, resolver interface {

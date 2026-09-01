@@ -59,6 +59,10 @@ var feishuRegisterApp = registration.RegisterApp
 // Tests swap this so a confirmed QR session does not call Feishu.
 var feishuValidateCredentials = channels.FeishuValidateCredentials
 
+// feishuSendWelcome DMs the scanning user after persist. Tests swap
+// this so a confirmed session does not call Feishu.
+var feishuSendWelcome = channels.FeishuSendWelcome
+
 // feishuLoginSession tracks one in-flight QR scan. Memory-only — the
 // platform-side device_code expires in ~10 minutes anyway.
 type feishuLoginSession struct {
@@ -126,24 +130,6 @@ func (s *feishuLoginSession) snapshot() (status, url, errMsg, accountID, botName
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.status, s.url, s.errMsg, s.accountID, s.botName, s.expireIn, s.result
-}
-
-func (s *feishuLoginSession) takeConfirmed() *registration.RegisterAppResult {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.status != feishuLoginConfirmed || s.result == nil {
-		return nil
-	}
-	s.status = feishuLoginConsumed
-	return s.result
-}
-
-func (s *feishuLoginSession) undoConsume(result *registration.RegisterAppResult, persistErr error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.result = result
-	s.status = feishuLoginError
-	s.errMsg = persistErr.Error()
 }
 
 func (s *feishuLoginSession) markPersisted(appID, botName string) {
@@ -266,7 +252,21 @@ func (s *Server) handleStartAgentFeishuLogin(w http.ResponseWriter, r *http.Requ
 
 	go func() {
 		result, err := feishuRegisterApp(ctx, opts)
-		sess.complete(result, err)
+		if err == nil && result != nil && result.ClientID != "" && result.ClientSecret != "" {
+			// Persist here — do not wait for the dashboard poll. Closing
+			// the dialog after the phone confirms used to cancel the
+			// session and drop the credentials, leaving a live Feishu
+			// app with no long-conn listener.
+			if botName, _, pErr := s.finishFeishuQRLogin(sess, result); pErr != nil {
+				slog.Warn("feishu qr login persist failed", "app", result.ClientID, "error", pErr)
+				sess.complete(nil, pErr)
+			} else {
+				sess.complete(result, nil)
+				sess.markPersisted(result.ClientID, botName)
+			}
+		} else {
+			sess.complete(result, err)
+		}
 		select {
 		case done <- err:
 		default:
@@ -325,33 +325,11 @@ func (s *Server) handleAgentFeishuLoginStatus(w http.ResponseWriter, r *http.Req
 		})
 		return
 	case feishuLoginConfirmed:
-		result := sess.takeConfirmed()
-		if result == nil {
-			jsonResponse(w, http.StatusOK, map[string]any{
-				"status":    feishuLoginWait,
-				"connected": false,
-			})
-			return
-		}
-		botName, botOpenID, vErr := feishuValidateCredentials(r.Context(), result.ClientID, result.ClientSecret)
-		if vErr != nil {
-			slog.Warn("feishu qr login: credentials issued but bot info fetch failed",
-				"app", result.ClientID, "error", vErr)
-		}
-		if err := s.persistFeishuAccount(r, sess.userID, sess.scopeID, sess.agentID,
-			result.ClientID, result.ClientSecret, "", "", true); err != nil {
-			sess.undoConsume(result, err)
-			jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		sess.markPersisted(result.ClientID, botName)
+		// Persist runs in the register goroutine; keep the client waiting
+		// until markPersisted flips the session to consumed.
 		jsonResponse(w, http.StatusOK, map[string]any{
-			"status":    feishuLoginConfirmed,
-			"connected": true,
-			"accountId": result.ClientID,
-			"appId":     result.ClientID,
-			"botName":   botName,
-			"botOpenId": botOpenID,
+			"status":    feishuLoginWait,
+			"connected": false,
 		})
 		return
 	case feishuLoginDenied, feishuLoginExpired, feishuLoginError:
@@ -393,7 +371,37 @@ func (s *Server) handleCancelAgentFeishuLogin(w http.ResponseWriter, r *http.Req
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+func (s *Server) finishFeishuQRLogin(sess *feishuLoginSession, result *registration.RegisterAppResult) (botName, botOpenID string, err error) {
+	ctx := context.Background()
+	botName, botOpenID, vErr := feishuValidateCredentials(ctx, result.ClientID, result.ClientSecret)
+	if vErr != nil {
+		slog.Warn("feishu qr login: credentials issued but bot info fetch failed",
+			"app", result.ClientID, "error", vErr)
+	}
+	if err := s.persistFeishuAccount(ctx, sess.userID, sess.scopeID, sess.agentID,
+		result.ClientID, result.ClientSecret, "", "", true); err != nil {
+		return botName, botOpenID, err
+	}
+	if result.UserInfo != nil && result.UserInfo.OpenID != "" {
+		openID := result.UserInfo.OpenID
+		appID, secret := result.ClientID, result.ClientSecret
+		go func() {
+			if err := feishuSendWelcome(context.Background(), appID, secret, openID); err != nil {
+				slog.Warn("feishu welcome dm failed", "app", appID, "error", err)
+			}
+		}()
+	}
+	return botName, botOpenID, nil
+}
+
 func feishuRegistrationOptions(brand, appName string, onQR func(*registration.QRCodeInfo)) *registration.Options {
+	// Official receive-message event requires these scopes — generic
+	// im:message is not enough. See
+	// https://open.feishu.cn/document/server-docs/im-v1/message/events/receive
+	// and the Agent app configuration checklist:
+	// https://open.feishu.cn/document/mcp_open_tools/integrating-agents-with-feishu/overview
+	// Default preset stays on so the PersonalAgent template still
+	// enables WebSocket long-connection event delivery.
 	opts := &registration.Options{
 		Source:     "fastclaw",
 		CreateOnly: true,
@@ -404,8 +412,11 @@ func feishuRegistrationOptions(brand, appName string, onQR func(*registration.QR
 		Addons: &registration.AppAddons{
 			Scopes: registration.AppAddonsScopes{
 				Tenant: []string{
-					"im:message",
+					"im:message.p2p_msg:readonly",
+					"im:message.group_at_msg:readonly",
+					"im:message.group_at_msg.include_bot:readonly",
 					"im:message:send_as_bot",
+					"im:message:readonly",
 					"im:resource",
 				},
 			},
