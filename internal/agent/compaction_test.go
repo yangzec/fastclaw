@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -50,7 +51,7 @@ func TestCompactionDropsGoalContextFromSummary(t *testing.T) {
 	}
 
 	f := &fakeSummarizer{}
-	out, err := compressOlderMessages(msgs, f, "fake-model")
+	out, err := compressOlderMessages(context.Background(), msgs, f, "fake-model")
 	if err != nil {
 		t.Fatalf("compress: %v", err)
 	}
@@ -84,7 +85,7 @@ func TestCompactionPreservesContentWhenShortCircuits(t *testing.T) {
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello"},
 	}
-	out, err := compressOlderMessages(in, nil, "")
+	out, err := compressOlderMessages(context.Background(), in, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -195,7 +196,7 @@ func TestCompressOlderMessagesNeverStartsTailWithTool(t *testing.T) {
 	}
 
 	f := &fakeSummarizer{}
-	out, err := compressOlderMessages(msgs, f, "fake-model")
+	out, err := compressOlderMessages(context.Background(), msgs, f, "fake-model")
 	if err != nil {
 		t.Fatalf("compress: %v", err)
 	}
@@ -283,7 +284,7 @@ func TestLookupContextWindowPrefersProviderPrefix(t *testing.T) {
 
 func TestCompactMessagesRespectsThreshold(t *testing.T) {
 	msgs := []provider.Message{{Role: "user", Content: "hi"}}
-	res, err := CompactMessages(msgs, t.TempDir(), nil, "m", 1_000_000)
+	res, err := CompactMessages(context.Background(), msgs, t.TempDir(), nil, "m", 1_000_000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,11 +301,97 @@ func TestCompactMessagesRespectsThreshold(t *testing.T) {
 	}
 	// 2500 tokens before prune, ~1135 after. Stay above prune-after
 	// so we don't need an LLM summarizer, but below the raw size.
-	res, err = CompactMessages(long, t.TempDir(), nil, "m", 2000)
+	res, err = CompactMessages(context.Background(), long, t.TempDir(), nil, "m", 2000)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !res.Pruned {
 		t.Fatal("oversized history should compact when threshold is 2000")
+	}
+}
+
+type ctxProbe struct {
+	gotNil bool
+}
+
+func (c *ctxProbe) Chat(ctx context.Context, _ []provider.Message, _ []provider.Tool, _ string, _ int, _ float64) (*provider.Response, error) {
+	if ctx == nil {
+		c.gotNil = true
+		return nil, fmt.Errorf("net/http: nil Context")
+	}
+	return &provider.Response{Content: "ok"}, nil
+}
+
+func (c *ctxProbe) ChatStream(context.Context, []provider.Message, []provider.Tool, string, int, float64) (*provider.StreamReader, error) {
+	return nil, nil
+}
+
+func TestCompressOlderMessagesPassesNonNilContext(t *testing.T) {
+	var msgs []provider.Message
+	for i := 0; i < PruneTurnAge+3; i++ {
+		msgs = append(msgs,
+			provider.Message{Role: "user", Content: "u"},
+			provider.Message{Role: "assistant", Content: "a"},
+		)
+	}
+	p := &ctxProbe{}
+	if _, err := compressOlderMessages(context.Background(), msgs, p, "m"); err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	if p.gotNil {
+		t.Fatal("summarizer received a nil context — that is net/http: nil Context")
+	}
+}
+
+type failSummarizer struct{}
+
+func (failSummarizer) Chat(context.Context, []provider.Message, []provider.Tool, string, int, float64) (*provider.Response, error) {
+	return nil, fmt.Errorf("API error 400: invalid_request_error")
+}
+
+func (failSummarizer) ChatStream(context.Context, []provider.Message, []provider.Tool, string, int, float64) (*provider.StreamReader, error) {
+	return nil, nil
+}
+
+func TestCompactMessagesHardTrimsWhenSummarizeFails(t *testing.T) {
+	var msgs []provider.Message
+	blob := strings.Repeat("x", 8000)
+	for i := 0; i < 40; i++ {
+		msgs = append(msgs,
+			provider.Message{Role: "user", Content: blob},
+			provider.Message{Role: "assistant", Content: blob},
+		)
+	}
+	const threshold = 80000
+	if EstimateTokens(msgs) < threshold {
+		t.Fatalf("fixture too small: tokens=%d", EstimateTokens(msgs))
+	}
+	res, err := CompactMessages(context.Background(), msgs, t.TempDir(), failSummarizer{}, "m", threshold)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res == nil || !res.Pruned {
+		t.Fatal("expected a pruned result after failed compression")
+	}
+	if res.Method != compactMethodHardTrim {
+		t.Fatalf("method = %q, want %s", res.Method, compactMethodHardTrim)
+	}
+	if got := EstimateTokens(res.Messages); got >= threshold {
+		t.Fatalf("hard-trim left %d tokens (threshold %d)", got, threshold)
+	}
+	if notice := compactionNotice(res); !strings.Contains(notice, "/new") {
+		t.Fatalf("hard-trim notice should suggest /new, got %q", notice)
+	}
+}
+
+func TestCompactionNoticeSuggestsNew(t *testing.T) {
+	if compactionNotice(nil) != "" || compactionNotice(&CompactResult{}) != "" {
+		t.Fatal("empty result should have no notice")
+	}
+	for _, method := range []string{compactMethodPrune, compactMethodSummarize, compactMethodHardTrim} {
+		got := compactionNotice(&CompactResult{Pruned: true, Method: method})
+		if !strings.Contains(got, "/new") {
+			t.Errorf("method %s notice missing /new: %q", method, got)
+		}
 	}
 }

@@ -42,6 +42,15 @@ action on upgrade — read those notes before deploying.
 
 ### Fixed
 
+- **Oversized sessions kept getting HTTP 400 after compaction
+  failed.** Compression called the summarizer with a nil
+  `context.Context`, which surfaced as `net/http: nil Context`. The
+  fallback then kept the still-huge pruned history (~400k tokens) and
+  `llmRetry` retried the resulting `invalid_request_error` three
+  times. Compaction now passes a real context, caps summarizer input,
+  and hard-trims oldest turns until the history fits. After
+  auto-compaction the user is told to send `/new` if they want a
+  clean session. Non-transient 4xx LLM errors are no longer retried.
 - **Cron jobs fired ~hours late on Postgres when the server ran in a
   non-UTC timezone.** The `cron_jobs` time columns were declared
   `TIMESTAMP WITHOUT TIME ZONE`. A Go `time.Time` carrying a non-UTC
