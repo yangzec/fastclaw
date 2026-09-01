@@ -72,11 +72,14 @@ func TestFeishuQRLoginCreatesChannelOnConfirm(t *testing.T) {
 	if captured.AppPreset == nil || captured.AppPreset.Name != "{user}'s Office Bot" {
 		t.Fatalf("app preset = %+v", captured.AppPreset)
 	}
-	if got := captured.Addons.Events.Items.Tenant; len(got) != 1 || got[0] != "im.message.receive_v1" {
-		t.Fatalf("events = %v", got)
+	if !containsStr(captured.Addons.Events.Items.Tenant, "im.message.receive_v1") {
+		t.Fatalf("events = %v", captured.Addons.Events.Items.Tenant)
 	}
 	if !containsStr(captured.Addons.Scopes.Tenant, "im:message.p2p_msg:readonly") {
 		t.Fatalf("missing p2p receive scope: %v", captured.Addons.Scopes.Tenant)
+	}
+	if !containsStr(captured.Addons.Callbacks.Items, "card.action.trigger") {
+		t.Fatalf("missing card callback: %v", captured.Addons.Callbacks.Items)
 	}
 
 	wait := doFeishuLogin(t, s, resolver, admin.ID, http.MethodGet,
@@ -298,10 +301,29 @@ func TestFeishuRegistrationOptionsDefaults(t *testing.T) {
 		"im:message.p2p_msg:readonly",
 		"im:message.group_at_msg:readonly",
 		"im:message:send_as_bot",
+		"im:message:update",
+		"cardkit:card:write",
+		"application:bot.basic_info:read",
+		"im:chat.members:bot_access",
 	} {
 		if !containsStr(opts.Addons.Scopes.Tenant, scope) {
 			t.Fatalf("missing scope %s in %v", scope, opts.Addons.Scopes.Tenant)
 		}
+	}
+	if !containsStr(opts.Addons.Scopes.User, "offline_access") {
+		t.Fatalf("missing user scope offline_access: %v", opts.Addons.Scopes.User)
+	}
+	for _, ev := range []string{
+		"im.message.receive_v1",
+		"im.chat.member.bot.added_v1",
+		"drive.notice.comment_add_v1",
+	} {
+		if !containsStr(opts.Addons.Events.Items.Tenant, ev) {
+			t.Fatalf("missing event %s in %v", ev, opts.Addons.Events.Items.Tenant)
+		}
+	}
+	if !containsStr(opts.Addons.Callbacks.Items, "card.action.trigger") {
+		t.Fatalf("missing card callback: %v", opts.Addons.Callbacks.Items)
 	}
 }
 

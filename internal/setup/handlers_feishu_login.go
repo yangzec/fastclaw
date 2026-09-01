@@ -394,14 +394,62 @@ func (s *Server) finishFeishuQRLogin(sess *feishuLoginSession, result *registrat
 	return botName, botOpenID, nil
 }
 
+// Official Feishu "agent app configuration checklist" (智能体应用配置清单).
+// Addons are additive on the platform default template (Preset left nil).
+// We still declare the full list so the confirm page shows them even if
+// the base template is thinner than the published checklist.
+// https://open.feishu.cn/document/mcp_open_tools/integrating-agents-with-feishu/overview
+var (
+	feishuAgentTenantScopes = []string{
+		"contact:contact.base:readonly",
+		"im:chat:create",
+		"im:chat:read",
+		"im:chat:update",
+		"im:message.group_at_msg:readonly",
+		"im:message.p2p_msg:readonly",
+		"im:message.pins:read",
+		"im:message.pins:write_only",
+		"im:message.reactions:read",
+		"im:message.reactions:write_only",
+		"im:message:readonly",
+		"im:message:send_as_bot",
+		"im:message:send_multi_users",
+		"im:message:send_sys_msg",
+		"im:message:update",
+		"im:resource",
+		"im:message.group_at_msg.include_bot:readonly",
+		"application:bot.basic_info:read",
+		"application:application:self_manage",
+		"cardkit:card:write",
+		"cardkit:card:read",
+		"application:bot.menu:write",
+		"im:chat.members:bot_access",
+		"drive:drive.metadata:readonly",
+		"docs:document.comment:create",
+		"docs:document.comment:delete",
+		"docs:document.comment:read",
+		"docs:document.comment:update",
+		"docs:document.comment:write_only",
+		"docx:document:readonly",
+		"docx:document:write_only",
+		"wiki:node:read",
+		"docx:document.block:convert",
+		"application:app_slash_command:read",
+		"application:app_slash_command:write",
+	}
+	feishuAgentUserScopes   = []string{"offline_access"}
+	feishuAgentTenantEvents = []string{
+		"im.message.receive_v1",
+		"im.message.reaction.created_v1",
+		"im.message.reaction.deleted_v1",
+		"im.chat.member.bot.added_v1",
+		"im.chat.member.bot.deleted_v1",
+		"drive.notice.comment_add_v1",
+	}
+	feishuAgentCallbacks = []string{"card.action.trigger"}
+)
+
 func feishuRegistrationOptions(brand, appName string, onQR func(*registration.QRCodeInfo)) *registration.Options {
-	// Official receive-message event requires these scopes — generic
-	// im:message is not enough. See
-	// https://open.feishu.cn/document/server-docs/im-v1/message/events/receive
-	// and the Agent app configuration checklist:
-	// https://open.feishu.cn/document/mcp_open_tools/integrating-agents-with-feishu/overview
-	// Default preset stays on so the PersonalAgent template still
-	// enables WebSocket long-connection event delivery.
 	opts := &registration.Options{
 		Source:     "fastclaw",
 		CreateOnly: true,
@@ -411,19 +459,16 @@ func feishuRegistrationOptions(brand, appName string, onQR func(*registration.QR
 		},
 		Addons: &registration.AppAddons{
 			Scopes: registration.AppAddonsScopes{
-				Tenant: []string{
-					"im:message.p2p_msg:readonly",
-					"im:message.group_at_msg:readonly",
-					"im:message.group_at_msg.include_bot:readonly",
-					"im:message:send_as_bot",
-					"im:message:readonly",
-					"im:resource",
-				},
+				Tenant: append([]string(nil), feishuAgentTenantScopes...),
+				User:   append([]string(nil), feishuAgentUserScopes...),
 			},
 			Events: registration.AppAddonsEvents{
 				Items: registration.AppAddonsEventItems{
-					Tenant: []string{"im.message.receive_v1"},
+					Tenant: append([]string(nil), feishuAgentTenantEvents...),
 				},
+			},
+			Callbacks: registration.AppAddonsCallbacks{
+				Items: append([]string(nil), feishuAgentCallbacks...),
 			},
 		},
 		OnQRCode: onQR,

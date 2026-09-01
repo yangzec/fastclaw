@@ -16,11 +16,13 @@ action on upgrade — read those notes before deploying.
   FastClaw stores the issued App ID / Secret and starts long-connection
   inbound. Manual App ID + Secret paste remains as a fallback.
   See https://open.feishu.cn/document/mcp_open_tools/scan-to-create-an-app-in-one-click
-  The QR flow now requests the official receive-message scopes
-  (`im:message.p2p_msg:readonly`, `im:message.group_at_msg:readonly`)
-  required by `im.message.receive_v1`, persists credentials as soon as
-  the phone confirms (so closing the dialog cannot drop the binding),
-  and DMs the scanning user a welcome so the 1:1 chat is opened.
+  The QR flow now requests the official agent-app checklist
+  (receive/send, cards, chat membership, reactions, docs comments,
+  `offline_access`, `im.message.receive_v1` plus bot-added / reaction
+  / doc-comment events and `card.action.trigger`). Credentials persist
+  as soon as the phone confirms (so closing the dialog cannot drop the
+  binding), and FastClaw DMs the scanning user a welcome so the 1:1
+  chat is opened.
 
 ### Fixed
 

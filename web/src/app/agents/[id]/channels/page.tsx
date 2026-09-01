@@ -1351,8 +1351,8 @@ function ConnectFeishuDialog({
             </div>
             <p className="text-xs text-muted-foreground">
               If you already scanned earlier and got no replies, disconnect
-              this channel and scan again so the new receive scopes
-              (<code>im:message.p2p_msg:readonly</code>) take effect. Inbound
+              this channel and scan again so the official agent scopes
+              (receive/send, cards, chat membership) take effect. Inbound
               uses long-connection — no public URL needed.
             </p>
           </div>
