@@ -172,8 +172,8 @@ export default function AgentSkillsPage() {
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Skills</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Skills scoped to <strong>{agentName}</strong> — only this
-            agent sees them
+            Skills for <strong>{agentName}</strong> — this agent&apos;s
+            copies plus inherited global skills
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -201,11 +201,11 @@ export default function AgentSkillsPage() {
               <Sparkles className="h-7 w-7 text-primary" />
             </div>
             <p className="text-sm text-muted-foreground mb-1">
-              No agent-scoped skills yet
+              No skills yet
             </p>
             <p className="text-xs text-muted-foreground/60 mb-4 max-w-sm text-center">
-              Install a skill below — it lands in this agent's own skills
-              directory and only this agent sees it.
+              Install a skill for this agent, or add one under global
+              Skills — those show up here as inherited.
             </p>
             <Button variant="outline" size="sm" onClick={() => setInstallOpen(true)}>
               <Download className="h-4 w-4 mr-2" />
@@ -227,9 +227,20 @@ export default function AgentSkillsPage() {
                   </div>
                   <div>
                     <p className="text-sm font-medium">{skill.name}</p>
-                    <Badge variant="outline" className="mt-1 text-[10px]">
-                      {skill.type || "skill"}
-                    </Badge>
+                    <div className="mt-1 flex flex-wrap items-center gap-1">
+                      <Badge variant="outline" className="text-[10px]">
+                        {skill.type || "skill"}
+                      </Badge>
+                      {skill.source === "inherited" ? (
+                        <Badge variant="secondary" className="text-[10px]">
+                          Inherited
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-[10px]">
+                          This agent
+                        </Badge>
+                      )}
+                    </div>
                   </div>
                 </div>
                 <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -242,14 +253,16 @@ export default function AgentSkillsPage() {
                   >
                     <Settings className="h-3.5 w-3.5" />
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                    onClick={() => setDeleteTarget(skill.name)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
+                  {skill.source !== "inherited" && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                      onClick={() => setDeleteTarget(skill.name)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
                 </div>
               </div>
               <p className="text-sm text-muted-foreground line-clamp-2">
@@ -394,8 +407,8 @@ export default function AgentSkillsPage() {
             <AlertDialogTitle>Remove Skill</AlertDialogTitle>
             <AlertDialogDescription>
               Remove <strong>{deleteTarget}</strong> from{" "}
-              <strong>{agentName}</strong>? Other agents are
-              unaffected.
+              <strong>{agentName}</strong>? The global inherited copy
+              is left in place if one exists.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

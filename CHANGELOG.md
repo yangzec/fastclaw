@@ -7,6 +7,11 @@ action on upgrade — read those notes before deploying.
 
 ### Added
 
+- **Inherited global skills on the agent Skills page.** The agent
+  Skills tab lists global `~/.fastclaw/skills` entries as
+  **Inherited** (same merge the runtime uses). An agent-local copy
+  with the same name still wins and can be removed without deleting
+  the global skill.
 - **WeCom (企业微信) scan-to-create + long-connection.** New
   channel type `wecom` (does not reuse personal WeChat iLink).
   The dashboard opens Tencent's official `@wecom/wecom-aibot-sdk`

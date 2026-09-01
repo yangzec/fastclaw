@@ -67,9 +67,10 @@ func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleListAgentSkills lists skills installed into an agent's own home
-// directory (~/.fastclaw/agents/<id>/skills/). Loader "Layer 1" picks
-// these up at the highest precedence — they're exclusive to the agent.
+// handleListAgentSkills lists skills this agent can use: its own
+// home/skills copies (source=agent) plus global ~/.fastclaw/skills
+// that are not shadowed (source=inherited). Matches runtime merge
+// order — agent layer wins on name collision.
 func (s *Server) handleListAgentSkills(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	// Skill listing exposes per-skill env spec (which env keys the
@@ -93,12 +94,61 @@ func (s *Server) handleListAgentSkills(w http.ResponseWriter, r *http.Request) {
 				"agent", id, "error", err)
 		}
 	}
-	out := scanSkillsDir(skillsDir)
+	agentSkills := scanSkillsDir(skillsDir)
+
+	var globalSkills []map[string]any
+	if homeDir, herr := config.HomeDir(); herr == nil {
+		globalDir := filepath.Join(homeDir, "skills")
+		if s.workspaceStore != nil {
+			if err := skills.HydrateSkillsDown(
+				r.Context(), s.workspaceStore, skills.GlobalSkillOwner, globalDir,
+				agent.BundledSkillNames()...,
+			); err != nil {
+				slog.Warn("failed to hydrate global skills from object store", "error", err)
+			}
+		}
+		globalSkills = scanSkillsDir(globalDir)
+	}
+
+	out := mergeAgentSkillList(agentSkills, globalSkills)
 	if out == nil {
 		jsonResponse(w, http.StatusOK, []any{})
 		return
 	}
 	jsonResponse(w, http.StatusOK, out)
+}
+
+// mergeAgentSkillList tags agent-local skills as source=agent and
+// appends global skills that the agent did not override as
+// source=inherited. Nil inputs become empty.
+func mergeAgentSkillList(agentSkills, globalSkills []map[string]any) []map[string]any {
+	seen := make(map[string]bool, len(agentSkills))
+	out := make([]map[string]any, 0, len(agentSkills)+len(globalSkills))
+	for _, e := range agentSkills {
+		if e == nil {
+			continue
+		}
+		e["source"] = "agent"
+		if name, _ := e["name"].(string); name != "" {
+			seen[name] = true
+		}
+		out = append(out, e)
+	}
+	for _, e := range globalSkills {
+		if e == nil {
+			continue
+		}
+		name, _ := e["name"].(string)
+		if name == "" || seen[name] {
+			continue
+		}
+		e["source"] = "inherited"
+		out = append(out, e)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // scanSkillsDir reads every SKILL.md under dir and returns the list of
