@@ -1885,6 +1885,15 @@ func llmRetry(ctx context.Context, label string, fn func(context.Context) (*prov
 			return nil, err
 		}
 
+		// 4xx (except 429) means the request is illegal or unauthorized.
+		// Retrying a 400 invalid_request_error three times is how an
+		// oversized-context session burned ~30s and still failed.
+		if !isTransientLLMError(err) {
+			slog.Error("LLM call failed with non-retryable error",
+				"agent", label, "attempt", attempt, "error", err)
+			return nil, err
+		}
+
 		if attempt < llmRetryAttempts {
 			backoff := time.Duration(attempt*attempt) * time.Second // 1s, 4s, 9s
 			slog.Warn("LLM call failed, retrying",
@@ -1900,6 +1909,50 @@ func llmRetry(ctx context.Context, label string, fn func(context.Context) (*prov
 	slog.Error("LLM call failed after all retries",
 		"agent", label, "attempts", llmRetryAttempts, "error", lastErr)
 	return nil, lastErr
+}
+
+// isTransientLLMError reports whether an LLM error is worth retrying.
+// Network / unknown errors and 429 / 5xx are transient. Other 4xx
+// (400 invalid request, 401/403 auth, 404 model, 402 billing) are not.
+func isTransientLLMError(err error) bool {
+	if err == nil {
+		return false
+	}
+	status := llmAPIErrorStatus(err)
+	if status == 0 {
+		return true
+	}
+	if status == 429 || status >= 500 {
+		return true
+	}
+	return false
+}
+
+func llmAPIErrorStatus(err error) int {
+	if err == nil {
+		return 0
+	}
+	const prefix = "API error "
+	msg := err.Error()
+	idx := strings.Index(msg, prefix)
+	if idx < 0 {
+		return 0
+	}
+	rest := msg[idx+len(prefix):]
+	n := 0
+	digits := 0
+	for digits < len(rest) && digits < 3 {
+		c := rest[digits]
+		if c < '0' || c > '9' {
+			break
+		}
+		n = n*10 + int(c-'0')
+		digits++
+	}
+	if digits != 3 || n < 100 || n > 599 {
+		return 0
+	}
+	return n
 }
 
 // sameToolFailStreakLimit and softDeadlineFraction gate the two stall-
@@ -2334,18 +2387,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	userMsg := buildUserMessage(msg)
 	sess.Append(userMsg)
 
-	// Context compaction: check if session messages are too large
-	sessionMsgs := sess.GetMessages()
-	compactResult, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model, a.compactTokenThreshold(chatterUID))
-	if err != nil {
-		slog.Warn("compaction error", "agent", a.name, "error", err)
-	}
-	if compactResult != nil && compactResult.Pruned {
-		// Replace session messages with compacted version
-		sess.ReplaceMessages(compactResult.Messages)
-		sessionMsgs = compactResult.Messages
-		slog.Info("context compacted", "agent", a.name, "log_file", compactResult.LogFile)
-	}
+	sessionMsgs, compactNotice, compactHint := a.applySessionCompaction(ctx, sess, chatterUID)
 
 	messages := make([]provider.Message, 0, len(sessionMsgs)+4)
 	messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
@@ -2367,6 +2409,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		messages = append(messages, provider.Message{Role: "system", Content: reminder})
 	}
 	messages = append(messages, withConversationGapContext(sessionMsgs)...)
+	if compactHint != "" {
+		messages = append(messages, provider.Message{Role: "system", Content: compactHint})
+	}
 
 	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 
@@ -2411,6 +2456,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// channels.SplitMessageMarker at return time; manager.dispatchOutbound
 	// splits on it (AllowSplit=true) or collapses to newlines otherwise.
 	var replyParts []string
+	if compactNotice != "" {
+		replyParts = append(replyParts, compactNotice)
+	}
 
 	// ReAct loop
 	for i := 0; i < a.maxToolIterations; i++ {
@@ -2845,6 +2893,31 @@ func joinReplyParts(parts []string) string {
 	return strings.Join(out, channels.SplitMessageMarker)
 }
 
+// applySessionCompaction runs automatic context compaction after the
+// inbound user message is stored. On a hit it replaces the working
+// set, emits a user-visible /new hint, and returns a model hint so
+// this turn does not pretend the dropped history is still there.
+func (a *Agent) applySessionCompaction(ctx context.Context, sess *session.Session, chatterUID string) (msgs []provider.Message, notice, modelHint string) {
+	sessionMsgs := sess.GetMessages()
+	compactResult, err := CompactMessages(ctx, sessionMsgs, a.homePath, a.provider, a.model, a.compactTokenThreshold(chatterUID))
+	if err != nil {
+		slog.Warn("compaction error", "agent", a.name, "error", err)
+	}
+	if compactResult == nil || !compactResult.Pruned {
+		return sessionMsgs, "", ""
+	}
+	sess.ReplaceMessages(compactResult.Messages)
+	notice = compactionNotice(compactResult)
+	if notice != "" {
+		emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{"content": notice}})
+	}
+	slog.Info("context compacted",
+		"agent", a.name,
+		"method", compactResult.Method,
+		"log_file", compactResult.LogFile)
+	return compactResult.Messages, notice, compactionModelHint(compactResult.Method)
+}
+
 // isFailedToolResult is the agent loop's heuristic for "this tool
 // returned nothing useful". Used both to populate the per-turn failure
 // map (so a later identical call can be refused up front) and to drive
@@ -3134,15 +3207,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	userMsg := buildUserMessage(msg)
 	sess.Append(userMsg)
 
-	sessionMsgs := sess.GetMessages()
-	compactResult, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model, a.compactTokenThreshold(chatterUID))
-	if err != nil {
-		slog.Warn("compaction error", "agent", a.name, "error", err)
-	}
-	if compactResult != nil && compactResult.Pruned {
-		sess.ReplaceMessages(compactResult.Messages)
-		sessionMsgs = compactResult.Messages
-	}
+	sessionMsgs, _, compactHint := a.applySessionCompaction(ctx, sess, chatterUID)
 
 	messages := make([]provider.Message, 0, len(sessionMsgs)+4)
 	messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
@@ -3159,6 +3224,9 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		messages = append(messages, provider.Message{Role: "system", Content: reminder})
 	}
 	messages = append(messages, withConversationGapContext(sessionMsgs)...)
+	if compactHint != "" {
+		messages = append(messages, provider.Message{Role: "system", Content: compactHint})
+	}
 
 	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 
