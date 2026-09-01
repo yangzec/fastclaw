@@ -644,6 +644,8 @@ export function ChatScreen() {
   }, []);
   const [sessionTitle, setSessionTitle] = useState<string>("");
   const [attachments, setAttachments] = useState<File[]>([]);
+  const [attachDragOver, setAttachDragOver] = useState(false);
+  const attachDragDepthRef = useRef(0);
   // Lightbox for clicking either an attachment thumbnail (compose box)
   // or an inline image in a sent message bubble. `null` = closed.
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -1231,6 +1233,11 @@ export function ChatScreen() {
   const canSendComposer =
     canUseComposer && (!isReadOnlyView || inputIsReadOnlySafeSlashCommand);
   const canAttach = !!selectedAgent && !sending && !isReadOnlyView;
+  useEffect(() => {
+    if (canAttach) return;
+    attachDragDepthRef.current = 0;
+    setAttachDragOver(false);
+  }, [canAttach]);
 
   const handleRenameTitle = useCallback(
     async (next: string) => {
@@ -2069,6 +2076,14 @@ export function ChatScreen() {
     }
   }, [input, selectedAgent, sending, sessionId, urlProjectId, handleSend]);
 
+  const addAttachmentFiles = useCallback((list: FileList | File[] | null) => {
+    if (!list) return;
+    const newFiles = Array.from(list);
+    if (newFiles.length === 0) return;
+    setAttachments((prev) => [...prev, ...newFiles]);
+    setSlashOpen(false);
+  }, []);
+
   const handleFilePick = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const picked = e.target.files;
     if (!picked || picked.length === 0) return;
@@ -2080,8 +2095,39 @@ export function ChatScreen() {
     // ends up empty even though the user picked a file.
     const newFiles = Array.from(picked);
     e.target.value = "";
-    setAttachments((prev) => [...prev, ...newFiles]);
+    addAttachmentFiles(newFiles);
+  }, [addAttachmentFiles]);
+
+  const isFileDrag = (e: React.DragEvent) =>
+    Array.from(e.dataTransfer.types).includes("Files");
+
+  const handleAttachDragEnter = useCallback((e: React.DragEvent) => {
+    if (!canAttach || !isFileDrag(e)) return;
+    e.preventDefault();
+    attachDragDepthRef.current += 1;
+    setAttachDragOver(true);
+  }, [canAttach]);
+
+  const handleAttachDragOver = useCallback((e: React.DragEvent) => {
+    if (!canAttach || !isFileDrag(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  }, [canAttach]);
+
+  const handleAttachDragLeave = useCallback((e: React.DragEvent) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    attachDragDepthRef.current = Math.max(0, attachDragDepthRef.current - 1);
+    if (attachDragDepthRef.current === 0) setAttachDragOver(false);
   }, []);
+
+  const handleAttachDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    attachDragDepthRef.current = 0;
+    setAttachDragOver(false);
+    if (!canAttach) return;
+    addAttachmentFiles(e.dataTransfer.files);
+  }, [canAttach, addAttachmentFiles]);
 
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     if (!canAttach) return;
@@ -2106,9 +2152,8 @@ export function ChatScreen() {
     const pastedFiles = clipboardImages.map((file, index) =>
       namePastedImage(file, pasteId, index),
     );
-    setAttachments((prev) => [...prev, ...pastedFiles]);
-    setSlashOpen(false);
-  }, [canAttach]);
+    addAttachmentFiles(pastedFiles);
+  }, [addAttachmentFiles, canAttach]);
 
   const removeAttachment = useCallback((idx: number) => {
     setAttachments((prev) => prev.filter((_, i) => i !== idx));
@@ -2693,10 +2738,22 @@ export function ChatScreen() {
             )}
             <div
               className={
-                "border border-border bg-card focus-within:ring-2 focus-within:ring-ring/20 transition-shadow " +
+                "relative border bg-card focus-within:ring-2 focus-within:ring-ring/20 transition-shadow " +
+                (attachDragOver
+                  ? "border-primary ring-2 ring-primary/20 "
+                  : "border-border ") +
                 (isEmpty ? "rounded-2xl px-5 pt-4 pb-3" : "rounded-xl px-4 py-3")
               }
+              onDragEnter={handleAttachDragEnter}
+              onDragOver={handleAttachDragOver}
+              onDragLeave={handleAttachDragLeave}
+              onDrop={handleAttachDrop}
             >
+              {attachDragOver && canAttach && (
+                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[inherit] border-2 border-dashed border-primary bg-primary/10">
+                  <p className="text-sm font-medium text-foreground">Drop files to attach</p>
+                </div>
+              )}
               {attachments.length > 0 && (
                 <div className="flex flex-wrap gap-2 mb-2 pb-2 border-b border-border/60">
                   {attachments.map((f, i) => {
