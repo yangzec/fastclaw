@@ -47,10 +47,10 @@ export function SidebarLayout({ children }: { children: React.ReactNode }) {
     return (
       <PageHeaderContext.Provider value={headerCtx}>
         <div className="flex min-h-svh flex-col">
-          <header className="sticky top-0 z-20 flex h-12 items-center gap-2 bg-background/80 px-3 backdrop-blur">
+          <header className="sticky top-0 z-20 flex h-[calc(3rem+env(safe-area-inset-top,0px))] shrink-0 items-center gap-2 bg-background/80 px-3 pt-[env(safe-area-inset-top,0px)] backdrop-blur">
             {headerNode}
           </header>
-          <div className="flex-1">{children}</div>
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{children}</div>
         </div>
       </PageHeaderContext.Provider>
     );
@@ -61,11 +61,11 @@ export function SidebarLayout({ children }: { children: React.ReactNode }) {
       <SidebarProvider>
         <AppSidebar />
         <SidebarInset>
-          <header className="sticky top-0 z-20 flex h-12 items-center gap-2 bg-background/80 px-3 backdrop-blur">
+          <header className="sticky top-0 z-20 flex h-[calc(3rem+env(safe-area-inset-top,0px))] shrink-0 items-center gap-2 bg-background/80 px-3 pt-[env(safe-area-inset-top,0px)] backdrop-blur">
             <SidebarTrigger className="-ml-1" />
             {headerNode}
           </header>
-          <div className="flex-1">{children}</div>
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{children}</div>
         </SidebarInset>
       </SidebarProvider>
     </PageHeaderContext.Provider>

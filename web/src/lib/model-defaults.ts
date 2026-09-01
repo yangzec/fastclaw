@@ -1,0 +1,36 @@
+// Official (or vendor-documented) input context sizes for the model IDs
+// FastClaw ships as provider presets. Keep in sync with
+// internal/config/known_context.go.
+
+export const DEFAULT_CONTEXT_WINDOW = 200000;
+
+const KNOWN_CONTEXT_WINDOWS: Record<string, number> = {
+  "gpt-5.5": 1_050_000,
+  "gpt-5.5-pro": 1_050_000,
+  "claude-opus-4-7": 1_000_000,
+  "claude-sonnet-4-7": 1_000_000,
+  "claude-haiku-4-5": 200_000,
+  "claude-haiku-4-5-20251001": 200_000,
+  "deepseek-v4-pro": 1_000_000,
+  "deepseek-v4-flash": 1_000_000,
+  "gemini-3-flash-preview": 1_048_576,
+  "google/gemini-3-flash-preview": 1_048_576,
+  "qwen3.5:35b-a3b-int4": 262_144,
+  "qwen3.5:35b-a3b": 262_144,
+};
+
+export function knownContextWindow(modelId: string): number {
+  const id = modelId.trim();
+  if (!id) return 0;
+  if (KNOWN_CONTEXT_WINDOWS[id]) return KNOWN_CONTEXT_WINDOWS[id];
+  const slash = id.indexOf("/");
+  if (slash >= 0) {
+    const rest = id.slice(slash + 1);
+    if (KNOWN_CONTEXT_WINDOWS[rest]) return KNOWN_CONTEXT_WINDOWS[rest];
+  }
+  return 0;
+}
+
+export function presetContextWindow(modelId: string): number {
+  return knownContextWindow(modelId) || DEFAULT_CONTEXT_WINDOW;
+}

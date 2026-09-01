@@ -29,9 +29,9 @@ import (
 // end-user. There is intentionally no fine-grained scheme — anything
 // more complex lives in the apikey ACL layer.
 const (
-	RoleSuperAdmin = "super_admin"
-	RoleUser       = "user"
-	RoleAppUser    = "app_user"
+	RoleSuperAdmin  = "super_admin"
+	RoleUser        = "user"
+	RoleAppUser     = "app_user"
 	RoleChannelUser = "channel_user"
 )
 
@@ -138,6 +138,9 @@ func (a *Accounts) Create(ctx context.Context, in CreateInput) (*Account, error)
 	email := strings.ToLower(strings.TrimSpace(in.Email))
 	if username == "" || email == "" || in.Password == "" {
 		return nil, errors.New("users.Create: username, email, password are required")
+	}
+	if err := CheckPasswordLength(in.Password); err != nil {
+		return nil, err
 	}
 	role := in.Role
 	if role == "" {
@@ -315,8 +318,8 @@ func (a *Accounts) VerifyPassword(ctx context.Context, id, password string) erro
 // SetPassword rotates an account's password. Caller is responsible for
 // permission checks (self vs. super_admin).
 func (a *Accounts) SetPassword(ctx context.Context, id, newPassword string) error {
-	if newPassword == "" {
-		return errors.New("users.SetPassword: empty password")
+	if err := CheckPasswordLength(newPassword); err != nil {
+		return err
 	}
 	rec, err := a.store.GetUser(ctx, id)
 	if err != nil {

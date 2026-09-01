@@ -5,6 +5,42 @@ import (
 	"testing"
 )
 
+func TestWorkspaceRelUnifiesSandboxAndRelativePaths(t *testing.T) {
+	cases := []struct {
+		path    string
+		wantRel string
+		wantOK  bool
+	}{
+		{"report.md", "report.md", true},
+		{"charts/plot.svg", "charts/plot.svg", true},
+		{"/workspace/report.md", "report.md", true},
+		{"/workspace/charts/plot.svg", "charts/plot.svg", true},
+		{"/workspace", ".", true},
+		{"/workspace/", ".", true},
+		{"/tmp/draw.py", "", false},
+		{"SOUL.md", "", false},
+		{"/workspace/SOUL.md", "", false},
+		{"skills/foo/SKILL.md", "", false},
+		{"", ".", true},
+		{".", ".", true},
+	}
+	for _, tc := range cases {
+		got, ok := workspaceRel(tc.path)
+		if ok != tc.wantOK || got != tc.wantRel {
+			t.Errorf("workspaceRel(%q) = (%q, %v), want (%q, %v)", tc.path, got, ok, tc.wantRel, tc.wantOK)
+		}
+		if r := (&Registry{}).isWorkspacePath(tc.path); r != tc.wantOK {
+			t.Errorf("isWorkspacePath(%q) = %v, want %v", tc.path, r, tc.wantOK)
+		}
+	}
+	if got := workspaceListPrefix("/workspace"); got != "" {
+		t.Errorf("workspaceListPrefix(/workspace) = %q, want empty", got)
+	}
+	if got := workspaceListPrefix("/workspace/docs"); got != "docs" {
+		t.Errorf("workspaceListPrefix(/workspace/docs) = %q, want docs", got)
+	}
+}
+
 // TestApplyEdit pins the contract that edit_file's three backends share:
 // a single match replaces in place, the empty / equal / not-found / multi-
 // match cases each error with a fragment the LLM can act on, and

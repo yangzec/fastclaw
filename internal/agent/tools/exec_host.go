@@ -43,9 +43,12 @@ const hostCommandWaitDelay = 5 * time.Second
 // killed` reads like a crash and sends the model looking for a bug in
 // its command; "timed out after 120s" tells it to narrow the command or
 // raise the timeout, which is the actual remedy.
-func runHostCommand(execCtx context.Context, command string, env []string, timeout time.Duration) (string, error) {
+func runHostCommand(execCtx context.Context, command string, env []string, timeout time.Duration, dir string) (string, error) {
 	cmd := exec.CommandContext(execCtx, "sh", "-c", command)
 	cmd.Env = env
+	if dir != "" {
+		cmd.Dir = dir
+	}
 
 	setProcessGroup(cmd)
 	cmd.Cancel = func() error {

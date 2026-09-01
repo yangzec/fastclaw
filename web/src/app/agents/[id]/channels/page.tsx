@@ -42,6 +42,9 @@ import {
   connectAgentSlack,
   connectAgentLINE,
   connectAgentFeishu,
+  startAgentFeishuLogin,
+  pollAgentFeishuLoginStatus,
+  cancelAgentFeishuLogin,
   startAgentWeChatLogin,
   pollAgentWeChatLoginStatus,
   disconnectAgentChannel,
@@ -91,7 +94,7 @@ const CATALOG: { type: string; label: string; description: string; available: bo
   {
     type: "feishu",
     label: "Feishu",
-    description: "Connect a Feishu custom-app bot via webhook (App ID + App Secret).",
+    description: "Scan a QR code in Feishu / Lark to create a bot automatically, or paste an existing App ID + Secret.",
     available: true,
   },
 ];
@@ -1142,13 +1145,12 @@ function ConnectWeChatDialog({
   );
 }
 
-// Feishu / Feishu connect dialog. Two-step UX:
-//   1. User pastes App ID + App Secret + Verification Token, we validate
-//      via /tenant_access_token + /bot/v3/info.
-//   2. On success, we surface the webhook URL — user must paste it
-//      into the Feishu Developer Console under "Event Subscriptions →
-//      Request URL" and re-trigger Feishu's URL verification handshake
-//      from there before the bot starts receiving messages.
+// Feishu / Lark connect dialog. Default path is the official
+// scan-to-create flow (OAuth device grant): we render a verification
+// URL as a QR code, the user confirms in the Feishu/Lark app, and
+// FastClaw receives App ID + Secret without anyone visiting the
+// developer console. Manual paste remains as a fallback for existing
+// custom apps or when the phone app does not react to the QR.
 function ConnectFeishuDialog({
   open,
   onOpenChange,
@@ -1160,6 +1162,20 @@ function ConnectFeishuDialog({
   agentId: string;
   onConnected: () => void;
 }) {
+  type Mode = "qr" | "manual";
+  type Brand = "feishu" | "lark";
+  type QrStatus = "wait" | "confirmed" | "expired" | "denied" | "error" | "";
+
+  const [mode, setMode] = useState<Mode>("qr");
+  const [brand, setBrand] = useState<Brand>("feishu");
+  const [qrUrl, setQrUrl] = useState("");
+  const [qrStatus, setQrStatus] = useState<QrStatus>("");
+  const [qrLoading, setQrLoading] = useState(false);
+  const [qrConnected, setQrConnected] = useState<{
+    botName: string;
+    accountId: string;
+  } | null>(null);
+
   const [appId, setAppId] = useState("");
   const [appSecret, setAppSecret] = useState("");
   const [verificationToken, setVerificationToken] = useState("");
@@ -1173,8 +1189,36 @@ function ConnectFeishuDialog({
     useLongConn: boolean;
   } | null>(null);
 
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sessionRef = useRef("");
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  const cancelSession = useCallback(() => {
+    const sid = sessionRef.current;
+    if (sid && agentId) {
+      void cancelAgentFeishuLogin(agentId, sid);
+    }
+    sessionRef.current = "";
+  }, [agentId]);
+
+  useEffect(() => () => stopPolling(), [stopPolling]);
+
   useEffect(() => {
     if (!open) {
+      stopPolling();
+      cancelSession();
+      setMode("qr");
+      setBrand("feishu");
+      setQrUrl("");
+      setQrStatus("");
+      setQrLoading(false);
+      setQrConnected(null);
       setAppId("");
       setAppSecret("");
       setVerificationToken("");
@@ -1184,9 +1228,73 @@ function ConnectFeishuDialog({
       setSubmitting(false);
       setConnected(null);
     }
-  }, [open]);
+  }, [open, stopPolling, cancelSession]);
 
-  const submit = async () => {
+  const startQr = useCallback(
+    async (nextBrand: Brand) => {
+      if (!agentId) return;
+      setQrLoading(true);
+      setError("");
+      setQrStatus("");
+      setQrConnected(null);
+      setQrUrl("");
+      stopPolling();
+      cancelSession();
+      const res = await startAgentFeishuLogin(agentId, nextBrand);
+      setQrLoading(false);
+      if (res.error || !res.sessionId || !res.url) {
+        setError(res.error || "Failed to start Feishu QR login");
+        return;
+      }
+      sessionRef.current = res.sessionId;
+      setQrUrl(res.url);
+      setQrStatus("wait");
+      pollRef.current = setInterval(async () => {
+        const s = await pollAgentFeishuLoginStatus(agentId, res.sessionId!);
+        if (s.error && !s.status) {
+          setError(s.error);
+          return;
+        }
+        if (s.status) setQrStatus(s.status as QrStatus);
+        if (s.error && s.status && s.status !== "wait") setError(s.error);
+        else if (s.status === "wait") setError("");
+        if (s.connected) {
+          stopPolling();
+          sessionRef.current = "";
+          setQrConnected({
+            botName: s.botName || "",
+            accountId: s.accountId || s.appId || "",
+          });
+          onConnected();
+        }
+        if (s.status === "expired" || s.status === "denied" || s.status === "error") {
+          stopPolling();
+          sessionRef.current = "";
+        }
+      }, 2000);
+    },
+    [agentId, onConnected, stopPolling, cancelSession],
+  );
+
+  useEffect(() => {
+    if (open && mode === "qr" && !qrUrl && !qrLoading && !error && !qrConnected) {
+      void startQr(brand);
+    }
+  }, [open, mode, qrUrl, qrLoading, error, qrConnected, brand, startQr]);
+
+  const switchMode = (next: Mode) => {
+    if (next === mode) return;
+    if (next === "manual") {
+      stopPolling();
+      cancelSession();
+      setQrUrl("");
+      setQrStatus("");
+      setError("");
+    }
+    setMode(next);
+  };
+
+  const submitManual = async () => {
     if (!appId.trim() || !appSecret.trim() || !agentId) return;
     setSubmitting(true);
     setError("");
@@ -1211,35 +1319,44 @@ function ConnectFeishuDialog({
     onConnected();
   };
 
+  const done = !!qrConnected || !!connected;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <img src="/channels/feishu.png" alt="Feishu" className="h-5 w-5 object-contain" />
-            Connect Feishu app
+            Connect Feishu / Lark
           </DialogTitle>
           <DialogDescription>
-            Create a custom app at{" "}
-            <a
-              href="https://open.feishu.cn"
-              target="_blank"
-              rel="noreferrer"
-              className="underline"
-            >
-              open.feishu.cn
-            </a>
-            . Enable the bot capability, request{" "}
-            <code>im:message</code> + <code>im:message:send_as_bot</code>{" "}
-            scopes, then copy the App ID + App Secret from{" "}
-            <strong>Credentials & Basic Info</strong>. Long-connection mode
-            (recommended) needs nothing else; webhook mode also needs the
-            Verification Token / Encrypt Key from{" "}
-            <strong>Event Subscriptions</strong>.
+            {mode === "qr"
+              ? "Scan with the Feishu or Lark phone app. Official one-click create will register a bot and return credentials — no developer-console setup."
+              : "Paste credentials from an existing custom app at open.feishu.cn or open.larksuite.com."}
           </DialogDescription>
         </DialogHeader>
 
-        {connected ? (
+        {qrConnected ? (
+          <div className="space-y-3 py-2">
+            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-2">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                <span className="text-sm font-medium">Bot created and connected</span>
+              </div>
+              <p className="text-sm">
+                Live as{" "}
+                <strong>{qrConnected.botName || qrConnected.accountId || "(unnamed)"}</strong>.
+                FastClaw DMs you a welcome on Feishu — reply there, or @ the bot in a group.
+              </p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              If you already scanned earlier and got no replies, disconnect
+              this channel and scan again so the official agent scopes
+              (receive/send, cards, chat membership) take effect. Inbound
+              uses long-connection — no public URL needed.
+            </p>
+          </div>
+        ) : connected ? (
           <div className="space-y-3 py-2">
             <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-2">
               <div className="flex items-center gap-2">
@@ -1286,6 +1403,76 @@ function ConnectFeishuDialog({
               </div>
             )}
           </div>
+        ) : mode === "qr" ? (
+          <div className="flex flex-col items-center gap-4 py-2">
+            <div className="flex items-center gap-1 rounded-md border p-0.5 text-xs">
+              <button
+                type="button"
+                className={`rounded px-2 py-1 ${brand === "feishu" ? "bg-muted font-medium" : "text-muted-foreground"}`}
+                onClick={() => {
+                  if (brand === "feishu") return;
+                  setBrand("feishu");
+                  void startQr("feishu");
+                }}
+              >
+                Feishu
+              </button>
+              <button
+                type="button"
+                className={`rounded px-2 py-1 ${brand === "lark" ? "bg-muted font-medium" : "text-muted-foreground"}`}
+                onClick={() => {
+                  if (brand === "lark") return;
+                  setBrand("lark");
+                  void startQr("lark");
+                }}
+              >
+                Lark
+              </button>
+            </div>
+            {qrLoading ? (
+              <div className="flex h-56 w-56 items-center justify-center">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : qrUrl ? (
+              <div className="rounded-lg border bg-white p-4">
+                <QRCodeSVG value={qrUrl} size={224} level="M" />
+              </div>
+            ) : (
+              <div className="flex h-56 w-56 items-center justify-center text-sm text-muted-foreground">
+                <QrCode className="h-8 w-8 opacity-50" />
+              </div>
+            )}
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              {qrStatus === "wait" && <>Waiting for scan…</>}
+              {qrStatus === "expired" && (
+                <span className="text-destructive">QR code expired.</span>
+              )}
+              {qrStatus === "denied" && (
+                <span className="text-destructive">Authorization denied.</span>
+              )}
+              {qrStatus === "error" && (
+                <span className="text-destructive">Registration failed.</span>
+              )}
+            </div>
+            {qrUrl && (
+              <a
+                href={qrUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs underline text-muted-foreground"
+              >
+                Can&apos;t scan? Open this link in Feishu / Lark
+              </a>
+            )}
+            <button
+              type="button"
+              className="text-xs underline text-muted-foreground"
+              onClick={() => switchMode("manual")}
+            >
+              Already have an app? Paste credentials
+            </button>
+            {error && <p className="text-xs text-destructive text-center">{error}</p>}
+          </div>
         ) : (
           <div className="space-y-3 py-2">
             <div className="flex items-start justify-between gap-3 rounded-lg border bg-muted/30 p-3">
@@ -1328,45 +1515,66 @@ function ConnectFeishuDialog({
             </div>
             {!useLongConn && (
               <>
-            <div className="space-y-1.5">
-              <Label htmlFor="feishu-verification-token">Verification Token</Label>
-              <Input
-                id="feishu-verification-token"
-                value={verificationToken}
-                onChange={(e) => setVerificationToken(e.target.value)}
-                placeholder="from Event Subscriptions tab"
-                className="font-mono text-sm"
-              />
-              <p className="text-xs text-muted-foreground">
-                Optional but recommended — fastclaw rejects webhook payloads
-                whose <code>header.token</code> doesn&apos;t match.
-              </p>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="feishu-encrypt-key">Encrypt Key</Label>
-              <Input
-                id="feishu-encrypt-key"
-                value={encryptKey}
-                onChange={(e) => setEncryptKey(e.target.value)}
-                placeholder="leave empty if 加密策略 is not configured"
-                type="password"
-                className="font-mono text-sm"
-              />
-              <p className="text-xs text-muted-foreground">
-                Only required if you set an Encrypt Key under{" "}
-                <strong>加密策略</strong> in the Feishu console. Empty = expect
-                plaintext webhook bodies.
-              </p>
-            </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="feishu-verification-token">Verification Token</Label>
+                  <Input
+                    id="feishu-verification-token"
+                    value={verificationToken}
+                    onChange={(e) => setVerificationToken(e.target.value)}
+                    placeholder="from Event Subscriptions tab"
+                    className="font-mono text-sm"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Optional but recommended — fastclaw rejects webhook payloads
+                    whose <code>header.token</code> doesn&apos;t match.
+                  </p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="feishu-encrypt-key">Encrypt Key</Label>
+                  <Input
+                    id="feishu-encrypt-key"
+                    value={encryptKey}
+                    onChange={(e) => setEncryptKey(e.target.value)}
+                    placeholder="leave empty if 加密策略 is not configured"
+                    type="password"
+                    className="font-mono text-sm"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Only required if you set an Encrypt Key under{" "}
+                    <strong>加密策略</strong> in the Feishu console. Empty = expect
+                    plaintext webhook bodies.
+                  </p>
+                </div>
               </>
             )}
+            <button
+              type="button"
+              className="text-xs underline text-muted-foreground"
+              onClick={() => switchMode("qr")}
+            >
+              Scan a QR code instead
+            </button>
             {error && <p className="text-xs text-destructive">{error}</p>}
           </div>
         )}
 
         <DialogFooter>
-          {connected ? (
+          {done ? (
             <Button onClick={() => onOpenChange(false)}>Done</Button>
+          ) : mode === "qr" ? (
+            <>
+              {(qrStatus === "expired" ||
+                qrStatus === "denied" ||
+                qrStatus === "error" ||
+                (!!error && !qrUrl)) && (
+                <Button onClick={() => void startQr(brand)} disabled={qrLoading}>
+                  {qrLoading ? "Refreshing…" : "Refresh QR"}
+                </Button>
+              )}
+              <Button variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+            </>
           ) : (
             <>
               <Button
@@ -1377,7 +1585,7 @@ function ConnectFeishuDialog({
                 Cancel
               </Button>
               <Button
-                onClick={submit}
+                onClick={submitManual}
                 disabled={submitting || !appId.trim() || !appSecret.trim()}
               >
                 {submitting ? "Validating…" : "Connect"}

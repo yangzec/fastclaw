@@ -183,3 +183,29 @@ func TestSessionTripleBackfill(t *testing.T) {
 		t.Fatalf("backfilled active key = %q; want %q", got, "wechat_openid-XYZ")
 	}
 }
+
+func TestLookupSessionScopeTokenAcceptsKeyOrChatID(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	ctx := context.Background()
+
+	if err := db.SaveSession(ctx, "u-api", "agt-api", "s-native", &SessionRecord{
+		Channel: "api", ChatID: "app:user:conv-1",
+		Messages: []SessionMessage{{Role: "user", Content: "hi"}},
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	chatID, key, err := db.LookupSessionScopeToken(ctx, "u-api", "agt-api", "s-native")
+	if err != nil || chatID != "app:user:conv-1" || key != "s-native" {
+		t.Fatalf("by session_key: chat=%q key=%q err=%v", chatID, key, err)
+	}
+	chatID, key, err = db.LookupSessionScopeToken(ctx, "u-api", "agt-api", "app:user:conv-1")
+	if err != nil || chatID != "app:user:conv-1" || key != "s-native" {
+		t.Fatalf("by chat_id: chat=%q key=%q err=%v", chatID, key, err)
+	}
+	chatID, key, err = db.LookupSessionScopeToken(ctx, "u-other", "agt-api", "app:user:conv-1")
+	if err != nil || chatID != "" || key != "" {
+		t.Fatalf("other user: chat=%q key=%q err=%v (want empty)", chatID, key, err)
+	}
+}

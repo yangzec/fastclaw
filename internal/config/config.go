@@ -327,8 +327,12 @@ type ModelEntry struct {
 	Reasoning     bool      `json:"reasoning"`
 	Input         []string  `json:"input"`
 	Cost          ModelCost `json:"cost"`
-	ContextWindow int       `json:"contextWindow"`
-	MaxTokens     int       `json:"maxTokens"`
+	// ContextWindow is the model's input context size in tokens. The
+	// agent loop uses it (minus output/prompt reserves) as the history
+	// compaction threshold. 0 means "unset" — compaction then falls
+	// back to the Models UI default of 200000.
+	ContextWindow int `json:"contextWindow"`
+	MaxTokens     int `json:"maxTokens"`
 }
 
 // ProviderConfig holds API credentials for an LLM provider — used both as

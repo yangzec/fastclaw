@@ -35,15 +35,20 @@ import (
 
 // Agent is the ReAct agent loop.
 type Agent struct {
-	name                 string
-	provider             provider.Provider
-	registry             *tools.Registry
-	sessions             *session.Manager
-	memory               *Memory
-	ctxBuilder           *ContextBuilder
-	mcpMgr               *mcp.Manager
-	hooks                *HookRegistry
-	model                string
+	name       string
+	provider   provider.Provider
+	registry   *tools.Registry
+	sessions   *session.Manager
+	memory     *Memory
+	ctxBuilder *ContextBuilder
+	mcpMgr     *mcp.Manager
+	hooks      *HookRegistry
+	model      string
+	// providers is the merged provider catalog for this agent. Used to
+	// resolve the current model's ContextWindow when deciding when to
+	// compact session history. Copied from ResolvedAgent at construct /
+	// UpdateConfig time.
+	providers            map[string]config.ProviderConfig
 	maxTokens            int
 	temperature          float64
 	maxToolIterations    int
@@ -379,6 +384,7 @@ func NewAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *
 		ctxBuilder:           newContextBuilderWithSandbox(rc.Home, workspace, memory, skillsSummary, rc.Thinking, sandboxEnforced, rc.Sandbox.Backend, rc.PromptMode),
 		hooks:                hooks,
 		model:                rc.Model,
+		providers:            copyProviders(rc.Providers),
 		maxTokens:            rc.MaxTokens,
 		temperature:          rc.Temperature,
 		maxToolIterations:    rc.MaxToolIterations,
@@ -1158,6 +1164,21 @@ func (a *Agent) WebChatSessions() []session.WebSession {
 	return a.sessions.ListWebSessions()
 }
 
+// SessionKeyFor returns the durable session_key (s-...) for this inbound
+// address. /v1/chat/completions uses the caller's X-Fastclaw-Session-Key
+// as ChatID, but the stored row id is minted separately for non-web
+// channels. Safe before or after HandleMessage — Get is idempotent.
+func (a *Agent) SessionKeyFor(msg bus.InboundMessage) string {
+	if a.sessions == nil {
+		return ""
+	}
+	sess := a.sessions.Get(sessionTriple(msg, msg.ProjectID))
+	if sess == nil {
+		return ""
+	}
+	return sess.SessionKey()
+}
+
 // DeleteWebChatSession removes a chat session (any channel) by the URL
 // token — accepts either session_key or legacy web chat_id.
 func (a *Agent) DeleteWebChatSession(sessionId string) error {
@@ -1744,7 +1765,7 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 	sess.Append(userMsg)
 
 	if a.provider == nil {
-		noProviderMsg := "Agent is not configured with a usable LLM provider. Check that cfg.Providers contains the prefix referenced by model `" + a.model + "`."
+		noProviderMsg := noProviderConfiguredMsg(a.model)
 		emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": noProviderMsg}})
 		emitEvent(ctx, ChatEvent{Type: "done"})
 		return noProviderMsg
@@ -2315,7 +2336,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 
 	// Context compaction: check if session messages are too large
 	sessionMsgs := sess.GetMessages()
-	compactResult, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model)
+	compactResult, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model, a.compactTokenThreshold(chatterUID))
 	if err != nil {
 		slog.Warn("compaction error", "agent", a.name, "error", err)
 	}
@@ -2417,7 +2438,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 
 		if a.provider == nil {
 			slog.Error("agent has no provider configured", "agent", a.name, "model", a.model)
-			noProviderMsg := "Agent is not configured with a usable LLM provider. Check that cfg.Providers contains the prefix referenced by model `" + a.model + "`."
+			noProviderMsg := noProviderConfiguredMsg(a.model)
 			emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": noProviderMsg}})
 			emitEvent(ctx, ChatEvent{Type: "done"})
 			return noProviderMsg
@@ -3114,7 +3135,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	sess.Append(userMsg)
 
 	sessionMsgs := sess.GetMessages()
-	compactResult, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model)
+	compactResult, err := CompactMessages(sessionMsgs, a.homePath, a.provider, a.model, a.compactTokenThreshold(chatterUID))
 	if err != nil {
 		slog.Warn("compaction error", "agent", a.name, "error", err)
 	}
@@ -3756,9 +3777,74 @@ func formatConversationGap(gap time.Duration) string {
 	return "more than a day"
 }
 
+func copyProviders(src map[string]config.ProviderConfig) map[string]config.ProviderConfig {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]config.ProviderConfig, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func (a *Agent) compactTokenThreshold(chatterUID string) int {
+	return CompactThreshold(lookupContextWindow(a.liveProviders(chatterUID), a.model), a.maxTokens)
+}
+
+func (a *Agent) effectiveContextWindow(chatterUID string) int {
+	w := lookupContextWindow(a.liveProviders(chatterUID), a.model)
+	if w <= 0 {
+		return DefaultContextWindow
+	}
+	return w
+}
+
+// liveProviders returns the provider catalog compaction should use.
+// When a store is wired, this is read from DB each turn so a Models
+// save (contextWindow change) applies on the next message without
+// waiting for UserSpace eviction. Boot-time a.providers is the fallback
+// for tests and local runs with no store.
+func (a *Agent) liveProviders(chatterUID string) map[string]config.ProviderConfig {
+	if a.dataStore == nil {
+		return a.providers
+	}
+	uid := chatterUID
+	if uid == "" {
+		uid = a.ownerUserID
+	}
+	ctx := context.Background()
+	provs, err := scope.Providers(ctx, a.dataStore, uid, a.agentID)
+	if err != nil {
+		slog.Warn("live providers lookup failed", "agent", a.name, "error", err)
+		return a.providers
+	}
+	if len(provs) == 0 {
+		return a.providers
+	}
+	// Foreign chatter: owner user-scope + agent-scope overlay, matching
+	// UserSpace.EnsureAgent when shareModelConfig is on. Agent-scope
+	// must win so an owner edit on the agent Models page is what
+	// compact uses.
+	if a.ownerUserID != "" && uid != a.ownerUserID {
+		if ownerProvs, err := scope.UserScopeProviders(ctx, a.dataStore, a.ownerUserID); err == nil {
+			for k, v := range ownerProvs {
+				provs[k] = v
+			}
+		}
+		if agentProvs, err := scope.AgentScopeProviders(ctx, a.dataStore, a.agentID); err == nil {
+			for k, v := range agentProvs {
+				provs[k] = v
+			}
+		}
+	}
+	return provs
+}
+
 // UpdateConfig updates the agent's runtime config (model, temperature, etc.)
 func (a *Agent) UpdateConfig(rc config.ResolvedAgent) {
 	a.model = rc.Model
+	a.providers = copyProviders(rc.Providers)
 	a.maxTokens = rc.MaxTokens
 	a.temperature = rc.Temperature
 	a.maxToolIterations = rc.MaxToolIterations
@@ -3919,6 +4005,17 @@ func extractMediaPaths(output string) []string {
 		}
 	}
 	return paths
+}
+
+// noProviderConfiguredMsg is the chat-visible error when an agent has
+// no resolved LLM provider. Keep it free of internal field names —
+// operators who skipped onboard's provider step land here first.
+func noProviderConfiguredMsg(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "This agent has no model configured. Add an LLM provider under Models, then set a default model."
+	}
+	return "No LLM provider is configured for model `" + model + "`. Add a matching provider under Models (the name before the slash)."
 }
 
 // sendMediaFiles sends extracted MEDIA: files to the outbound bus.

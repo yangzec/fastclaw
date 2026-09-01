@@ -75,6 +75,15 @@ export function AuthGuard({ children }: AuthGuardProps) {
       // surfaces "registration is closed" if the admin flipped it off
       // between page load and submit.
       if (pathname === "/signup" || pathname.startsWith("/signup/")) {
+        try {
+          const me = await getMe();
+          if (me.ok && me.user) {
+            router.replace("/overview/");
+            return;
+          }
+        } catch {
+          // unauthenticated — render the public signup page
+        }
         setAuthed(true);
         setChecked(true);
         return;

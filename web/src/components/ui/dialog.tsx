@@ -71,7 +71,7 @@ function DialogContent({
             render={
               <Button
                 variant="ghost"
-                className="absolute top-2 right-2"
+                className="absolute top-2 right-2 max-md:top-[max(0.5rem,env(safe-area-inset-top,0px))] max-md:right-[max(0.5rem,env(safe-area-inset-right,0px))] max-md:size-10"
                 size="icon-sm"
               />
             }

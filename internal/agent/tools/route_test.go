@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/fastclaw-ai/fastclaw/internal/workspace"
 )
 
 type fakeExecutor struct{}
@@ -33,6 +35,22 @@ func TestFastClawInternalPathsIncludeRootAndEnvHome(t *testing.T) {
 		if got, ok := hostHomePath(path); ok || got != "" {
 			t.Fatalf("hostHomePath(%q) = (%q, %v), want denied", path, got, ok)
 		}
+	}
+}
+
+func TestRouteForWorkspaceAbsoluteMatchesRelative(t *testing.T) {
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	r.SetWorkspaceStore(workspace.NewLocalFS(t.TempDir()), "agt-1")
+	r.executor = fakeExecutor{}
+
+	if got := r.routeFor("report.md", OpWrite); got != RouteWorkspaceStore {
+		t.Fatalf("relative report.md = %v, want RouteWorkspaceStore", got)
+	}
+	if got := r.routeFor("/workspace/report.md", OpWrite); got != RouteWorkspaceStore {
+		t.Fatalf("/workspace/report.md = %v, want RouteWorkspaceStore", got)
+	}
+	if got := r.routeFor("/tmp/draw.py", OpWrite); got != RouteSandbox {
+		t.Fatalf("/tmp/draw.py = %v, want RouteSandbox", got)
 	}
 }
 

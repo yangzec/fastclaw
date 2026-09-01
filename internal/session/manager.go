@@ -243,10 +243,28 @@ func (m *Manager) resolveOrMintKey(channel, accountID, chatID string) string {
 			return k
 		}
 	}
+	// A prior Get() in this process may have minted a key that is not
+	// persisted yet (save happens on first Append). Reuse it so two
+	// Gets for the same triple — e.g. /v1 echoing session_id, then
+	// HandleMessage — do not mint two different s-... ids.
+	if k := m.memoryKeyForTriple(channel, accountID, chatID); k != "" {
+		return k
+	}
 	if channel == "web" && chatID != "" {
 		return chatID
 	}
 	return generateSessionKey()
+}
+
+func (m *Manager) memoryKeyForTriple(channel, accountID, chatID string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range m.sessions {
+		if s != nil && s.channel == channel && s.accountID == accountID && s.chatID == chatID {
+			return s.sessionKey
+		}
+	}
+	return ""
 }
 
 // Get returns or creates the active session for the (channel, accountID,

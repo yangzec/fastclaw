@@ -72,7 +72,7 @@ export interface AgentDetail {
   id: string;
   name?: string;
   description?: string;
-  avatarUrl?: string;       // /api/agents/{id}/files/avatar.png — may 404
+  avatarUrl?: string;       // set only when avatar.png exists
   userId?: string;          // owner's user id (agents.user_id)
   // role distinguishes agents the caller owns from agents accessed via
   // a public link. "viewer" gates UI out of configuration tabs
@@ -1253,10 +1253,14 @@ export async function uploadAgentFiles(
   agentId: string,
   sessionId: string,
   files: File[],
+  projectId?: string,
 ): Promise<UploadedFile[]> {
   const fd = new FormData();
   for (const f of files) fd.append("file", f, f.name);
-  const qs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+  const params = new URLSearchParams();
+  if (sessionId) params.set("sessionId", sessionId);
+  if (projectId) params.set("projectId", projectId);
+  const qs = params.toString() ? `?${params.toString()}` : "";
   const res = await apiFetch(`/api/agents/${encodeURIComponent(agentId)}/files${qs}`, {
     method: "POST",
     body: fd,
@@ -1898,6 +1902,47 @@ export async function connectAgentLINE(
   return res.json();
 }
 
+export async function startAgentFeishuLogin(
+  agentId: string,
+  brand: "feishu" | "lark" = "feishu",
+): Promise<{ sessionId?: string; url?: string; expireIn?: number; brand?: string; error?: string }> {
+  const res = await apiFetch(`/api/agents/${agentId}/channels/feishu/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ brand }),
+  });
+  return res.json();
+}
+
+export async function pollAgentFeishuLoginStatus(
+  agentId: string,
+  sessionId: string,
+): Promise<{
+  status?: "wait" | "confirmed" | "expired" | "denied" | "error";
+  connected?: boolean;
+  accountId?: string;
+  appId?: string;
+  botName?: string;
+  botOpenId?: string;
+  error?: string;
+}> {
+  const res = await apiFetch(
+    `/api/agents/${agentId}/channels/feishu/login/status?session=${encodeURIComponent(sessionId)}`,
+  );
+  return res.json();
+}
+
+export async function cancelAgentFeishuLogin(
+  agentId: string,
+  sessionId: string,
+): Promise<{ ok?: boolean; error?: string }> {
+  const res = await apiFetch(
+    `/api/agents/${agentId}/channels/feishu/login?session=${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" },
+  );
+  return res.json();
+}
+
 export async function connectAgentFeishu(
   agentId: string,
   appId: string,
@@ -2012,10 +2057,21 @@ export async function getAgentTokenUsage(
 // cookie, so <img src>, <a href>, and direct downloads authenticate by cookie
 // like every other API call. (Putting `?token=<bearer>` in a URL leaked a full
 // API credential via Referer, browser history, and reverse-proxy access logs.)
-export function fileUrl(agentId: string, path: string, download = false): string {
-  const encoded = path.split("/").map(encodeURIComponent).join("/");
+export function fileUrl(
+  agentId: string,
+  path: string,
+  download = false,
+  sessionId?: string,
+): string {
+  // /workspace/<name> and a leftover "workspace/<name>" key are the same
+  // session artifact as <name>. The API resolves a bare name via ?sessionId=.
+  let rel = path.replace(/^\/+/, "");
+  if (rel.startsWith("workspace/")) rel = rel.slice("workspace/".length);
+  const encoded = rel.split("/").map(encodeURIComponent).join("/");
   const params = new URLSearchParams();
   if (download) params.set("download", "1");
+  const scoped = rel.startsWith("sessions/") || rel.startsWith("projects/");
+  if (sessionId && !scoped) params.set("sessionId", sessionId);
   const qs = params.toString();
   return `/api/agents/${agentId}/files/${encoded}${qs ? "?" + qs : ""}`;
 }

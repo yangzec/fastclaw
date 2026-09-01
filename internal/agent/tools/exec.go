@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -179,7 +180,7 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 				skillEnv = resolveSkillEnv(args.Command, envProvider, skillDirs)
 			}
 			sessEnv := buildSubprocessEnv(skillEnv)
-			s, err := r.shellMgr.Start(command, sessEnv)
+			s, err := r.shellMgr.Start(command, sessEnv, prepareExecDir(r))
 			if err != nil {
 				return "", err
 			}
@@ -225,13 +226,30 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 			skillEnv = resolveSkillEnv(args.Command, envProvider, skillDirs)
 		}
 
-		return runHostCommand(execCtx, command, buildSubprocessEnv(skillEnv), time.Duration(timeout)*time.Second)
+		return runHostCommand(execCtx, command, buildSubprocessEnv(skillEnv), time.Duration(timeout)*time.Second, prepareExecDir(r))
 	}
 }
 
 // sbCfgImage returns the sandbox image name for diagnostic error messages.
 // Returns "<unset>" so the user immediately sees that no image was even
 // configured (vs. configured-but-unreachable).
+// prepareExecDir mkdir's the session/project workspace so unsandboxed
+// exec can chdir there. Empty means "leave the process cwd alone".
+func prepareExecDir(r *Registry) string {
+	if r == nil {
+		return ""
+	}
+	dir := r.localWorkspaceDir()
+	if dir == "" {
+		return ""
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		slog.Warn("exec workspace dir", "dir", dir, "error", err)
+		return ""
+	}
+	return dir
+}
+
 func sbCfgImage(sbCfg *SandboxConfig) string {
 	if sbCfg == nil || sbCfg.Image == "" {
 		return "<unset>"
@@ -393,7 +411,11 @@ func registerHostExec(r *Registry, envProvider SkillEnvProvider, skillDirs []str
 			if envProvider != nil && skillDirs != nil {
 				skillEnv = resolveSkillEnv(args.Command, envProvider, skillDirs)
 			}
-			return runHostCommand(execCtx, command, buildSubprocessEnv(skillEnv), time.Duration(timeout)*time.Second)
+			// host_exec is the operator escape hatch: keep the gateway
+			// process cwd so `fastclaw upgrade` / `~/Downloads` still
+			// work. Chat-facing `exec` (above) is the one pinned to
+			// the session workspace.
+			return runHostCommand(execCtx, command, buildSubprocessEnv(skillEnv), time.Duration(timeout)*time.Second, "")
 		})
 }
 

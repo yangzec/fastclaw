@@ -11,7 +11,14 @@ import (
 	"github.com/fastclaw-ai/fastclaw/internal/agent"
 	"github.com/fastclaw-ai/fastclaw/internal/auth"
 	"github.com/fastclaw-ai/fastclaw/internal/bus"
+	"github.com/fastclaw-ai/fastclaw/internal/provider"
 )
+
+// apiStreamHeartbeatInterval is how often /v1/chat/completions writes an
+// SSE comment while the agent is silent (ReAct / tools / a stalled
+// token). Upstream HTTP clients and proxies otherwise treat the idle
+// body as a dead connection and hang up.
+var apiStreamHeartbeatInterval = 10 * time.Second
 
 // chatCompletionRequest mirrors the OpenAI chat completion request.
 //
@@ -140,12 +147,14 @@ type chunkDelta struct {
 
 // chatCompletionResponse is the non-streaming response.
 type chatCompletionResponse struct {
-	ID      string             `json:"id"`
-	Object  string             `json:"object"`
-	Created int64              `json:"created"`
-	Model   string             `json:"model"`
-	Choices []completionChoice `json:"choices"`
-	Usage   completionUsage    `json:"usage"`
+	ID         string             `json:"id"`
+	Object     string             `json:"object"`
+	Created    int64              `json:"created"`
+	Model      string             `json:"model"`
+	Choices    []completionChoice `json:"choices"`
+	Usage      completionUsage    `json:"usage"`
+	SessionID  string             `json:"session_id,omitempty"`
+	SessionKey string             `json:"session_key,omitempty"`
 }
 
 type completionChoice struct {
@@ -294,10 +303,13 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Params:    req.Params,
 		PhotoURLs: req.inlineImageURLs(),
 	}
+	nativeSessionID := ag.SessionKeyFor(msg)
+	writeSessionHeaders(w, sessionKey, nativeSessionID)
 
 	slog.Info("chat completion request",
 		"agent", ag.Name(),
 		"session", sessionKey,
+		"session_id", nativeSessionID,
 		"stream", req.Stream != nil && *req.Stream,
 	)
 
@@ -314,7 +326,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Get reply from agent
 		reply := ag.HandleMessage(r.Context(), msg)
-		s.fullResponse(w, reply, chatID, model, now)
+		s.fullResponse(w, reply, chatID, model, now, sessionKey, nativeSessionID)
 	}
 }
 
@@ -323,39 +335,83 @@ func (s *Server) streamResponseFromAgent(w http.ResponseWriter, r *http.Request,
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
 	flusher, ok := w.(http.Flusher)
-
-	sr := ag.HandleMessageStream(r.Context(), msg)
-
-	// Send role chunk
-	s.writeSSEChunk(w, chatID, model, created, "assistant", "", nil)
-	if ok {
-		flusher.Flush()
+	flush := func() {
+		if ok {
+			flusher.Flush()
+		}
 	}
 
-	// Forward chunks from StreamReader
-	for {
-		chunk, more := sr.Next()
-		if chunk.Content != "" {
-			s.writeSSEChunk(w, chatID, model, created, "", chunk.Content, nil)
-			if ok {
-				flusher.Flush()
+	// Role chunk first — HandleMessageStream runs the whole ReAct /
+	// tool loop before it returns a reader. Without an immediate body
+	// write the connection stays empty and API clients drop it.
+	s.writeSSEChunk(w, chatID, model, created, "assistant", "", nil)
+	flush()
+
+	srCh := make(chan *provider.StreamReader, 1)
+	go func() {
+		srCh <- ag.HandleMessageStream(r.Context(), msg)
+	}()
+
+	ticker := time.NewTicker(apiStreamHeartbeatInterval)
+	defer ticker.Stop()
+
+	var sr *provider.StreamReader
+	for sr == nil {
+		select {
+		case sr = <-srCh:
+		case <-ticker.C:
+			writeSSEComment(w, "heartbeat")
+			flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+
+	chunkCh := make(chan provider.StreamChunk, 8)
+	go func() {
+		defer close(chunkCh)
+		for {
+			chunk, more := sr.Next()
+			select {
+			case chunkCh <- chunk:
+			case <-r.Context().Done():
+				return
+			}
+			if chunk.Done || !more {
+				return
 			}
 		}
-		if chunk.Done || !more {
-			break
+	}()
+
+	for {
+		select {
+		case chunk, open := <-chunkCh:
+			if !open {
+				done := "stop"
+				s.writeSSEChunk(w, chatID, model, created, "", "", &done)
+				fmt.Fprint(w, "data: [DONE]\n\n")
+				flush()
+				return
+			}
+			if chunk.Content != "" {
+				s.writeSSEChunk(w, chatID, model, created, "", chunk.Content, nil)
+				flush()
+			}
+		case <-ticker.C:
+			writeSSEComment(w, "heartbeat")
+			flush()
+		case <-r.Context().Done():
+			return
 		}
 	}
+}
 
-	// Send finish chunk
-	done := "stop"
-	s.writeSSEChunk(w, chatID, model, created, "", "", &done)
-	fmt.Fprint(w, "data: [DONE]\n\n")
-	if ok {
-		flusher.Flush()
-	}
+func writeSSEComment(w http.ResponseWriter, comment string) {
+	fmt.Fprintf(w, ": %s\n\n", comment)
 }
 
 func (s *Server) writeSSEChunk(w http.ResponseWriter, id, model string, created int64, role, content string, finishReason *string) {
@@ -379,7 +435,7 @@ func (s *Server) writeSSEChunk(w http.ResponseWriter, id, model string, created 
 	fmt.Fprintf(w, "data: %s\n\n", data)
 }
 
-func (s *Server) fullResponse(w http.ResponseWriter, reply, chatID, model string, created int64) {
+func (s *Server) fullResponse(w http.ResponseWriter, reply, chatID, model string, created int64, sessionKey, nativeSessionID string) {
 	resp := chatCompletionResponse{
 		ID:      chatID,
 		Object:  "chat.completion",
@@ -397,8 +453,20 @@ func (s *Server) fullResponse(w http.ResponseWriter, reply, chatID, model string
 			CompletionTokens: 0,
 			TotalTokens:      0,
 		},
+		SessionID:  nativeSessionID,
+		SessionKey: sessionKey,
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func writeSessionHeaders(w http.ResponseWriter, sessionKey, nativeSessionID string) {
+	if sessionKey != "" {
+		w.Header().Set("X-Fastclaw-Session-Key", sessionKey)
+	}
+	if nativeSessionID != "" {
+		w.Header().Set("X-Fastclaw-Session-Id", nativeSessionID)
+	}
+	w.Header().Set("Access-Control-Expose-Headers", "X-Fastclaw-Session-Id, X-Fastclaw-Session-Key")
 }
 
 // resolveAgent picks an agent out of the caller's user space, preferring an
@@ -420,4 +488,3 @@ func resolveAgent(space *UserSpaceView, agentID string) *agent.Agent {
 	}
 	return nil
 }
-

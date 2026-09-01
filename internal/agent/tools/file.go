@@ -150,22 +150,68 @@ var systemFiles = map[string]bool{
 	"agent.json":   true,
 }
 
+// sandboxWorkspaceRoot is the working directory advertised to the model
+// inside a sandbox. Absolute paths under this prefix are the same artifacts
+// as session-relative names: report.md == /workspace/report.md. Both must
+// land in workspace.Store so the Files sidebar and markdown rewrite agree.
+const sandboxWorkspaceRoot = "/workspace"
+
+// workspaceRel maps a tool path onto a workspace.Store key.
+//
+//	"report.md"              → "report.md", true
+//	"/workspace/report.md"   → "report.md", true
+//	"/workspace" / "/workspace/" → ".", true  (list the store root)
+//	"/tmp/draw.py"           → "", false     (sandbox scratch)
+//	"SOUL.md"                → "", false     (identity store)
+//	"skills/foo/SKILL.md"    → "", false     (skills bucket)
+func workspaceRel(path string) (string, bool) {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" || trimmed == "." || trimmed == "./" {
+		return ".", true
+	}
+	slash := filepath.ToSlash(path)
+	switch {
+	case slash == sandboxWorkspaceRoot, slash == sandboxWorkspaceRoot+"/":
+		return ".", true
+	case strings.HasPrefix(slash, sandboxWorkspaceRoot+"/"):
+		slash = strings.TrimPrefix(slash, sandboxWorkspaceRoot+"/")
+	case filepath.IsAbs(path):
+		return "", false
+	}
+	clean := filepath.Clean(slash)
+	if clean == "skills" || strings.HasPrefix(clean, "skills/") {
+		return "", false
+	}
+	if !strings.ContainsRune(clean, '/') && systemFiles[clean] {
+		return "", false
+	}
+	return clean, true
+}
+
 // isWorkspacePath decides whether a write/read/list_dir path belongs in the
-// workspace store (vs. the agent's home / systemRoot on disk). Uses the same
-// rules as rootForPath: identity filenames, the `skills/` subtree, and
-// absolute paths stay on disk; everything else is workspace-scoped.
+// workspace store (vs. the agent's home / systemRoot on disk). Identity
+// filenames, the `skills/` subtree, and non-/workspace absolute paths stay
+// off the store; relative names and /workspace/... share one namespace.
 func (r *Registry) isWorkspacePath(path string) bool {
-	if filepath.IsAbs(path) {
-		return false
+	_, ok := workspaceRel(path)
+	return ok
+}
+
+// workspaceListPrefix is the store-relative prefix list_dir should filter
+// on. /workspace and /workspace/ mean "the whole session store", not a
+// literal directory named "workspace".
+func workspaceListPrefix(path string) string {
+	if rel, ok := workspaceRel(path); ok {
+		if rel == "." {
+			return ""
+		}
+		return rel
 	}
-	clean := filepath.Clean(path)
-	if clean == "skills" || strings.HasPrefix(clean, "skills"+string(filepath.Separator)) {
-		return false
+	p := strings.Trim(filepath.ToSlash(filepath.Clean(path)), "/")
+	if p == "." {
+		return ""
 	}
-	if !strings.ContainsRune(clean, filepath.Separator) && systemFiles[clean] {
-		return false
-	}
-	return true
+	return p
 }
 
 // hostHomePath returns the resolved absolute filesystem path when the
@@ -615,6 +661,7 @@ func makeWriteFile(r *Registry) ToolFunc {
 				}
 				return "", fmt.Errorf("workspace put: %w", err)
 			}
+			r.mirrorWorkspaceFileToSandbox(ctx, args.Path, args.Content)
 			return fmt.Sprintf("Written %d bytes to %s", len(args.Content), args.Path), nil
 		}
 
@@ -729,6 +776,7 @@ func makeEditFile(r *Registry) ToolFunc {
 				}
 				return "", fmt.Errorf("workspace put: %w", err)
 			}
+			r.mirrorWorkspaceFileToSandbox(ctx, args.Path, updated)
 			return fmt.Sprintf("Edited %s (%d replacement(s))", args.Path, count), nil
 		}
 
@@ -828,10 +876,7 @@ func makeListDir(r *Registry) ToolFunc {
 			if err != nil {
 				return "", fmt.Errorf("workspace list: %w", err)
 			}
-			prefix := strings.Trim(filepath.ToSlash(filepath.Clean(args.Path)), "/")
-			if prefix == "." {
-				prefix = ""
-			}
+			prefix := workspaceListPrefix(args.Path)
 			var sb strings.Builder
 			seenDirs := map[string]bool{}
 			for _, o := range objs {
@@ -895,6 +940,29 @@ func makeListDir(r *Registry) ToolFunc {
 // the path (absolute paths, `skills/...`, ad-hoc scripts, etc.). The
 // sandbox badge is emitted only for the executor-fallback path — store
 // hits intentionally don't badge, since they didn't run in the sandbox.
+// mirrorWorkspaceFileToSandbox copies a workspace.Store write into the live
+// sandbox at /workspace/<rel> so a later exec (python save, cat, …) opens
+// the same file the Files sidebar lists. Coding-agent preview keeps its
+// own dest mapping (the dev server serves /workspace as the app root).
+func (r *Registry) mirrorWorkspaceFileToSandbox(ctx context.Context, path, content string) {
+	if r.codingSubdir != "" {
+		r.mirrorCodingWriteToSandbox(ctx, path, content)
+		return
+	}
+	if r.executor == nil {
+		return
+	}
+	rel := r.wsPath(path)
+	rel = strings.TrimPrefix(filepath.ToSlash(rel), "/")
+	if rel == "" || rel == "." {
+		return
+	}
+	dest := sandboxWorkspaceRoot + "/" + rel
+	if _, err := r.executor.WriteFile(ctx, dest, content); err != nil {
+		slog.Warn("workspace write mirror to sandbox failed", "path", dest, "err", err)
+	}
+}
+
 // mirrorCodingWriteToSandbox pushes a coding-agent workspace write into the
 // live preview sandbox. Coding writes route to workspace.Store (host), which
 // docker bind-mounts into the dev-server container — but a remote backend
@@ -1058,7 +1126,7 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 				}
 				return "", fmt.Errorf("workspace put: %w", err)
 			}
-			r.mirrorCodingWriteToSandbox(ctx, args.Path, args.Content)
+			r.mirrorWorkspaceFileToSandbox(ctx, args.Path, args.Content)
 			return fmt.Sprintf("Written %d bytes to %s", len(args.Content), args.Path), nil
 		case RouteSkillStore:
 			// Skill scaffolding (skill-creator's `skills/<name>/...`) lands
@@ -1107,10 +1175,7 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 		case RouteWorkspaceStore:
 			objs, err := r.workspaceStore.List(ctx, r.agentID, r.projectID, r.scopeSessionID())
 			if err == nil {
-				prefix := strings.Trim(filepath.ToSlash(filepath.Clean(args.Path)), "/")
-				if prefix == "." {
-					prefix = ""
-				}
+				prefix := workspaceListPrefix(args.Path)
 				var sb strings.Builder
 				seenDirs := map[string]bool{}
 				for _, o := range objs {
@@ -1248,7 +1313,7 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 						}
 						return "", fmt.Errorf("workspace put: %w", err)
 					}
-					r.mirrorCodingWriteToSandbox(ctx, args.Path, updated)
+					r.mirrorWorkspaceFileToSandbox(ctx, args.Path, updated)
 					return fmt.Sprintf("Edited %s (%d replacement(s))", args.Path, count), nil
 				}
 			}

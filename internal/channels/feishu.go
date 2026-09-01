@@ -50,6 +50,14 @@ const (
 	feishuSendTimeout      = 15 * time.Second
 	feishuTokenTimeout     = 10 * time.Second
 	feishuTokenRefreshSkew = 60 * time.Second
+
+	// Hermes / OpenClaw use Feishu message reactions as a typing
+	// indicator — the open platform has no native "对方正在输入" API
+	// for custom-app bots. Typing goes on the user's inbound message
+	// and is removed when the reply is delivered (CrossMark on send
+	// failure).
+	feishuTypingEmoji = "Typing"
+	feishuErrorEmoji  = "CrossMark"
 )
 
 // Feishu implements the Channel interface for Feishu / Feishu custom apps.
@@ -78,6 +86,13 @@ type Feishu struct {
 	accessTokExp time.Time
 	botName      string // populated on Start via /bot/v3/info; best-effort
 	botOpenID    string
+	lastInbound  map[string]string            // chatID → last user message_id
+	typing       map[string]feishuTypingState // chatID → in-flight Typing reaction
+}
+
+type feishuTypingState struct {
+	messageID  string
+	reactionID string
 }
 
 // NewFeishu creates a Feishu adapter. verificationToken matches the value
@@ -101,6 +116,8 @@ func NewFeishu(appID, appSecret, verificationToken, encryptKey string, useLongCo
 		useLongConn:       useLongConn,
 		httpClient:        &http.Client{Timeout: feishuSendTimeout},
 		apiBaseURL:        feishuBaseURL,
+		lastInbound:       map[string]string{},
+		typing:            map[string]feishuTypingState{},
 	}, nil
 }
 
@@ -154,19 +171,22 @@ func (l *Feishu) SendMessage(msg bus.OutboundMessage) error {
 		return fmt.Errorf("feishu token: %w", err)
 	}
 	if msg.Text != "" {
-		if err := l.sendMarkdownCard(tok, msg.ChatID, msg.Text); err != nil {
+		if err := l.sendMarkdownCard(tok, msg.ChatID, msg.Text, msg.ReplyToMsgID); err != nil {
 			slog.Warn("feishu card send failed, falling back to plain text",
 				"account", l.accountID, "chat", msg.ChatID, "error", err)
-			if err := l.sendPlainTextMessage(tok, msg.ChatID, msg.Text); err != nil {
+			if err := l.sendPlainTextMessage(tok, msg.ChatID, msg.Text, msg.ReplyToMsgID); err != nil {
+				l.finishTyping(msg.ChatID, true)
 				return err
 			}
 		}
 	}
 	for _, item := range msg.MediaItems {
 		if err := l.sendMediaItem(tok, msg.ChatID, item); err != nil {
+			l.finishTyping(msg.ChatID, true)
 			return fmt.Errorf("feishu send attachment %q: %w", item.Filename, err)
 		}
 	}
+	l.finishTyping(msg.ChatID, false)
 	return nil
 }
 
@@ -183,7 +203,7 @@ func (l *Feishu) sendMediaItem(tok, chatID string, item bus.MediaItem) error {
 		return err
 	}
 	content, _ := json.Marshal(map[string]string{kind + "_key": key})
-	return l.doSend(tok, map[string]string{"receive_id": chatID, "content": string(content), "msg_type": kind})
+	return l.doSend(tok, "chat_id", map[string]string{"receive_id": chatID, "content": string(content), "msg_type": kind})
 }
 
 func (l *Feishu) uploadMedia(tok, endpoint, fileField string, item bus.MediaItem, fields map[string]string, responseKey string) (string, error) {
@@ -242,17 +262,20 @@ func (l *Feishu) uploadMedia(tok, endpoint, fileField string, item bus.MediaItem
 }
 
 // sendMarkdownCard sends a JSON 2.0 interactive card with one markdown body.
-func (l *Feishu) sendMarkdownCard(tok, chatID, text string) error {
+func (l *Feishu) sendMarkdownCard(tok, chatID, text, replyTo string) error {
 	cardJSON, err := buildFeishuMarkdownCardJSON(text)
 	if err != nil {
 		return err
 	}
 	payload := map[string]string{
-		"receive_id": chatID,
-		"content":    string(cardJSON),
-		"msg_type":   "interactive",
+		"content":  string(cardJSON),
+		"msg_type": "interactive",
 	}
-	return l.doSend(tok, payload)
+	if replyTo != "" {
+		return l.doReply(tok, replyTo, payload)
+	}
+	payload["receive_id"] = chatID
+	return l.doSend(tok, "chat_id", payload)
 }
 
 func buildFeishuMarkdownCardJSON(text string) ([]byte, error) {
@@ -276,27 +299,42 @@ func buildFeishuMarkdownCardJSON(text string) ([]byte, error) {
 
 // sendPlainTextMessage sends a plain text message. Used only as a fallback
 // if the card API fails.
-func (l *Feishu) sendPlainTextMessage(tok, chatID, text string) error {
+func (l *Feishu) sendPlainTextMessage(tok, chatID, text, replyTo string) error {
 	contentJSON, err := json.Marshal(map[string]string{"text": text})
 	if err != nil {
 		return fmt.Errorf("feishu marshal content: %w", err)
 	}
 	payload := map[string]string{
-		"receive_id": chatID,
+		"content":  string(contentJSON),
+		"msg_type": "text",
+	}
+	if replyTo != "" {
+		return l.doReply(tok, replyTo, payload)
+	}
+	payload["receive_id"] = chatID
+	return l.doSend(tok, "chat_id", payload)
+}
+
+func (l *Feishu) sendPlainTextTo(tok, receiveIDType, receiveID, text string) error {
+	contentJSON, err := json.Marshal(map[string]string{"text": text})
+	if err != nil {
+		return fmt.Errorf("feishu marshal content: %w", err)
+	}
+	return l.doSend(tok, receiveIDType, map[string]string{
+		"receive_id": receiveID,
 		"content":    string(contentJSON),
 		"msg_type":   "text",
-	}
-	return l.doSend(tok, payload)
+	})
 }
 
 // doSend posts a message payload to Feishu's send API.
-func (l *Feishu) doSend(tok string, payload map[string]string) error {
+func (l *Feishu) doSend(tok, receiveIDType string, payload map[string]string) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("feishu marshal: %w", err)
 	}
 	req, err := http.NewRequest(http.MethodPost,
-		l.apiBaseURL+"/open-apis/im/v1/messages?receive_id_type=chat_id",
+		l.apiBaseURL+"/open-apis/im/v1/messages?receive_id_type="+receiveIDType,
 		bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -325,11 +363,189 @@ func (l *Feishu) doSend(tok string, payload map[string]string) error {
 	return nil
 }
 
-// SendTyping is a no-op. Feishu's open platform doesn't expose a typing
-// indicator API for custom-app bots — only first-party apps get it.
-// The gateway's typing relay still fires every 5s but degenerates to
-// a cheap no-op call.
-func (l *Feishu) SendTyping(_ string) error { return nil }
+// doReply posts as a thread reply on the user's message (引用原消息).
+func (l *Feishu) doReply(tok, messageID string, payload map[string]string) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("feishu marshal: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost,
+		l.apiBaseURL+"/open-apis/im/v1/messages/"+messageID+"/reply",
+		bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := l.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("feishu reply: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("feishu reply HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	var apiResp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return fmt.Errorf("feishu reply parse: %w", err)
+	}
+	if apiResp.Code != 0 {
+		return fmt.Errorf("feishu reply: code=%d msg=%s", apiResp.Code, apiResp.Msg)
+	}
+	return nil
+}
+
+// SendTyping puts a Typing reaction on the last inbound message in this
+// chat (Hermes-style status). Repeat calls for the same message are
+// no-ops so the gateway's 5s keepalive does not re-notify.
+func (l *Feishu) SendTyping(chatID string) error {
+	if chatID == "" {
+		return nil
+	}
+	l.mu.Lock()
+	messageID := l.lastInbound[chatID]
+	existing, has := l.typing[chatID]
+	l.mu.Unlock()
+	if messageID == "" {
+		return nil
+	}
+	if has && existing.messageID == messageID && existing.reactionID != "" {
+		return nil
+	}
+	reactionID, err := l.addReaction(messageID, feishuTypingEmoji)
+	if err != nil {
+		return err
+	}
+	l.mu.Lock()
+	if l.typing == nil {
+		l.typing = map[string]feishuTypingState{}
+	}
+	l.typing[chatID] = feishuTypingState{messageID: messageID, reactionID: reactionID}
+	l.mu.Unlock()
+	return nil
+}
+
+// ClearTyping drops the in-flight Typing reaction. Used when a turn
+// ends with no outbound (NO_REPLY / cancelled enqueue).
+func (l *Feishu) ClearTyping(chatID string) error {
+	l.finishTyping(chatID, false)
+	return nil
+}
+
+func (l *Feishu) rememberInbound(chatID, messageID string) {
+	if chatID == "" || messageID == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.lastInbound == nil {
+		l.lastInbound = map[string]string{}
+	}
+	l.lastInbound[chatID] = messageID
+}
+
+func (l *Feishu) finishTyping(chatID string, failed bool) {
+	l.mu.Lock()
+	st, ok := l.typing[chatID]
+	if ok {
+		delete(l.typing, chatID)
+	}
+	l.mu.Unlock()
+	if !ok || st.messageID == "" {
+		return
+	}
+	if st.reactionID != "" {
+		if err := l.deleteReaction(st.messageID, st.reactionID); err != nil {
+			slog.Debug("feishu clear typing reaction failed", "account", l.accountID, "error", err)
+		}
+	}
+	if failed {
+		if _, err := l.addReaction(st.messageID, feishuErrorEmoji); err != nil {
+			slog.Debug("feishu error reaction failed", "account", l.accountID, "error", err)
+		}
+	}
+}
+
+func (l *Feishu) addReaction(messageID, emoji string) (string, error) {
+	tok, err := l.tenantAccessToken(context.Background())
+	if err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(map[string]any{
+		"reaction_type": map[string]string{"emoji_type": emoji},
+	})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequest(http.MethodPost,
+		l.apiBaseURL+"/open-apis/im/v1/messages/"+messageID+"/reactions",
+		bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := l.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("feishu reaction: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("feishu reaction HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	var apiResp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			ReactionID string `json:"reaction_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return "", fmt.Errorf("feishu reaction parse: %w", err)
+	}
+	if apiResp.Code != 0 {
+		return "", fmt.Errorf("feishu reaction: code=%d msg=%s", apiResp.Code, apiResp.Msg)
+	}
+	return apiResp.Data.ReactionID, nil
+}
+
+func (l *Feishu) deleteReaction(messageID, reactionID string) error {
+	tok, err := l.tenantAccessToken(context.Background())
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodDelete,
+		l.apiBaseURL+"/open-apis/im/v1/messages/"+messageID+"/reactions/"+reactionID, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := l.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("feishu delete reaction: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("feishu delete reaction HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	var apiResp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return fmt.Errorf("feishu delete reaction parse: %w", err)
+	}
+	if apiResp.Code != 0 {
+		return fmt.Errorf("feishu delete reaction: code=%d msg=%s", apiResp.Code, apiResp.Msg)
+	}
+	return nil
+}
 
 // --- Inbound (webhook handler entry point) ---
 
@@ -555,6 +771,8 @@ func (l *Feishu) dispatchInbound(ev feishuMessageEvent) {
 		"len", len(text),
 		"mentions", feishuMentionNames(ev))
 
+	l.rememberInbound(ev.Message.ChatID, msgID)
+
 	l.bus.Inbound <- bus.InboundMessage{
 		Channel:    "feishu",
 		AccountID:  l.accountID,
@@ -744,6 +962,26 @@ func (l *Feishu) fetchBotInfo(ctx context.Context) (name, openID string, err err
 // mints a tenant_access_token to confirm app_id/app_secret are good,
 // then fetches /bot/v3/info to capture the bot's display name. No
 // adapter state created — caller persists and hot-registers.
+// FeishuSendWelcome DMs the user who scanned the QR (receive_id_type=
+// open_id). Opens the 1:1 chat so they do not have to search for the
+// bot, and proves outbound works immediately after create.
+func FeishuSendWelcome(ctx context.Context, appID, appSecret, openID string) error {
+	if openID == "" {
+		return errors.New("feishu: open_id required")
+	}
+	stub := &Feishu{
+		appID:      appID,
+		appSecret:  appSecret,
+		httpClient: &http.Client{Timeout: feishuSendTimeout},
+		apiBaseURL: feishuBaseURL,
+	}
+	tok, err := stub.tenantAccessToken(ctx)
+	if err != nil {
+		return err
+	}
+	return stub.sendPlainTextTo(tok, "open_id", openID, "已连接到 FastClaw。直接发消息即可，群聊里请 @我。")
+}
+
 func FeishuValidateCredentials(ctx context.Context, appID, appSecret string) (botName, botOpenID string, err error) {
 	stub := &Feishu{
 		appID:      appID,

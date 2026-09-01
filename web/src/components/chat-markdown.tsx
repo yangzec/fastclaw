@@ -130,9 +130,11 @@ export function ChatMarkdown({
       // authenticated file API. The docker bind-mount is session-scoped, so
       // prepend sessions/<sid>/ or the file API resolves against the agent root
       // and 404s.
-      if (agentId && (key === "src" || key === "href") && url.startsWith("/workspace/")) {
-        const rel = url.slice("/workspace/".length);
-        return fileUrl(agentId, sessionId ? `sessions/${sessionId}/${rel}` : rel);
+      if (agentId && (key === "src" || key === "href") && (url.startsWith("/workspace/") || url.startsWith("workspace/"))) {
+        const rel = url.startsWith("/workspace/")
+          ? url.slice("/workspace/".length)
+          : url.slice("workspace/".length);
+        return fileUrl(agentId, rel, false, sessionId);
       }
       return defaultUrlTransform(url, key, node);
     };

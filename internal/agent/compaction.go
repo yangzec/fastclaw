@@ -8,17 +8,90 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/fastclaw-ai/fastclaw/internal/config"
 	"github.com/fastclaw-ai/fastclaw/internal/provider"
 )
 
 const (
-	// DefaultTokenThreshold is the default threshold at which compaction triggers (80K tokens).
-	DefaultTokenThreshold = 80000
+	// DefaultContextWindow matches the Models UI default when a model
+	// row has no contextWindow set. Compaction used to ignore this and
+	// fire at a hardcoded 80k — far below typical 128k/200k windows.
+	DefaultContextWindow = 200000
+	// compactPromptReserve covers system prompt + tool schemas added
+	// after session-history compaction.
+	compactPromptReserve = 16384
+	// compactMinThreshold is the lowest trigger so a small window still
+	// compact before overflowing.
+	compactMinThreshold = 4096
 	// PruneTurnAge is the number of recent turns to keep intact; older messages get pruned.
 	PruneTurnAge = 20
 	// truncatedPlaceholder replaces pruned tool results.
 	truncatedPlaceholder = "[Result truncated - see memory logs]"
 )
+
+// CompactThreshold is the session-history size at which compaction
+// starts. It leaves room for the completion (maxTokens) and for the
+// system prompt / tool schemas that are attached after compaction.
+// contextWindow 0 falls back to DefaultContextWindow.
+func CompactThreshold(contextWindow, maxTokens int) int {
+	window := contextWindow
+	if window <= 0 {
+		window = DefaultContextWindow
+	}
+	reserve := maxTokens
+	if reserve <= 0 {
+		reserve = 8192
+	}
+	reserve += compactPromptReserve
+	if tenth := window / 10; reserve < tenth {
+		reserve = tenth
+	}
+	thresh := window - reserve
+	if thresh < compactMinThreshold {
+		thresh = window / 2
+		if thresh < compactMinThreshold {
+			thresh = compactMinThreshold
+		}
+	}
+	return thresh
+}
+
+// lookupContextWindow finds the current model's contextWindow in the
+// agent's provider catalog. "provider/modelId" prefers that provider;
+// a bare model id searches every provider. 0 means not configured.
+func lookupContextWindow(providers map[string]config.ProviderConfig, model string) int {
+	if model == "" {
+		return 0
+	}
+	provKey, modelID := provider.SplitProviderModel(model)
+	if provKey != "" {
+		if pc, ok := providers[provKey]; ok {
+			if w := modelContextWindow(pc.Models, modelID); w > 0 {
+				return w
+			}
+		}
+	}
+	for _, pc := range providers {
+		if w := modelContextWindow(pc.Models, modelID); w > 0 {
+			return w
+		}
+		if modelID != model {
+			if w := modelContextWindow(pc.Models, model); w > 0 {
+				return w
+			}
+		}
+	}
+	return config.KnownContextWindow(model)
+}
+
+func modelContextWindow(models []config.ModelEntry, id string) int {
+	for _, m := range models {
+		if m.ID == id && m.ContextWindow > 0 {
+			return m.ContextWindow
+		}
+	}
+	return 0
+}
 
 // EstimateTokens provides a rough token estimate: chars/4.
 func EstimateTokens(messages []provider.Message) int {
@@ -44,13 +117,17 @@ type CompactResult struct {
 // Step 1 (Pruning): For messages older than PruneTurnAge, strip tool result content.
 // Step 2 (Compression): If still over threshold after pruning, summarize older messages
 // using the LLM and write full history to a log file.
-func CompactMessages(messages []provider.Message, workspace string, prov provider.Provider, model string) (*CompactResult, error) {
+// threshold 0 uses CompactThreshold with the default context window.
+func CompactMessages(messages []provider.Message, workspace string, prov provider.Provider, model string, threshold int) (*CompactResult, error) {
+	if threshold <= 0 {
+		threshold = CompactThreshold(0, 0)
+	}
 	tokens := EstimateTokens(messages)
-	if tokens < DefaultTokenThreshold {
+	if tokens < threshold {
 		return &CompactResult{Messages: messages}, nil
 	}
 
-	slog.Info("context compaction triggered", "tokens", tokens, "threshold", DefaultTokenThreshold, "message_count", len(messages))
+	slog.Info("context compaction triggered", "tokens", tokens, "threshold", threshold, "message_count", len(messages))
 
 	// Write full history to log file before any modifications
 	logFile, err := writeHistoryLog(messages, workspace)
@@ -64,7 +141,7 @@ func CompactMessages(messages []provider.Message, workspace string, prov provide
 
 	slog.Info("after pruning", "tokens_before", tokens, "tokens_after", prunedTokens)
 
-	if prunedTokens < DefaultTokenThreshold {
+	if prunedTokens < threshold {
 		return &CompactResult{
 			Messages: pruned,
 			Pruned:   true,

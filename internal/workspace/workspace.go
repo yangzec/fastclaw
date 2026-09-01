@@ -27,17 +27,24 @@ import (
 // namespacing (bucket prefix, directory tree, ...) below the agent scope.
 //
 // projectID and sessionID together name the workspace folder for one
-// chat. projectID wins when both are set: every session inside a
-// project shares the same folder, which is the whole value of project
-// (notes/files persist across the project's chats). On disk:
+// chat. Every user-visible write — write_file, HTTP upload, IM
+// attachments, unsandboxed exec relative paths — uses the same tuple
+// so "report.md" is one object no matter which channel produced it.
 //
-//	projectID="", sessionID=""   → <root>/<agentID>/<path>
-//	projectID="", sessionID="x"  → <root>/<agentID>/sessions/x/<path>
-//	projectID="p", *             → <root>/<agentID>/projects/p/<path>
+//	projectID="", sessionID=""   → <root>/<agentID>/<path>            (agent-shared)
+//	projectID="", sessionID="x"  → <root>/<agentID>/sessions/x/<path> (loose chat)
+//	projectID="p", sessionID=""  → <root>/<agentID>/projects/p/<path> (project landing / coding root)
+//	projectID="p", sessionID="x" → <root>/<agentID>/projects/p/x/<path> (project chat)
+//
+// The only intentional "drop the session segment" case is a coding
+// agent's project-root scope (dev server / shared app tree). Identity
+// files (SOUL.md, USER.md, knowledge) are not workspace objects.
 //
 // List with both empty returns EVERY object under the agent regardless
 // of project/session — used by the admin file browser. List with a
-// specific scope returns only that subtree.
+// specific scope returns only that subtree. Legacy files left at
+// projects/<pid>/<file> (no chat segment) stay readable as
+// project-root shared artifacts.
 type Store interface {
 	Put(ctx context.Context, agentID, projectID, sessionID, path string, r io.Reader, size int64, contentType string) error
 
