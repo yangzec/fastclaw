@@ -1095,6 +1095,20 @@ export async function steerChat(
   return data?.buffered === true;
 }
 
+// stopChat cancels the in-flight server turn. Needed after a page
+// refresh: aborting the browser SSE no longer cancels the agent.
+export async function stopChat(agentId: string, sessionId: string): Promise<boolean> {
+  const res = await apiFetch("/api/chat/stop", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agentId, sessionId }),
+  });
+  if (res.status === 409) return false;
+  if (!res.ok) throw new Error(`stop failed: ${res.status}`);
+  const data = await res.json().catch(() => ({}));
+  return data?.stopped === true;
+}
+
 export interface ToolResultMetadata {
   sandbox?: boolean;
   knowledgeSources?: KnowledgeSource[];

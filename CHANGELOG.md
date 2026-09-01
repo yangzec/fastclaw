@@ -62,6 +62,9 @@ action on upgrade — read those notes before deploying.
   timeout running after a client drop. Reload also keeps unfinished
   tools spinning and resumes `tool_call` / `tool_result` over
   `/api/chat/subscribe` instead of painting them `(stopped)`.
+  **Stop** now calls `POST /api/chat/stop` so it still cancels the
+  server turn after a refresh (aborting the browser SSE is no longer
+  enough).
 - **Chat bubbles swallowed the rest of a reply into one numbered
   code card.** A stray or unclosed ` ``` ` (common when the model
   quotes an `API error 400` dump) is a CommonMark fence that runs

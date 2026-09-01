@@ -1102,6 +1102,36 @@ func (s *Server) handleChatSteer(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusConflict, map[string]any{"buffered": false})
 }
 
+// handleChatStop cancels the in-flight web turn for this session.
+// Refresh only drops the SSE; Stop is the explicit cancel. 200 when a
+// turn was running, 409 when nothing was registered.
+func (s *Server) handleChatStop(w http.ResponseWriter, r *http.Request) {
+	var req chatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	ag := s.resolveAgent(r, req.AgentID)
+	if ag == nil {
+		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "agent not found"})
+		return
+	}
+	uid := s.effectiveUserID(r)
+	if uid == "" {
+		jsonResponse(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		return
+	}
+	if req.SessionID == "" {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "sessionId required"})
+		return
+	}
+	if !s.turns.cancel(turnCancelKey(uid, ag.Name(), req.SessionID)) {
+		jsonResponse(w, http.StatusConflict, map[string]any{"stopped": false})
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{"stopped": true})
+}
+
 // agentTurnTimeout is the upper bound on how long an agent goroutine
 // is allowed to run after the client connection drops. Bumped to 45m
 // after fan-out delegate_task work (6 parallel subagents × ~10m each
@@ -1169,14 +1199,19 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	// mid-tool even though agentCtx was built with WithoutCancel.
 	// releaseAgentCtx cancels only when this handler still owns the
 	// turn (normal completion / timeout). detachAgentCtx() on client
-	// gone leaves the timeout as the sole bound.
-	agentCtx, releaseAgentCtx, detachAgentCtx := newDetachedAgentCtx(r.Context())
+	// gone leaves the timeout as the sole bound. The cancel func is
+	// also registered so POST /api/chat/stop still works after reload.
+	agentCtx, cancelAgentCtx, releaseAgentCtx, detachAgentCtx := newDetachedAgentCtx(r.Context())
 	defer releaseAgentCtx()
 	agentCtx = agent.ContextWithStream(agentCtx, nil, s.dataStore, hub, uid, agentID, req.SessionID)
+	turnHandle := &turnCancel{cancel: cancelAgentCtx}
+	turnKey := turnCancelKey(uid, agentID, req.SessionID)
+	s.turns.register(turnKey, turnHandle)
 
 	agentDone := make(chan struct{})
 	go func() {
 		defer close(agentDone)
+		defer s.turns.unregister(turnKey, turnHandle)
 		// events param stays nil — emitEvent now fans out via the
 		// streamCtx attached above (persist + hub). The legacy channel
 		// path is no longer needed for this handler.
@@ -1652,8 +1687,8 @@ func parseTodoMarkdown(s string) []map[string]any {
 // (normal completion). detach() marks the turn as surviving the
 // handler so a later release() is a no-op — required so in-flight
 // tools are not killed when the browser goes away.
-func newDetachedAgentCtx(reqCtx context.Context) (ctx context.Context, release, detach func()) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(reqCtx), agentTurnTimeout)
+func newDetachedAgentCtx(reqCtx context.Context) (ctx context.Context, cancel, release, detach func()) {
+	ctx, cancel = context.WithTimeout(context.WithoutCancel(reqCtx), agentTurnTimeout)
 	var detached bool
 	release = func() {
 		if !detached {
@@ -1663,7 +1698,7 @@ func newDetachedAgentCtx(reqCtx context.Context) (ctx context.Context, release, 
 	detach = func() {
 		detached = true
 	}
-	return ctx, release, detach
+	return ctx, cancel, release, detach
 }
 
 func (s *Server) handleChatHistory(w http.ResponseWriter, r *http.Request) {
