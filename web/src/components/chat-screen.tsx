@@ -1273,7 +1273,7 @@ export function ChatScreen() {
         <button
           type="button"
           onClick={() => setFilesSheetOpen((v) => !v)}
-          className={`shrink-0 inline-flex h-9 w-9 items-center justify-center rounded-md transition-colors md:h-8 md:w-8 ${}
+          className={`shrink-0 inline-flex h-9 w-9 items-center justify-center rounded-md transition-colors md:h-8 md:w-8 ${
             filesSheetOpen
               ? "bg-muted text-foreground"
               : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
