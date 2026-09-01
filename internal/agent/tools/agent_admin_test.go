@@ -193,6 +193,35 @@ func TestAgentAdminRefusesForeignAgent(t *testing.T) {
 	}
 }
 
+// configure_agent must not write system-scope provider/settings rows.
+// An owner chatting with their own agent is callerIsAdmin, so without
+// this gate they could overwrite the platform OpenAI key.
+func TestConfigureAgentRejectsSystemScopeKeys(t *testing.T) {
+	st := newTestStore(t)
+	_, ownerID := seedAgent(t, st, "owned")
+
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	RegisterAgentAdmin(r, AgentAdminDeps{Store: st, OwnerUserID: ownerID})
+	r.SetCallerIsAdmin(true)
+
+	_, err := r.GetFunc("configure_agent")(context.Background(), json.RawMessage(`{"agent":"owned","key":"provider.openai.apiKey","value":"sk-stolen"}`))
+	if err == nil {
+		t.Fatal("expected refusal for provider.openai.apiKey")
+	}
+	if !strings.Contains(err.Error(), "platform-wide") && !strings.Contains(err.Error(), "system-scoped") {
+		t.Errorf("error should mention system/platform scope, got: %v", err)
+	}
+
+	_, err = r.GetFunc("configure_agent")(context.Background(), json.RawMessage(`{"agent":"owned","key":"tools.providers","value":"{}"}`))
+	if err == nil {
+		t.Fatal("expected refusal for tools.providers")
+	}
+
+	if _, err := r.GetFunc("configure_agent")(context.Background(), json.RawMessage(`{"agent":"owned","key":"model","value":"openai/gpt-4.1"}`)); err != nil {
+		t.Fatalf("agent-scope model must still work: %v", err)
+	}
+}
+
 // create_agent must pin ownership to the calling account. agentcli.Init's
 // convenience fallback picks "the first active super_admin" when no owner
 // is named, which in a multi-tenant deployment would hand the new agent

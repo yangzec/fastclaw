@@ -292,6 +292,21 @@ func TestInitFailsWhenNoSuperAdmin(t *testing.T) {
 	}
 }
 
+func TestAssertAgentScopedConfig(t *testing.T) {
+	if err := AssertAgentScopedConfig("provider.openai.apiKey"); err == nil {
+		t.Fatal("provider key must be rejected")
+	}
+	if err := AssertAgentScopedConfig("tools.providers"); err == nil {
+		t.Fatal("system namespace must be rejected")
+	}
+	if err := AssertAgentScopedConfig("model"); err != nil {
+		t.Fatalf("agent-scope model: %v", err)
+	}
+	if err := AssertAgentScopedConfig("sandbox.enabled"); err != nil {
+		t.Fatalf("agent-scope sandbox: %v", err)
+	}
+}
+
 func TestSetGetConfigAgentScope(t *testing.T) {
 	st := freshStore(t)
 	res, err := Init(context.Background(), st, "alpha", InitOptions{})
@@ -513,9 +528,9 @@ func TestParseValueTypes(t *testing.T) {
 
 func TestSettingKeyRouting(t *testing.T) {
 	cases := []struct {
-		key           string
-		ns            string
-		path          []string
+		key            string
+		ns             string
+		path           []string
 		wantAgentScope bool
 	}{
 		{"model", "agents.defaults", []string{"model"}, true},

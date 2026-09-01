@@ -4094,6 +4094,7 @@ func (a *Agent) sendMediaFiles(msg bus.InboundMessage, mediaPaths []string) {
 	outMsg := bus.OutboundMessage{
 		Channel:    msg.Channel,
 		AccountID:  msg.AccountID,
+		UserID:     msg.UserID,
 		ChatID:     msg.ChatID,
 		MediaPaths: mediaPaths,
 		AllowSplit: a.splitReplies,

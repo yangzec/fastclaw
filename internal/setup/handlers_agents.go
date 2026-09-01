@@ -786,10 +786,17 @@ func (s *Server) handleGetAgentSystemFile(w http.ResponseWriter, r *http.Request
 		return
 	}
 	caller := s.effectiveUserID(r)
+	ident, _ := auth.FromContext(r.Context())
 
-	// Identity files: read the owner's row directly — that's the single
-	// source of truth, regardless of who's asking.
+	// Identity files are the owner's persona spec. Chat tools already
+	// refuse non-admin reads ("send me your SOUL.md" leaked in
+	// production); HTTP must match. Owners and platform admins still
+	// need the Customize UI / CLI path.
 	if agentIdentityFiles[name] {
+		if rec.UserID != caller && !ident.CanAdminPlatform() {
+			jsonResponse(w, http.StatusForbidden, map[string]any{"error": "not your agent"})
+			return
+		}
 		data, err := s.dataStore.GetAgentFileExact(r.Context(), id, rec.UserID, name)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
@@ -831,6 +838,15 @@ func (s *Server) handleGetAgentSystemFile(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if rec.UserID != caller {
+		// USER.md may fall back to the owner's template so a new
+		// public-link visitor sees a starter profile in Customize.
+		// MEMORY.md is the owner's accumulated private notes — the
+		// agent runtime already uses Exact-only; HTTP must not leak
+		// it to a stranger who has never written their own row.
+		if name == "MEMORY.md" {
+			jsonResponse(w, http.StatusOK, map[string]any{"content": "", "source": "default"})
+			return
+		}
 		if data, err := s.dataStore.GetAgentFileExact(r.Context(), id, rec.UserID, name); err == nil {
 			jsonResponse(w, http.StatusOK, map[string]any{"content": string(data), "source": "owner"})
 			return
@@ -1096,6 +1112,17 @@ func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope 
 	// the per-chat view; use this branch when the URL is
 	// /agents/<aid>/project/<pid> with no chat selected.
 	if rawSession == "" && rawProject != "" {
+		if !safeScopeSegment(rawProject) {
+			return rejectAllScope()
+		}
+		// Projects are private to (user_id, agent_id). A public-agent
+		// viewer who guesses another user's proj_* must not list or
+		// zip that tree. Agent owners keep the existing "I can see
+		// every project on my agent" browse (they already have the
+		// no-param accept-all view).
+		if !s.callerOwnsAgent(r, agentID) && !s.callerOwnsProject(r, agentID, rawProject) {
+			return rejectAllScope()
+		}
 		prefix := "projects/" + rawProject + "/"
 		return fileScope{
 			acceptPath:    func(p string) bool { return strings.HasPrefix(p, prefix) },
@@ -1417,6 +1444,13 @@ func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusForbidden, map[string]any{"error": "path escape"})
 		return
 	}
+	slashRel := strings.TrimPrefix(filepath.ToSlash(rel), "/")
+	if strings.HasPrefix(slashRel, "sessions/") || strings.HasPrefix(slashRel, "projects/") {
+		if !s.fileScopeForRequest(r, id).acceptPath(slashRel) {
+			jsonResponse(w, http.StatusNotFound, map[string]any{"error": "file not found"})
+			return
+		}
+	}
 	// ServeFile sets Content-Type from the mime database itself; we just
 	// add the CSP sandbox for HTML on top — same rationale as in
 	// setFileResponseHeaders above.
@@ -1432,6 +1466,18 @@ func (s *Server) serveFileFromWorkspaceStore(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": "file not found"})
 		return
+	}
+	// List/zip already filter through fileScopeForRequest. GET used to
+	// skip that check for full store keys (sessions/…, projects/…), so a
+	// public-agent viewer who knew another chatter's chat_id could
+	// download their files. Agent-root names (avatar.png) stay readable
+	// to anyone who can see the agent — they are shared assets.
+	agentRel := workspaceAgentRel(projectID, sessionID, rel)
+	if strings.HasPrefix(agentRel, "sessions/") || strings.HasPrefix(agentRel, "projects/") {
+		if !s.fileScopeForRequest(r, agentID).acceptPath(agentRel) {
+			jsonResponse(w, http.StatusNotFound, map[string]any{"error": "file not found"})
+			return
+		}
 	}
 	rc, err := s.workspaceStore.Get(r.Context(), agentID, projectID, sessionID, rel)
 	if err != nil {
@@ -1480,6 +1526,52 @@ func (s *Server) resolveWorkspaceFileGet(r *http.Request, agentID, path string) 
 		return pid, chatID, rel, true
 	}
 	return "", chatID, rel, true
+}
+
+// workspaceAgentRel rebuilds the agent-relative store path that
+// fileScopeForRequest filters on. Full keys (sessions/…, projects/…)
+// are already in that shape; bare names need the scope prefix put back.
+func workspaceAgentRel(projectID, sessionID, rel string) string {
+	rel = strings.TrimPrefix(filepath.ToSlash(rel), "/")
+	if strings.HasPrefix(rel, "sessions/") || strings.HasPrefix(rel, "projects/") {
+		return rel
+	}
+	switch {
+	case projectID != "" && sessionID != "":
+		return "projects/" + projectID + "/" + sessionID + "/" + rel
+	case sessionID != "":
+		return "sessions/" + sessionID + "/" + rel
+	case projectID != "":
+		return "projects/" + projectID + "/" + rel
+	default:
+		return rel
+	}
+}
+
+// safeScopeSegment rejects project/session ids that could widen a
+// prefix match (slashes, ".." , backslashes). Store ids are opaque
+// tokens; anything else is a probe.
+func safeScopeSegment(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" || id == "." || id == ".." {
+		return false
+	}
+	if strings.ContainsAny(id, "/\\") || strings.Contains(id, "..") {
+		return false
+	}
+	return true
+}
+
+func (s *Server) callerOwnsProject(r *http.Request, agentID, projectID string) bool {
+	if s.dataStore == nil {
+		return false
+	}
+	uid := s.effectiveUserID(r)
+	if uid == "" || projectID == "" {
+		return false
+	}
+	p, err := s.dataStore.GetProject(r.Context(), uid, agentID, projectID)
+	return err == nil && p != nil
 }
 
 // setFileResponseHeaders picks the right Content-Type for a user-produced

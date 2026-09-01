@@ -382,3 +382,75 @@ func TestAgentFileUploadLandsInPendingProjectSession(t *testing.T) {
 		t.Fatalf("get body = %q, want %q", got, payload)
 	}
 }
+
+// A public-agent viewer who knows the owner's store path (or project id)
+// must not list or GET those files. List was already scoped; GET by
+// full sessions/… or projects/… key used to skip the same check.
+func TestAgentFileGetRejectsForeignFullStorePath(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, owner, viewer := newAuthTestServer(t, ctx)
+
+	const (
+		agentID    = "agt_iso_file"
+		sessionKey = "s-owner-secret"
+		chatID     = "web-owner-1"
+		projectID  = "proj_owner_only"
+		payload    = "owner-secret\n"
+	)
+	now := time.Now().UTC()
+	if err := s.dataStore.SaveAgent(ctx, &store.AgentRecord{
+		ID: agentID, UserID: owner.ID, Name: "iso file",
+		IsPublic: true, Config: map[string]any{}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("save agent: %v", err)
+	}
+	if err := s.dataStore.SaveSession(ctx, owner.ID, agentID, sessionKey, &store.SessionRecord{
+		Channel: "web", ChatID: chatID,
+	}); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	if err := s.dataStore.SaveProject(ctx, &store.ProjectRecord{
+		UserID: owner.ID, AgentID: agentID, ID: projectID, Name: "owner proj",
+	}); err != nil {
+		t.Fatalf("save project: %v", err)
+	}
+	ws := workspace.NewLocalFS(t.TempDir())
+	s.SetWorkspaceStore(ws)
+	if err := ws.Put(ctx, agentID, "", chatID, "secret.txt", strings.NewReader(payload), int64(len(payload)), "text/plain"); err != nil {
+		t.Fatalf("put session file: %v", err)
+	}
+	if err := ws.Put(ctx, agentID, projectID, "", "notes.md", strings.NewReader(payload), int64(len(payload)), "text/markdown"); err != nil {
+		t.Fatalf("put project file: %v", err)
+	}
+
+	get := func(userID, path, query string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := authTestRequest(t, ctx, resolver, http.MethodGet, "/api/agents/"+agentID+"/files/"+path+query, userID)
+		req.SetPathValue("id", agentID)
+		req.SetPathValue("path", path)
+		rr := httptest.NewRecorder()
+		s.authMiddleware(s.handleAgentFile)(rr, req)
+		return rr
+	}
+
+	// Owner can still fetch via the full store key (existing contract).
+	if rr := get(owner.ID, "sessions/"+chatID+"/secret.txt", ""); rr.Code != http.StatusOK {
+		t.Fatalf("owner full-path GET = %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Viewer guessing the store path, with or without the victim sessionId.
+	for _, tc := range []struct{ path, query string }{
+		{"sessions/" + chatID + "/secret.txt", ""},
+		{"sessions/" + chatID + "/secret.txt", "?sessionId=" + sessionKey},
+		{"projects/" + projectID + "/notes.md", ""},
+		{"projects/" + projectID + "/notes.md", "?projectId=" + projectID},
+	} {
+		if rr := get(viewer.ID, tc.path, tc.query); rr.Code != http.StatusNotFound {
+			t.Fatalf("viewer GET %s%s = %d, want 404: %s", tc.path, tc.query, rr.Code, rr.Body.String())
+		}
+	}
+
+	if got := listAgentFilePaths(t, ctx, s, resolver, viewer.ID, agentID, "?projectId="+projectID); len(got) != 0 {
+		t.Fatalf("viewer LIST ?projectId= = %v, want empty", got)
+	}
+}

@@ -124,7 +124,8 @@ type MediaItem struct {
 type OutboundMessage struct {
 	Channel      string             // target channel type
 	AccountID    string             // target account within the channel
-	AgentID      string             // originating agent — used by the WebChannel to route SSE events to the right (agent, session) pair; harmless for IM channels (which key on AccountID).
+	AgentID      string             // originating agent — used by the WebChannel to route SSE events to the right (user, agent, session) tuple; harmless for IM channels (which key on AccountID).
+	UserID       string             // session owner / chatter who should receive a web SSE fan-out. Empty means "no web subscriber" (IM-only). Required to keep public-agent cron replies from leaking across visitors who share a chat_id.
 	ChatID       string             // target chat identifier
 	Text         string             // message text
 	ReplyToMsgID string             // reply to specific message
