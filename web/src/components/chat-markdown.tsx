@@ -130,9 +130,8 @@ export function ChatMarkdown({
       // Inline base64 images pass through (the default transform strips data:).
       if (key === "src" && url.startsWith("data:image/")) return url;
       // Remap sandbox `/workspace/<name>` (image src + link href) to the
-      // authenticated file API. The docker bind-mount is session-scoped, so
-      // prepend sessions/<sid>/ or the file API resolves against the agent root
-      // and 404s.
+      // authenticated file API. Pass ?sessionId= so the handler resolves
+      // chat_id / coding collapse — do not guess sessions/<session_key>/.
       if (agentId && (key === "src" || key === "href") && (url.startsWith("/workspace/") || url.startsWith("workspace/"))) {
         const rel = url.startsWith("/workspace/")
           ? url.slice("/workspace/".length)

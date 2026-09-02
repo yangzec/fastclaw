@@ -13,7 +13,7 @@ import (
 type MeterFunc func(ctx context.Context, agentID string, bytes int64)
 
 // Metered wraps an existing Store to count bytes flowing through Put.
-// Get / Stat / List / Delete / SignedURL pass through untouched.
+// Get / Stat / List / Delete / SignedURL / PublicURL pass through untouched.
 type Metered struct {
 	inner Store
 	meter MeterFunc
@@ -83,6 +83,10 @@ func (m *Metered) Move(ctx context.Context, agentID, fromProjectID, fromSessionI
 
 func (m *Metered) SignedURL(ctx context.Context, agentID, projectID, sessionID, path string, ttl time.Duration) (string, error) {
 	return m.inner.SignedURL(ctx, agentID, projectID, sessionID, path, ttl)
+}
+
+func (m *Metered) PublicURL(ctx context.Context, agentID, projectID, sessionID, path string) (string, error) {
+	return m.inner.PublicURL(ctx, agentID, projectID, sessionID, path)
 }
 
 // LocalScopeDir forwards to the inner store when it implements

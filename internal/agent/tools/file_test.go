@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -153,5 +155,70 @@ func TestApplyEdit(t *testing.T) {
 				t.Errorf("count mismatch: got %d, want %d", count, tc.wantCount)
 			}
 		})
+	}
+}
+
+func TestWriteFileWorkspaceStoreReturnsStablePaths(t *testing.T) {
+	st := &imageArchiveStore{}
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	r.SetWorkspaceStore(st, "agent-a")
+	r.SetSessionID("sess-a")
+	r.SetGoalSessionKey("s-key")
+
+	args, err := json.Marshal(writeFileArgs{Path: "preview.html", Content: "<h1>Hello</h1>"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := makeWriteFile(r)(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "Written 14 bytes to preview.html") {
+		t.Fatalf("write summary missing: %s", text)
+	}
+	if !strings.Contains(text, "Workspace path: /workspace/preview.html") {
+		t.Fatalf("workspace path missing: %s", text)
+	}
+	if !strings.Contains(text, "URL: /api/agents/agent-a/files/preview.html?sessionId=s-key") {
+		t.Fatalf("stable gateway URL missing: %s", text)
+	}
+	if strings.Contains(text, "sessions/s-key/") || strings.Contains(text, "sessions/sess-a/") {
+		t.Fatalf("must not guess sessions/<id>/ in the display URL: %s", text)
+	}
+}
+
+func TestWriteFileWorkspaceStoreUsesPublicURLWhenConfigured(t *testing.T) {
+	st := &imageArchiveStore{publicURL: "https://cdn.example.test/fastclaw/agent-a/sessions/sess-a/preview.html"}
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	r.SetWorkspaceStore(st, "agent-a")
+	r.SetSessionID("sess-a")
+	r.SetGoalSessionKey("s-key")
+
+	args, err := json.Marshal(writeFileArgs{Path: "preview.html", Content: "<h1>Hello</h1>"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := makeWriteFile(r)(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "URL: https://cdn.example.test/fastclaw/agent-a/sessions/sess-a/preview.html") {
+		t.Fatalf("public URL missing: %s", text)
+	}
+	if strings.Contains(text, "URL: /api/agents/agent-a/files/") {
+		t.Fatalf("public URL configured but gateway URL was returned: %s", text)
+	}
+}
+
+func TestArchiveGatewayURLOmitsSessionIdForCodingRoot(t *testing.T) {
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	r.SetWorkspaceStore(&imageArchiveStore{}, "agent-a")
+	r.SetProjectID("proj-1")
+	r.SetGoalSessionKey("s-key")
+	r.SetCodingRootScope(true)
+	got := r.archiveGatewayURL("app/src.ts")
+	want := "/api/agents/agent-a/files/app/src.ts?projectId=proj-1"
+	if got != want {
+		t.Fatalf("coding URL = %q, want %q", got, want)
 	}
 }

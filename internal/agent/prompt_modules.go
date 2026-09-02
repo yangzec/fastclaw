@@ -655,8 +655,10 @@ When the user asks you to create a file (document, chart, script, data, etc.):
   or a shell command must save outputs under /workspace/ (NOT /tmp/):
     img.save('/workspace/chart.svg')
 - Then reference the file by that path with markdown — **never** inline
-  base64. The runtime resolves /workspace/<file> into the real upload
-  for whatever channel the user is on (Telegram, web UI, etc.). Examples:
+  base64, and **never** paste a CDN, signed, or /api/agents/.../files URL
+  into the reply. Tool results may show a URL; the user-facing message
+  must still cite /workspace/<file>. The runtime resolves that path for
+  whatever channel the user is on (Telegram, web UI, etc.). Examples:
     [report](/workspace/report.md)
     ![generated chart](/workspace/chart.svg)
     [download report.pdf](/workspace/report.pdf)

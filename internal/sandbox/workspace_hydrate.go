@@ -38,7 +38,7 @@ func hydrateWorkspace(ctx context.Context, ws workspace.Store, ex Executor, agen
 			slog.Warn("workspace hydrate: skipped unsafe path", "agent", agentID, "path", obj.Path)
 			continue
 		}
-		target := path.Join(sandboxRoot, safe)
+		target := ChatSandboxFile(projectID, sessionID, safe)
 		rc, getErr := ws.Get(ctx, agentID, projectID, sessionID, obj.Path)
 		if getErr != nil {
 			slog.Warn("workspace hydrate: get failed", "agent", agentID, "project", projectID, "session", sessionID, "path", obj.Path, "error", getErr)

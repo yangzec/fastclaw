@@ -87,5 +87,5 @@ func (f *Fal) Execute(ctx context.Context, req toolproviders.Request) (toolprovi
 	if len(urls) == 0 {
 		return toolproviders.Response{}, toolproviders.ErrNoResults
 	}
-	return toolproviders.Response{Text: renderURLs(a.Prompt, urls)}, nil
+	return urlResponse(a.Prompt, urls), nil
 }

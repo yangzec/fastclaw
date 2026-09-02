@@ -40,7 +40,7 @@ func (f *fakeExecutor) WriteFile(ctx context.Context, p, c string) (string, erro
 	return "", nil
 }
 func (f *fakeExecutor) ListDir(ctx context.Context, path string) (string, error) { return "", nil }
-func (f *fakeExecutor) Backend() string                                           { return "fake" }
+func (f *fakeExecutor) Backend() string                                          { return "fake" }
 func (f *fakeExecutor) Close() error {
 	atomic.AddInt32(&f.closed, 1)
 	return nil
@@ -247,14 +247,23 @@ func (w *fakeWorkspace) SignedURL(ctx context.Context, agentID, projectID, sessi
 	return "", workspace.ErrSignedURLUnsupported
 }
 
+func (w *fakeWorkspace) PublicURL(ctx context.Context, agentID, projectID, sessionID, p string) (string, error) {
+	return "", workspace.ErrSignedURLUnsupported
+}
+
 // scopeForKey collapses the (project, session) tuple to a single string
-// the test fakes can use as a map sub-key. Project wins so all chats in
-// one project share a slot, mirroring production scopeDir logic.
+// the test fakes can use as a map sub-key. Matches LocalFS.scopeDir:
+// project+session stay isolated; coding (session="") shares the project
+// root; loose chats key on session only.
 func scopeForKey(projectID, sessionID string) string {
-	if projectID != "" {
+	switch {
+	case projectID != "" && sessionID != "":
+		return "p:" + projectID + ":s:" + sessionID
+	case projectID != "":
 		return "p:" + projectID
+	default:
+		return sessionID
 	}
-	return sessionID
 }
 
 // TestLifecycle_HydrateOnCreate proves that the first tool call triggers
@@ -351,6 +360,124 @@ func (p *snappingPool) Get(ctx context.Context, agentID, projectID, sessionID st
 		p.fakePool.live[key] = &p.current.fakeExecutor
 	}
 	return p.current, nil
+}
+
+// localScopingWorkspace pretends to be LocalFS so Docker+local-disk
+// deployments can skip post-exec snapshot churn.
+type localScopingWorkspace struct {
+	*fakeWorkspace
+}
+
+func (w *localScopingWorkspace) LocalScopeDir(agentID, projectID, sessionID string) (string, bool) {
+	return "/tmp/fastclaw-test-workspace", true
+}
+
+// TestLifecycle_PostExecSyncWhenStoreIsRemote proves Docker/exec output
+// is copied into an S3/R2-like store immediately, not only on idle evict.
+func TestLifecycle_PostExecSyncWhenStoreIsRemote(t *testing.T) {
+	ws := newFakeWorkspace()
+	files := map[string][]byte{
+		"plot.svg": []byte("<svg/>"),
+	}
+	pool := newSnappingPool(files)
+	lp := NewLifecyclePool(pool, 0, 0)
+	lp.SetWorkspace(ws)
+	lp.Start()
+	defer lp.CloseAll()
+
+	ex, _ := lp.Get(context.Background(), "erin", "", "chat-1")
+	if _, err := ex.Exec(context.Background(), "python plot.py", time.Second); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ws.Get(context.Background(), "erin", "", "chat-1", "plot.svg")
+	if err != nil {
+		t.Fatalf("exec-created file missing from object store: %v", err)
+	}
+	data, _ := io.ReadAll(got)
+	got.Close()
+	if string(data) != "<svg/>" {
+		t.Fatalf("got %q", data)
+	}
+}
+
+func TestLifecycle_SkipPostExecWhenStoreIsLocal(t *testing.T) {
+	ws := &localScopingWorkspace{fakeWorkspace: newFakeWorkspace()}
+	files := map[string][]byte{"plot.svg": []byte("<svg/>")}
+	pool := newSnappingPool(files)
+	lp := NewLifecyclePool(pool, 0, 0)
+	lp.SetWorkspace(ws)
+	lp.Start()
+	defer lp.CloseAll()
+
+	ex, _ := lp.Get(context.Background(), "erin", "", "chat-1")
+	if _, err := ex.Exec(context.Background(), "python plot.py", time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.Get(context.Background(), "erin", "", "chat-1", "plot.svg"); err == nil {
+		t.Fatal("local-disk store should not snapshot after every docker exec")
+	}
+}
+
+func TestLifecycle_WriteFileMirrorsToObjectStore(t *testing.T) {
+	ws := newFakeWorkspace()
+	lp := NewLifecyclePool(newFakePool(), 0, 0)
+	lp.SetWorkspace(ws)
+	lp.Start()
+	defer lp.CloseAll()
+
+	ex, _ := lp.Get(context.Background(), "erin", "", "chat-1")
+	if _, err := ex.WriteFile(context.Background(), "/workspace/notes.md", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ws.Get(context.Background(), "erin", "", "chat-1", "notes.md")
+	if err != nil {
+		t.Fatalf("sandbox write_file should land in object store: %v", err)
+	}
+	data, _ := io.ReadAll(got)
+	got.Close()
+	if string(data) != "hello" {
+		t.Fatalf("got %q", data)
+	}
+}
+
+func TestLifecycle_WriteFileMirrorsProjectChatSubdir(t *testing.T) {
+	ws := newFakeWorkspace()
+	lp := NewLifecyclePool(newFakePool(), 0, 0)
+	lp.SetWorkspace(ws)
+	lp.Start()
+	defer lp.CloseAll()
+
+	ex, _ := lp.Get(context.Background(), "erin", "proj", "chat")
+	if _, err := ex.WriteFile(context.Background(), "/workspace/notes.md", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ws.Get(context.Background(), "erin", "proj", "chat", "notes.md")
+	if err != nil {
+		t.Fatalf("project-chat sandbox write should land in session store: %v", err)
+	}
+	data, _ := io.ReadAll(got)
+	got.Close()
+	if string(data) != "hello" {
+		t.Fatalf("got %q", data)
+	}
+}
+
+func TestLifecycle_WriteFileMirrorsCodingProjectRoot(t *testing.T) {
+	ws := newFakeWorkspace()
+	lp := NewLifecyclePool(newFakePool(), 0, 0)
+	lp.SetWorkspace(ws)
+	lp.Start()
+	defer lp.CloseAll()
+
+	ex, _ := lp.Get(context.Background(), "erin", "proj", "")
+	if _, err := ex.WriteFile(context.Background(), "/workspace/app/src.ts", "x"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ws.Get(context.Background(), "erin", "proj", "", "app/src.ts")
+	if err != nil {
+		t.Fatalf("coding sandbox write should land at project root: %v", err)
+	}
+	got.Close()
 }
 
 // TestLifecycle_FlushOnEvict proves that files the sandbox wrote (but

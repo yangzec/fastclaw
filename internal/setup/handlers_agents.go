@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/fastclaw-ai/fastclaw/internal/agent/tools"
 	"github.com/fastclaw-ai/fastclaw/internal/auth"
@@ -987,6 +988,22 @@ func (s *Server) workspaceSessionScope(ctx context.Context, agentID, urlToken st
 	return chatID
 }
 
+// codingRootScope matches Agent.storeSessionID: when the deployment
+// wired a project runtime, every agent in a project writes the project
+// root (session="") so the preview mount and file tools share one tree.
+func (s *Server) codingRootScope(projectID string) bool {
+	return s != nil && s.runtimeMgr != nil && strings.TrimSpace(projectID) != ""
+}
+
+// httpStoreSession is the session segment HTTP list / GET / upload /
+// reveal must use so they hit the same store tuple write_file used.
+func (s *Server) httpStoreSession(projectID, sessionID string) string {
+	if s.codingRootScope(projectID) {
+		return ""
+	}
+	return sessionID
+}
+
 // pendingOwnerSessionID is the store session dir to use when the caller
 // owns the agent and passed a sessionId that is not in the session table
 // yet. The web composer mints the id and uploads attachments BEFORE the
@@ -1148,6 +1165,13 @@ func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope 
 		// Everyone else (public viewers, guessed tokens) sees nothing.
 		if pending := s.pendingOwnerSessionID(r, agentID, rawSession); pending != "" {
 			if pid := s.resolveSessionProject(r.Context(), r, agentID, rawSession); pid != "" {
+				if s.codingRootScope(pid) {
+					prefix := "projects/" + pid + "/"
+					return fileScope{
+						acceptPath:    func(p string) bool { return strings.HasPrefix(p, prefix) },
+						archiveSuffix: pid,
+					}
+				}
 				prefix := "projects/" + pid + "/" + pending + "/"
 				return fileScope{
 					acceptPath:    func(p string) bool { return strings.HasPrefix(p, prefix) },
@@ -1168,6 +1192,13 @@ func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope 
 		return rejectAllScope()
 	}
 	if pid := s.resolveSessionProject(r.Context(), r, agentID, rawSession); pid != "" {
+		if s.codingRootScope(pid) {
+			prefix := "projects/" + pid + "/"
+			return fileScope{
+				acceptPath:    func(p string) bool { return strings.HasPrefix(p, prefix) },
+				archiveSuffix: pid,
+			}
+		}
 		ownPrefix := "projects/" + pid + "/" + chatID + "/"
 		rootPrefix := "projects/" + pid + "/"
 		return fileScope{
@@ -1331,8 +1362,7 @@ func (s *Server) handleAgentWorkspaceReveal(w http.ResponseWriter, r *http.Reque
 			projectID = pid
 		}
 	}
-
-	dir, ok := scoper.LocalScopeDir(id, projectID, chatID)
+	dir, ok := scoper.LocalScopeDir(id, projectID, s.httpStoreSession(projectID, chatID))
 	if !ok || dir == "" {
 		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace store did not return a host path"})
 		return
@@ -1479,6 +1509,21 @@ func (s *Server) serveFileFromWorkspaceStore(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
+	// ?download=1 must stay on the gateway so Content-Disposition is set.
+	if r.URL.Query().Get("download") != "1" && shouldRedirectWorkspaceFileToSignedURL(rel) {
+		if public, err := s.workspaceStore.PublicURL(r.Context(), agentID, projectID, sessionID, rel); err == nil && strings.TrimSpace(public) != "" {
+			http.Redirect(w, r, public, http.StatusFound)
+			return
+		} else if err != nil && !errors.Is(err, workspace.ErrSignedURLUnsupported) {
+			slog.Debug("workspace public URL unavailable; falling back", "agent", agentID, "path", rel, "error", err)
+		}
+		if signed, err := s.workspaceStore.SignedURL(r.Context(), agentID, projectID, sessionID, rel, 10*time.Minute); err == nil && signed != "" {
+			http.Redirect(w, r, signed, http.StatusFound)
+			return
+		} else if err != nil && !errors.Is(err, workspace.ErrSignedURLUnsupported) {
+			slog.Debug("workspace signed URL unavailable; proxying through gateway", "agent", agentID, "path", rel, "error", err)
+		}
+	}
 	rc, err := s.workspaceStore.Get(r.Context(), agentID, projectID, sessionID, rel)
 	if err != nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": err.Error()})
@@ -1518,12 +1563,13 @@ func (s *Server) resolveWorkspaceFileGet(r *http.Request, agentID, path string) 
 	chatID := s.workspaceSessionScope(r.Context(), agentID, rawSession)
 	if chatID == "" {
 		if pending := s.pendingOwnerSessionID(r, agentID, rawSession); pending != "" {
-			return s.resolveSessionProject(r.Context(), r, agentID, rawSession), pending, rel, true
+			pid := s.resolveSessionProject(r.Context(), r, agentID, rawSession)
+			return pid, s.httpStoreSession(pid, pending), rel, true
 		}
 		return "", "", "", false
 	}
 	if pid := s.resolveSessionProject(r.Context(), r, agentID, rawSession); pid != "" {
-		return pid, chatID, rel, true
+		return pid, s.httpStoreSession(pid, chatID), rel, true
 	}
 	return "", chatID, rel, true
 }
@@ -1582,6 +1628,25 @@ func (s *Server) callerOwnsProject(r *http.Request, agentID, projectID string) b
 // `sandbox` header is the same protection the chat preview gets via the
 // iframe `sandbox` attribute, but applied at the HTTP layer so it kicks in
 // no matter how the file is loaded.
+func shouldRedirectWorkspaceFileToSignedURL(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	// Only types the browser loads as <img>/<iframe>/<a>, not files the
+	// SPA fetch()es as text. A 302 to R2/CDN is cross-origin: images
+	// still render, but Files-panel source preview would fail CORS.
+	// HTML stays same-origin so CSP sandbox applies.
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico",
+		".pdf",
+		".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac",
+		".mp4", ".webm", ".mov", ".mkv",
+		".zip", ".tar", ".gz", ".tgz", ".7z", ".rar",
+		".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx":
+		return true
+	default:
+		return false
+	}
+}
+
 func setFileResponseHeaders(w http.ResponseWriter, r *http.Request, path string) {
 	ext := strings.ToLower(filepath.Ext(path))
 	ctype := mime.TypeByExtension(ext)
@@ -1666,6 +1731,7 @@ func (s *Server) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	storeSession := s.httpStoreSession(projectID, sessionID)
 	saved := make([]map[string]any, 0, len(headers))
 	for _, h := range headers {
 		fh, err := h.Open()
@@ -1679,7 +1745,7 @@ func (s *Server) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
-		if err := s.workspaceStore.Put(r.Context(), id, projectID, sessionID, h.Filename, strings.NewReader(string(data)), int64(len(data)), ""); err != nil {
+		if err := s.workspaceStore.Put(r.Context(), id, projectID, storeSession, h.Filename, strings.NewReader(string(data)), int64(len(data)), ""); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}

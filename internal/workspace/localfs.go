@@ -55,11 +55,9 @@ func (f *LocalFS) LocalScopeDir(agentID, projectID, sessionID string) (string, b
 //
 // Project chats keep their own subdir inside the project so two
 // concurrent chats can't collide on `notes.md`, and "move chat into
-// /out of project" is a single directory rename. Sandbox containers
-// for project chats mount the project root (so siblings are visible
-// at `/workspace/<other-sid>/...`) but cwd into the chat's subdir
-// so relative writes default to the chat's own files — see
-// docker_executor.go's pool.Get.
+// /out of project" is a single directory rename. The turn sandbox
+// mounts that same prefix at /workspace so exec, write_file, and
+// img.save('/workspace/…') share one tree.
 func (f *LocalFS) scopeDir(agentID, projectID, sessionID string) string {
 	switch {
 	case projectID != "" && sessionID != "":
@@ -276,5 +274,12 @@ func (f *LocalFS) Delete(ctx context.Context, agentID, projectID, sessionID, pat
 // gateway's existing /api/agents/{id}/files/{path} endpoint, which streams
 // the file over the authenticated channel.
 func (f *LocalFS) SignedURL(ctx context.Context, agentID, projectID, sessionID, path string, ttl time.Duration) (string, error) {
+	return "", ErrSignedURLUnsupported
+}
+
+// PublicURL is not supported for local files — there is no public CDN
+// in front of ~/.fastclaw/workspaces. Callers fall through to the
+// authenticated /api/agents/{id}/files/{path} gateway.
+func (f *LocalFS) PublicURL(ctx context.Context, agentID, projectID, sessionID, path string) (string, error) {
 	return "", ErrSignedURLUnsupported
 }

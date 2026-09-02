@@ -216,22 +216,15 @@ func (e *E2BExecutor) Hydrate(ctx context.Context) error {
 
 	workspaceCount := 0
 	if e.workspace != nil {
-		// For project chats, hydrate the whole project (List with
-		// session=""), so the chat sees sibling chats' files at
-		// /workspace/<other-sid>/... — same visibility docker gets
-		// from mounting projects/<pid>/ as the bind root. Loose chats
-		// stay scoped to their own session subtree.
-		listProject := e.projectID
-		listSession := e.sessionID
-		if e.projectID != "" {
-			listSession = ""
-		}
-		objs, err := e.workspace.List(ctx, e.agentID, listProject, listSession)
+		// List the same (project, session) the file tools write to.
+		// Coding Get uses session="" so this is the whole project;
+		// a project chat uses its own prefix (siblings stay in theirs).
+		objs, err := e.workspace.List(ctx, e.agentID, e.projectID, e.sessionID)
 		if err != nil {
 			slog.Warn("e2b hydrate: workspace list", "agent", e.agentID, "project", e.projectID, "session", e.sessionID, "error", err)
 		} else {
 			for _, obj := range objs {
-				rc, err := e.workspace.Get(ctx, e.agentID, listProject, listSession, obj.Path)
+				rc, err := e.workspace.Get(ctx, e.agentID, e.projectID, e.sessionID, obj.Path)
 				if err != nil {
 					slog.Warn("e2b hydrate: workspace get", "path", obj.Path, "error", err)
 					continue
@@ -813,8 +806,9 @@ func (e *E2BExecutor) SnapshotWorkspace(ctx context.Context) (map[string][]byte,
 	// an empty result. base64 -w0 keeps output on a single line so
 	// envd's frame parser doesn't fight whitespace folding. Falls back
 	// to the empty tar if /workspace is missing entirely.
-	cmd := "if [ -d /workspace ]; then " +
-		"tar -czf - -C /workspace . 2>/dev/null | base64 -w0; " +
+	snapRoot := ChatSandboxDir(e.projectID, e.sessionID)
+	cmd := "if [ -d " + shellQuote(snapRoot) + " ]; then " +
+		"tar -czf - -C " + shellQuote(snapRoot) + " . 2>/dev/null | base64 -w0; " +
 		"fi"
 	out, err := e.execOnce(ctx, cmd, 60*time.Second)
 	if err != nil {

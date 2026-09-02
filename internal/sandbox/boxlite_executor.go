@@ -260,9 +260,6 @@ func (e *BoxliteExecutor) Hydrate(ctx context.Context) error {
 	if e.workspace != nil {
 		listProject := e.projectID
 		listSession := e.sessionID
-		if e.projectID != "" {
-			listSession = ""
-		}
 		objs, err := e.workspace.List(ctx, e.agentID, listProject, listSession)
 		if err != nil {
 			slog.Warn("boxlite hydrate: workspace list", "agent", e.agentID, "error", err)
@@ -736,7 +733,7 @@ func (e *BoxliteExecutor) IsRemoteWorkspace() {}
 func (e *BoxliteExecutor) SnapshotWorkspace(ctx context.Context) (map[string][]byte, error) {
 	dlCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	u := e.prefixPath("/boxes/"+e.boxID+"/files") + "?path=/workspace"
+	u := e.prefixPath("/boxes/"+e.boxID+"/files") + "?path=" + url.QueryEscape(ChatSandboxDir(e.projectID, e.sessionID))
 	req, err := http.NewRequestWithContext(dlCtx, "GET", u, nil)
 	if err != nil {
 		return nil, err
@@ -777,6 +774,19 @@ func (e *BoxliteExecutor) SnapshotWorkspace(ctx context.Context) (map[string][]b
 		name := strings.TrimPrefix(hdr.Name, "./")
 		name = strings.TrimPrefix(name, "/")
 		name = strings.TrimPrefix(name, "workspace/")
+		if name == "" {
+			continue
+		}
+		// Requesting ChatSandboxDir may still yield names prefixed with
+		// <sid>/ if the backend tars from /workspace. Strip that so Put
+		// keys match write_file (projects/<pid>/<sid>/<rel>).
+		if e.projectID != "" && e.sessionID != "" {
+			if rest, ok := strings.CutPrefix(name, e.sessionID+"/"); ok {
+				name = rest
+			} else if name == e.sessionID {
+				continue
+			}
+		}
 		if name == "" {
 			continue
 		}

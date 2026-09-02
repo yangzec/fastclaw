@@ -1,9 +1,12 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/fastclaw-ai/fastclaw/internal/toolproviders"
@@ -53,6 +56,72 @@ func RegisterTTSChain(r *Registry, chain *toolproviders.Chain) {
 		if err != nil {
 			return "", err
 		}
-		return resp.Text, nil
+		return r.archiveTTSOutput(ctx, resp.Text)
 	})
+}
+
+func (r *Registry) archiveTTSOutput(ctx context.Context, text string) (string, error) {
+	if r.workspaceStore == nil || r.agentID == "" {
+		return text, nil
+	}
+	var extras []string
+	for _, hostPath := range mediaPathsFromOutput(text) {
+		data, err := os.ReadFile(hostPath)
+		if err != nil {
+			return "", fmt.Errorf("tts archive read %s: %w", hostPath, err)
+		}
+		if len(data) == 0 {
+			return "", fmt.Errorf("tts archive: empty audio file")
+		}
+		ext := strings.TrimPrefix(filepath.Ext(hostPath), ".")
+		if ext == "" {
+			ext = "mp3"
+		}
+		rel := generatedArtifactPath("generated-audio", ext)
+		ctype := audioContentType(ext)
+		if err := r.workspaceStore.Put(ctx, r.agentID, r.projectID, r.scopeSessionID(), rel, bytes.NewReader(data), int64(len(data)), ctype); err != nil {
+			return "", fmt.Errorf("tts archive put: %w", err)
+		}
+		extras = append(extras, rel)
+	}
+	if len(extras) == 0 {
+		return text, nil
+	}
+	var sb strings.Builder
+	sb.WriteString(strings.TrimRight(text, "\n"))
+	sb.WriteString("\n")
+	for _, rel := range extras {
+		fmt.Fprintf(&sb, "Workspace path: %s\nURL: %s\n", workspaceDisplayPath(rel), r.archiveDisplayURL(ctx, rel))
+	}
+	return sb.String(), nil
+}
+
+func mediaPathsFromOutput(output string) []string {
+	var paths []string
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "MEDIA:") {
+			continue
+		}
+		p := strings.TrimSpace(strings.TrimPrefix(line, "MEDIA:"))
+		if p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths
+}
+
+func audioContentType(ext string) string {
+	switch strings.ToLower(ext) {
+	case "mp3":
+		return "audio/mpeg"
+	case "wav":
+		return "audio/wav"
+	case "ogg":
+		return "audio/ogg"
+	case "m4a":
+		return "audio/mp4"
+	default:
+		return "application/octet-stream"
+	}
 }

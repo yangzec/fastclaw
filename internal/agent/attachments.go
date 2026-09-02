@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/fastclaw-ai/fastclaw/internal/sandbox"
 	"github.com/fastclaw-ai/fastclaw/internal/workspace"
 )
 
@@ -92,6 +93,10 @@ func (a *Agent) WriteSessionAttachments(ctx context.Context, sessionID, projectI
 	if len(token) > 5 {
 		token = token[len(token)-5:]
 	}
+	// Same session segment write_file / sandbox Get use, so coding
+	// agents land attachments at the project root the preview serves
+	// and project chats stay in projects/<pid>/<sid>/.
+	storeSession := a.storeSessionID(projectID, sessionID)
 	// Track names assigned in this batch so two attachments with the
 	// same caller-provided Name don't clobber each other. Cross-turn
 	// collisions are intentionally left to overwrite — re-uploading
@@ -113,7 +118,7 @@ func (a *Agent) WriteSessionAttachments(ctx context.Context, sessionID, projectI
 		hostDir := a.workspacePath
 		if a.workspaceStore != nil {
 			if ls, ok := a.workspaceStore.(workspace.LocalScoper); ok {
-				if d, ok := ls.LocalScopeDir(a.agentID, projectID, sessionID); ok && d != "" {
+				if d, ok := ls.LocalScopeDir(a.agentID, projectID, storeSession); ok && d != "" {
 					hostDir = d
 				}
 			}
@@ -129,18 +134,21 @@ func (a *Agent) WriteSessionAttachments(ctx context.Context, sessionID, projectI
 
 		// 2. Durable store (covers E2B / multi-pod via hydrate-on-create)
 		if a.workspaceStore != nil {
-			if pErr := a.workspaceStore.Put(ctx, a.agentID, projectID, sessionID, name, strings.NewReader(string(data)), int64(len(data)), contentTypeFromExt(ext)); pErr != nil {
+			if pErr := a.workspaceStore.Put(ctx, a.agentID, projectID, storeSession, name, strings.NewReader(string(data)), int64(len(data)), contentTypeFromExt(ext)); pErr != nil {
 				slog.Warn("attachment store put failed", "agent", a.name, "session", sessionID, "path", name, "error", pErr)
 			}
 		}
 
 		// 3. Live sandbox (covers E2B mid-session). Best-effort; missing
 		// pool / get failure just means the next exec will pull from the
-		// store via hydrate-on-create.
+		// store via hydrate-on-create. ChatSandboxFile maps the store
+		// key onto the physical sandbox path (project chats live under
+		// /workspace/<sid>/ on a project-root mount).
 		if a.sandboxPool != nil {
-			if ex, gErr := a.sandboxPool.Get(ctx, a.name, projectID, sessionID); gErr == nil && ex != nil {
-				if _, wErr := ex.WriteFile(ctx, "/workspace/"+name, string(data)); wErr != nil {
-					slog.Warn("attachment sandbox write failed", "agent", a.name, "session", sessionID, "path", name, "error", wErr)
+			if ex, gErr := a.sandboxPool.Get(ctx, a.name, projectID, storeSession); gErr == nil && ex != nil {
+				dest := sandbox.ChatSandboxFile(projectID, storeSession, name)
+				if _, wErr := ex.WriteFile(ctx, dest, string(data)); wErr != nil {
+					slog.Warn("attachment sandbox write failed", "agent", a.name, "session", sessionID, "path", dest, "error", wErr)
 				}
 			}
 		}

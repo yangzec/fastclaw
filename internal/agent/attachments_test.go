@@ -3,9 +3,15 @@ package agent
 import (
 	"context"
 	"encoding/base64"
+	"io"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
+
+	coderuntime "github.com/fastclaw-ai/fastclaw/internal/runtime"
+	"github.com/fastclaw-ai/fastclaw/internal/sandbox"
+	"github.com/fastclaw-ai/fastclaw/internal/workspace"
 )
 
 func TestSanitizeAttachmentName(t *testing.T) {
@@ -122,16 +128,16 @@ func TestBuildAttachmentNameSecondaryCollision(t *testing.T) {
 
 func TestExtFromMIMECoversCommonDocs(t *testing.T) {
 	cases := map[string]string{
-		"application/pdf":             ".pdf",
-		"application/pdf; charset=x":  ".pdf",
-		"text/plain":                  ".txt",
-		"text/markdown":               ".md",
-		"text/csv":                    ".csv",
-		"application/json":            ".json",
-		"application/zip":             ".zip",
-		"image/png":                   ".png",
-		"image/jpg":                   ".jpg",
-		"application/x-unknown-type":  "",
+		"application/pdf":            ".pdf",
+		"application/pdf; charset=x": ".pdf",
+		"text/plain":                 ".txt",
+		"text/markdown":              ".md",
+		"text/csv":                   ".csv",
+		"application/json":           ".json",
+		"application/zip":            ".zip",
+		"image/png":                  ".png",
+		"image/jpg":                  ".jpg",
+		"application/x-unknown-type": "",
 	}
 	for ct, want := range cases {
 		if got := extFromMIME(ct); got != want {
@@ -166,3 +172,92 @@ func TestDecodeDataURLPDF(t *testing.T) {
 
 // Compile-time sanity: decodeAttachment honors data URLs without a ctx.
 var _ = context.Background
+
+type attachExec struct {
+	writes map[string]string
+}
+
+func (e *attachExec) Exec(context.Context, string, time.Duration) (string, error) { return "", nil }
+func (e *attachExec) ReadFile(context.Context, string) (string, error)            { return "", nil }
+func (e *attachExec) WriteFile(_ context.Context, path, content string) (string, error) {
+	if e.writes == nil {
+		e.writes = map[string]string{}
+	}
+	e.writes[path] = content
+	return "", nil
+}
+func (e *attachExec) ListDir(context.Context, string) (string, error) { return "", nil }
+func (e *attachExec) Backend() string                                 { return "fake" }
+func (e *attachExec) Close() error                                    { return nil }
+
+type attachPool struct {
+	ex                          *attachExec
+	agentID, projectID, session string
+}
+
+func (p *attachPool) Get(_ context.Context, agentID, projectID, sessionID string) (sandbox.Executor, error) {
+	p.agentID, p.projectID, p.session = agentID, projectID, sessionID
+	return p.ex, nil
+}
+func (p *attachPool) Release(string, string, string) error { return nil }
+func (p *attachPool) CloseAll()                            {}
+func (p *attachPool) Backend() string                      { return "fake" }
+
+func TestWriteSessionAttachmentsProjectChatStoreAndSandbox(t *testing.T) {
+	ws := workspace.NewLocalFS(t.TempDir())
+	ex := &attachExec{}
+	pool := &attachPool{ex: ex}
+	a := &Agent{
+		name:           "bot",
+		agentID:        "agt",
+		workspaceStore: ws,
+		sandboxPool:    pool,
+	}
+	url := "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte("hello"))
+	paths := a.WriteSessionAttachments(context.Background(), "chat-1", "proj-1", []Attachment{{URL: url, Name: "note.txt"}})
+	if len(paths) != 1 || paths[0] != "note.txt" {
+		t.Fatalf("paths = %#v", paths)
+	}
+	if pool.projectID != "proj-1" || pool.session != "chat-1" {
+		t.Fatalf("sandbox Get = (%q,%q), want (proj-1, chat-1)", pool.projectID, pool.session)
+	}
+	if got := ex.writes["/workspace/note.txt"]; got != "hello" {
+		t.Fatalf("sandbox write = %#v", ex.writes)
+	}
+	rc, err := ws.Get(context.Background(), "agt", "proj-1", "chat-1", "note.txt")
+	if err != nil {
+		t.Fatalf("store get: %v", err)
+	}
+	defer rc.Close()
+	body, _ := io.ReadAll(rc)
+	if string(body) != "hello" {
+		t.Fatalf("store body = %q", body)
+	}
+}
+
+func TestWriteSessionAttachmentsCodingUsesProjectRoot(t *testing.T) {
+	ws := workspace.NewLocalFS(t.TempDir())
+	ex := &attachExec{}
+	pool := &attachPool{ex: ex}
+	a := &Agent{
+		name:           "bot",
+		agentID:        "agt",
+		workspaceStore: ws,
+		sandboxPool:    pool,
+		projectRuntime: &coderuntime.Manager{},
+	}
+	url := "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte("hi"))
+	a.WriteSessionAttachments(context.Background(), "chat-1", "proj-1", []Attachment{{URL: url, Name: "note.txt"}})
+	if pool.session != "" {
+		t.Fatalf("coding sandbox session = %q, want empty (shared project root)", pool.session)
+	}
+	if got := ex.writes["/workspace/note.txt"]; got != "hi" {
+		t.Fatalf("sandbox write = %#v", ex.writes)
+	}
+	if _, err := ws.Get(context.Background(), "agt", "proj-1", "", "note.txt"); err != nil {
+		t.Fatalf("project-root store get: %v", err)
+	}
+	if _, err := ws.Get(context.Background(), "agt", "proj-1", "chat-1", "note.txt"); err == nil {
+		t.Fatal("coding attachment must not land in the per-chat prefix")
+	}
+}

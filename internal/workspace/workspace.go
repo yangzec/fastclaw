@@ -69,6 +69,13 @@ type Store interface {
 	Move(ctx context.Context, agentID, fromProjectID, fromSessionID, toProjectID, toSessionID string) error
 
 	SignedURL(ctx context.Context, agentID, projectID, sessionID, path string, ttl time.Duration) (string, error)
+
+	// PublicURL returns a stable direct URL when the backend has a
+	// public CDN / custom domain configured. Backends without public
+	// direct access return ErrSignedURLUnsupported. Callers that need
+	// a browser-reachable link should then try SignedURL, then the
+	// authenticated /api/agents/{id}/files/{path} gateway.
+	PublicURL(ctx context.Context, agentID, projectID, sessionID, path string) (string, error)
 }
 
 // ObjectInfo describes one stored object. Fields not known by a particular

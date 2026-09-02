@@ -201,6 +201,7 @@ func (a *Agent) bindSession(ctx context.Context, channel, accountID, sessionID, 
 	// agent's edits land where the dev server serves. Only when actually
 	// inside a project; loose chats and non-coding agents are unaffected.
 	a.registry.SetCodingRootScope(a.projectRuntime != nil && projectID != "")
+	sandboxSession := a.storeSessionID(projectID, sessionID)
 	// If this scope already has a running app (a runtime record exists),
 	// redirect file tools into its app subfolder so edits keep landing
 	// where the dev server serves — across turns, not just the turn that
@@ -229,12 +230,12 @@ func (a *Agent) bindSession(ctx context.Context, channel, accountID, sessionID, 
 		pool := a.sandboxPool
 		agentName := a.name
 		a.registry.SetSandboxProvider(func(ctx context.Context) (sandbox.Executor, error) {
-			return pool.Get(ctx, agentName, projectID, sessionID)
+			return pool.Get(ctx, agentName, projectID, sandboxSession)
 		})
 		return
 	}
 	a.registry.SetSandboxProvider(nil)
-	ex, err := a.sandboxPool.Get(ctx, a.name, projectID, sessionID)
+	ex, err := a.sandboxPool.Get(ctx, a.name, projectID, sandboxSession)
 	if err != nil {
 		// Error level (not warn) — when sandbox is required and we
 		// can't bind, the next exec call will refuse with the
@@ -1240,6 +1241,10 @@ func (a *Agent) MoveWebChatSession(ctx context.Context, sessionId, projectID str
 		return nil
 	}
 	if a.sandboxPool != nil {
+		// Release THIS chat's turn sandbox. Coding agents Get with
+		// session="" (shared project slot); the key here is the chat
+		// id, so Release is a no-op for that shared sandbox — idle
+		// evict still cleans it up. Do not pass storeSessionID here.
 		if err := a.sandboxPool.Release(a.name, oldProject, key); err != nil {
 			slog.Warn("MoveWebChatSession: sandbox release failed",
 				"agent", a.name, "session", key, "error", err)
@@ -1251,6 +1256,31 @@ func (a *Agent) MoveWebChatSession(ctx context.Context, sessionId, projectID str
 		}
 	}
 	return a.sessions.MoveSessionByID(sessionId, projectID)
+}
+
+// storeSessionID is the session segment workspace.Store and the turn
+// sandbox share. Coding agents (project runtime + in a project) drop it
+// so edits, exec output, hydrate, and the preview mount all address
+// projects/<pid>/ — the same tree the dev server serves.
+func (a *Agent) storeSessionID(projectID, sessionID string) string {
+	if a != nil && a.projectRuntime != nil && strings.TrimSpace(projectID) != "" {
+		return ""
+	}
+	return sessionID
+}
+
+// StoreSessionID is the exported form of storeSessionID so IM / HTTP
+// callers can Get the same store tuple write_file used.
+func (a *Agent) StoreSessionID(projectID, sessionID string) string {
+	return a.storeSessionID(projectID, sessionID)
+}
+
+// WorkspaceStore returns the agent's durable artifact store, or nil.
+func (a *Agent) WorkspaceStore() workspace.Store {
+	if a == nil {
+		return nil
+	}
+	return a.workspaceStore
 }
 
 // Model returns the agent's model name.
@@ -2116,7 +2146,8 @@ func (a *Agent) pendingTodoItems(ctx context.Context) []string {
 	if a.workspaceStore == nil || a.agentID == "" || a.registry == nil {
 		return nil
 	}
-	rc, err := a.workspaceStore.Get(ctx, a.agentID, a.registry.ProjectID(), a.registry.SessionID(), "todo.md")
+	pid := a.registry.ProjectID()
+	rc, err := a.workspaceStore.Get(ctx, a.agentID, pid, a.storeSessionID(pid, a.registry.SessionID()), "todo.md")
 	if err != nil {
 		return nil
 	}
