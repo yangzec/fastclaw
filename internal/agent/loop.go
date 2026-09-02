@@ -1224,6 +1224,10 @@ func (a *Agent) MoveWebChatSession(ctx context.Context, sessionId, projectID str
 		return nil
 	}
 	if a.sandboxPool != nil {
+		// Release THIS chat's turn sandbox. Coding agents Get with
+		// session="" (shared project slot); the key here is the chat
+		// id, so Release is a no-op for that shared sandbox — idle
+		// evict still cleans it up. Do not pass storeSessionID here.
 		if err := a.sandboxPool.Release(a.name, oldProject, key); err != nil {
 			slog.Warn("MoveWebChatSession: sandbox release failed",
 				"agent", a.name, "session", key, "error", err)

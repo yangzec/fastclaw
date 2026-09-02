@@ -986,6 +986,22 @@ func (s *Server) workspaceSessionScope(ctx context.Context, agentID, urlToken st
 	return chatID
 }
 
+// codingRootScope matches Agent.storeSessionID: when the deployment
+// wired a project runtime, every agent in a project writes the project
+// root (session="") so the preview mount and file tools share one tree.
+func (s *Server) codingRootScope(projectID string) bool {
+	return s != nil && s.runtimeMgr != nil && strings.TrimSpace(projectID) != ""
+}
+
+// httpStoreSession is the session segment HTTP list / GET / upload /
+// reveal must use so they hit the same store tuple write_file used.
+func (s *Server) httpStoreSession(projectID, sessionID string) string {
+	if s.codingRootScope(projectID) {
+		return ""
+	}
+	return sessionID
+}
+
 // pendingOwnerSessionID is the store session dir to use when the caller
 // owns the agent and passed a sessionId that is not in the session table
 // yet. The web composer mints the id and uploads attachments BEFORE the
@@ -1147,6 +1163,13 @@ func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope 
 		// Everyone else (public viewers, guessed tokens) sees nothing.
 		if pending := s.pendingOwnerSessionID(r, agentID, rawSession); pending != "" {
 			if pid := s.resolveSessionProject(r.Context(), r, agentID, rawSession); pid != "" {
+				if s.codingRootScope(pid) {
+					prefix := "projects/" + pid + "/"
+					return fileScope{
+						acceptPath:    func(p string) bool { return strings.HasPrefix(p, prefix) },
+						archiveSuffix: pid,
+					}
+				}
 				prefix := "projects/" + pid + "/" + pending + "/"
 				return fileScope{
 					acceptPath:    func(p string) bool { return strings.HasPrefix(p, prefix) },
@@ -1167,6 +1190,13 @@ func (s *Server) fileScopeForRequest(r *http.Request, agentID string) fileScope 
 		return rejectAllScope()
 	}
 	if pid := s.resolveSessionProject(r.Context(), r, agentID, rawSession); pid != "" {
+		if s.codingRootScope(pid) {
+			prefix := "projects/" + pid + "/"
+			return fileScope{
+				acceptPath:    func(p string) bool { return strings.HasPrefix(p, prefix) },
+				archiveSuffix: pid,
+			}
+		}
 		ownPrefix := "projects/" + pid + "/" + chatID + "/"
 		rootPrefix := "projects/" + pid + "/"
 		return fileScope{
@@ -1330,8 +1360,7 @@ func (s *Server) handleAgentWorkspaceReveal(w http.ResponseWriter, r *http.Reque
 			projectID = pid
 		}
 	}
-
-	dir, ok := scoper.LocalScopeDir(id, projectID, chatID)
+	dir, ok := scoper.LocalScopeDir(id, projectID, s.httpStoreSession(projectID, chatID))
 	if !ok || dir == "" {
 		jsonResponse(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace store did not return a host path"})
 		return
@@ -1518,12 +1547,13 @@ func (s *Server) resolveWorkspaceFileGet(r *http.Request, agentID, path string) 
 	chatID := s.workspaceSessionScope(r.Context(), agentID, rawSession)
 	if chatID == "" {
 		if pending := s.pendingOwnerSessionID(r, agentID, rawSession); pending != "" {
-			return s.resolveSessionProject(r.Context(), r, agentID, rawSession), pending, rel, true
+			pid := s.resolveSessionProject(r.Context(), r, agentID, rawSession)
+			return pid, s.httpStoreSession(pid, pending), rel, true
 		}
 		return "", "", "", false
 	}
 	if pid := s.resolveSessionProject(r.Context(), r, agentID, rawSession); pid != "" {
-		return pid, chatID, rel, true
+		return pid, s.httpStoreSession(pid, chatID), rel, true
 	}
 	return "", chatID, rel, true
 }
@@ -1631,6 +1661,7 @@ func (s *Server) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
 		sessionID = s.pendingOwnerSessionID(r, id, sessionKey)
 	}
 	projectID := s.resolveSessionProject(r.Context(), r, id, sessionKey)
+	storeSession := s.httpStoreSession(projectID, sessionID)
 	saved := make([]map[string]any, 0, len(headers))
 	for _, h := range headers {
 		fh, err := h.Open()
@@ -1644,7 +1675,7 @@ func (s *Server) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
-		if err := s.workspaceStore.Put(r.Context(), id, projectID, sessionID, h.Filename, strings.NewReader(string(data)), int64(len(data)), ""); err != nil {
+		if err := s.workspaceStore.Put(r.Context(), id, projectID, storeSession, h.Filename, strings.NewReader(string(data)), int64(len(data)), ""); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}

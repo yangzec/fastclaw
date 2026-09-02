@@ -221,7 +221,7 @@ func TestWriteSessionAttachmentsProjectChatStoreAndSandbox(t *testing.T) {
 	if pool.projectID != "proj-1" || pool.session != "chat-1" {
 		t.Fatalf("sandbox Get = (%q,%q), want (proj-1, chat-1)", pool.projectID, pool.session)
 	}
-	if got := ex.writes["/workspace/chat-1/note.txt"]; got != "hello" {
+	if got := ex.writes["/workspace/note.txt"]; got != "hello" {
 		t.Fatalf("sandbox write = %#v", ex.writes)
 	}
 	rc, err := ws.Get(context.Background(), "agt", "proj-1", "chat-1", "note.txt")

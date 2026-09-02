@@ -8,15 +8,13 @@ import (
 )
 
 // ChatSandboxDir is the sandbox directory that corresponds to one
-// workspace.Store scope.
+// workspace.Store scope. The turn sandbox mounts that store prefix at
+// /workspace, so every mode uses the same physical root:
 //
-//	project="", session=x  → /workspace          (mount is already sessions/x)
-//	project=p,  session="" → /workspace          (coding / project root)
-//	project=p,  session=x  → /workspace/x        (project chat subdir)
+//	loose chat     sessions/<sid>/     → /workspace
+//	project chat   projects/<pid>/<sid>/ → /workspace
+//	coding         projects/<pid>/     → /workspace
 func ChatSandboxDir(projectID, sessionID string) string {
-	if projectID != "" && sessionID != "" {
-		return "/workspace/" + sessionID
-	}
 	return "/workspace"
 }
 
@@ -32,7 +30,12 @@ func ChatSandboxFile(projectID, sessionID, rel string) string {
 
 // RelFromSandboxPath maps an absolute sandbox path back to the
 // store-relative key for this (project, session) scope. Returns ok=false
-// when the path is outside /workspace or outside this chat's subdir.
+// when the path is outside /workspace.
+//
+// Project chats used to mount the project root and cwd into
+// /workspace/<sid>/. Accept that leftover prefix so a recycled
+// container still mirrors into the chat store; /workspace/file (what
+// write_file and img.save use) maps to file either way.
 func RelFromSandboxPath(projectID, sessionID, sandboxPath string) (string, bool) {
 	clean := path.Clean("/" + strings.TrimSpace(sandboxPath))
 	rest, ok := strings.CutPrefix(clean, "/workspace/")
@@ -44,10 +47,9 @@ func RelFromSandboxPath(projectID, sessionID, sandboxPath string) (string, bool)
 		if rest == sessionID {
 			return "", false
 		}
-		if !strings.HasPrefix(rest, prefix) {
-			return "", false
+		if strings.HasPrefix(rest, prefix) {
+			rest = strings.TrimPrefix(rest, prefix)
 		}
-		rest = strings.TrimPrefix(rest, prefix)
 	}
 	if rest == "" || rest == "." {
 		return "", false

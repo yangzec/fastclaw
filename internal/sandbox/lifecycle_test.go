@@ -444,7 +444,7 @@ func TestLifecycle_WriteFileMirrorsProjectChatSubdir(t *testing.T) {
 	defer lp.CloseAll()
 
 	ex, _ := lp.Get(context.Background(), "erin", "proj", "chat")
-	if _, err := ex.WriteFile(context.Background(), "/workspace/chat/notes.md", "hello"); err != nil {
+	if _, err := ex.WriteFile(context.Background(), "/workspace/notes.md", "hello"); err != nil {
 		t.Fatal(err)
 	}
 	got, err := ws.Get(context.Background(), "erin", "proj", "chat", "notes.md")
@@ -455,24 +455,6 @@ func TestLifecycle_WriteFileMirrorsProjectChatSubdir(t *testing.T) {
 	got.Close()
 	if string(data) != "hello" {
 		t.Fatalf("got %q", data)
-	}
-
-	if _, err := ex.WriteFile(context.Background(), "/workspace/notes.md", "nope"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ws.Get(context.Background(), "erin", "proj", "chat", "notes.md"); err != nil {
-		t.Fatal("chat-subdir object should still be hello")
-	}
-	// A write to the project root must not clobber this chat's notes.md
-	// (RelFromSandboxPath rejects /workspace/notes.md for project chats).
-	got, err = ws.Get(context.Background(), "erin", "proj", "chat", "notes.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, _ = io.ReadAll(got)
-	got.Close()
-	if string(data) != "hello" {
-		t.Fatalf("project-root write leaked into chat store: %q", data)
 	}
 }
 

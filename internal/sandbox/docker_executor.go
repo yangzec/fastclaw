@@ -156,14 +156,6 @@ func (d *DockerExecutor) SnapshotWorkspace(ctx context.Context) (map[string][]by
 	if root == "" {
 		return nil, nil
 	}
-	// Project chats mount the project root but cwd into /workspace/<sid>.
-	// Snapshot only that subdir so sibling chats and the coding app tree
-	// don't get copied into this chat's store prefix.
-	if wd := d.execWorkdir(); strings.HasPrefix(wd, "/workspace/") {
-		if sub := strings.TrimPrefix(wd, "/workspace/"); sub != "" && !strings.Contains(sub, "..") {
-			root = filepath.Join(root, filepath.FromSlash(sub))
-		}
-	}
 	out := make(map[string][]byte)
 	err := filepath.WalkDir(root, func(p string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -226,8 +218,8 @@ type DockerExecutorPool struct {
 // (project, session) pair gets its own slot — including chats that
 // belong to the same project — because two project chats running in
 // parallel would otherwise share a Python kernel / shell state and
-// step on each other. The project mount itself is shared at the FS
-// level so siblings stay visible (see pool.Get for the mount logic).
+// step on each other. Coding Get uses session="" so those chats share
+// one slot (and one project-root mount) with the preview.
 //
 // Both empty falls back to the agent-shared sandbox slot for legacy
 // callers (admin shell, fixtures).
@@ -270,31 +262,19 @@ func (p *DockerExecutorPool) Get(ctx context.Context, agentID, projectID, sessio
 		return ex, nil
 	}
 
-	// Bind-mount layout. Project chats mount the project ROOT (so
-	// siblings show up under /workspace) and cwd into their own
-	// subdir, so relative writes default to the chat's files but
-	// reads/walks see the whole project. Mirrors workspace.LocalFS:
+	// Bind-mount the same store prefix file tools use, at /workspace.
+	// Absolute img.save('/workspace/chart.svg') and write_file then
+	// address one tree. Per-chat per-container so concurrent chats
+	// don't share shell state.
 	//
-	//   pid="p", sid="s" → mount projects/p/, workdir /workspace/s/
-	//   pid="",  sid="s" → mount sessions/s/,  workdir /workspace
-	//   pid="p", sid=""  → mount projects/p/,  workdir /workspace
-	//   both empty       → mount agent root,   workdir /workspace
-	//
-	// Per-chat per-container — even within the same project — so
-	// concurrent chats don't share shell state. The shared part is the
-	// FS mount, not the container.
+	//   pid="p", sid="s" → mount projects/p/s/, workdir /workspace
+	//   pid="",  sid="s" → mount sessions/s/,    workdir /workspace
+	//   pid="p", sid=""  → mount projects/p/,    workdir /workspace
+	//   both empty       → mount agent root,     workdir /workspace
 	workspace := filepath.Join(p.workspaceRoot, "workspaces", agentID)
-	var workdir string
 	switch {
 	case projectID != "" && sessionID != "":
-		workspace = filepath.Join(workspace, "projects", projectID)
-		workdir = "/workspace/" + sessionID
-		// Pre-create the per-chat subdir on disk so docker's `-w` lands
-		// in an existing path; Docker creates missing workdirs but
-		// only as root, leaving the agent unable to write later.
-		if err := os.MkdirAll(filepath.Join(workspace, sessionID), 0o755); err != nil {
-			return nil, fmt.Errorf("create chat workspace subdir: %w", err)
-		}
+		workspace = filepath.Join(workspace, "projects", projectID, sessionID)
 	case projectID != "":
 		workspace = filepath.Join(workspace, "projects", projectID)
 	case sessionID != "":
@@ -309,9 +289,6 @@ func (p *DockerExecutorPool) Get(ctx context.Context, agentID, projectID, sessio
 	// NewDockerExecutor would call Create immediately on a sandbox
 	// that hasn't been told about skill dirs.
 	sb := NewDockerSandbox(p.image, workspace, p.policy)
-	if workdir != "" {
-		sb.SetWorkdir(workdir)
-	}
 	sb.SetSkillDirs(skillDirsForAgent(p.workspaceRoot, agentID))
 	// Bind-mount the chatter's per-user skills host dir into the
 	// sandbox at the path `npx skills add -g -y` writes to, so any

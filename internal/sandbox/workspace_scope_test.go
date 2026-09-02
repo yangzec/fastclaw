@@ -8,7 +8,7 @@ func TestChatSandboxDir(t *testing.T) {
 	}{
 		{"", "chat", "/workspace"},
 		{"proj", "", "/workspace"},
-		{"proj", "chat", "/workspace/chat"},
+		{"proj", "chat", "/workspace"},
 		{"", "", "/workspace"},
 	}
 	for _, tc := range cases {
@@ -19,7 +19,7 @@ func TestChatSandboxDir(t *testing.T) {
 }
 
 func TestChatSandboxFile(t *testing.T) {
-	if got := ChatSandboxFile("proj", "chat", "notes.md"); got != "/workspace/chat/notes.md" {
+	if got := ChatSandboxFile("proj", "chat", "notes.md"); got != "/workspace/notes.md" {
 		t.Fatalf("got %q", got)
 	}
 	if got := ChatSandboxFile("", "chat", "notes.md"); got != "/workspace/notes.md" {
@@ -31,15 +31,13 @@ func TestChatSandboxFile(t *testing.T) {
 }
 
 func TestRelFromSandboxPath(t *testing.T) {
-	got, ok := RelFromSandboxPath("proj", "chat", "/workspace/chat/notes.md")
+	got, ok := RelFromSandboxPath("proj", "chat", "/workspace/notes.md")
 	if !ok || got != "notes.md" {
-		t.Fatalf("got %q ok=%v", got, ok)
+		t.Fatalf("/workspace/notes.md: got %q ok=%v", got, ok)
 	}
-	if _, ok := RelFromSandboxPath("proj", "chat", "/workspace/notes.md"); ok {
-		t.Fatal("project-root file must not map into a project chat scope")
-	}
-	if _, ok := RelFromSandboxPath("proj", "chat", "/workspace/other/x.md"); ok {
-		t.Fatal("sibling chat file must not map into this chat")
+	got, ok = RelFromSandboxPath("proj", "chat", "/workspace/chat/notes.md")
+	if !ok || got != "notes.md" {
+		t.Fatalf("legacy /workspace/<sid>/ prefix: got %q ok=%v", got, ok)
 	}
 	got, ok = RelFromSandboxPath("", "chat", "/workspace/notes.md")
 	if !ok || got != "notes.md" {

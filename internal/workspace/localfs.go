@@ -55,11 +55,9 @@ func (f *LocalFS) LocalScopeDir(agentID, projectID, sessionID string) (string, b
 //
 // Project chats keep their own subdir inside the project so two
 // concurrent chats can't collide on `notes.md`, and "move chat into
-// /out of project" is a single directory rename. Sandbox containers
-// for project chats mount the project root (so siblings are visible
-// at `/workspace/<other-sid>/...`) but cwd into the chat's subdir
-// so relative writes default to the chat's own files — see
-// docker_executor.go's pool.Get.
+// /out of project" is a single directory rename. The turn sandbox
+// mounts that same prefix at /workspace so exec, write_file, and
+// img.save('/workspace/…') share one tree.
 func (f *LocalFS) scopeDir(agentID, projectID, sessionID string) string {
 	switch {
 	case projectID != "" && sessionID != "":

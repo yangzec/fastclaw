@@ -21,11 +21,11 @@ func TestHydrateWorkspaceProjectChatLandsInSessionSubdir(t *testing.T) {
 	hydrateWorkspace(ctx, ws, ex, "agt", "proj", "chat", "/workspace")
 	ex.mu.Lock()
 	defer ex.mu.Unlock()
-	if got := ex.writes["/workspace/chat/notes.md"]; got != "hi" {
+	if got := ex.writes["/workspace/notes.md"]; got != "hi" {
 		t.Fatalf("chat file dest = %#v", ex.writes)
 	}
-	if _, ok := ex.writes["/workspace/notes.md"]; ok {
-		t.Fatal("must not hydrate a project-chat object onto /workspace/<file>")
+	if _, ok := ex.writes["/workspace/chat/notes.md"]; ok {
+		t.Fatal("store-prefix mount lands files at /workspace/<rel>, not /workspace/<sid>/")
 	}
 	if _, ok := ex.writes["/workspace/other/sibling.md"]; ok {
 		t.Fatal("must not hydrate a sibling chat into this sandbox scope")

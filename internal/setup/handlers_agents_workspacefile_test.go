@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/fastclaw-ai/fastclaw/internal/auth"
+	"github.com/fastclaw-ai/fastclaw/internal/runtime"
 	"github.com/fastclaw-ai/fastclaw/internal/store"
 	"github.com/fastclaw-ai/fastclaw/internal/workspace"
 )
@@ -452,5 +453,71 @@ func TestAgentFileGetRejectsForeignFullStorePath(t *testing.T) {
 
 	if got := listAgentFilePaths(t, ctx, s, resolver, viewer.ID, agentID, "?projectId="+projectID); len(got) != 0 {
 		t.Fatalf("viewer LIST ?projectId= = %v, want empty", got)
+	}
+}
+
+func TestCodingAgentFilesUseProjectRoot(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, owner, _ := newAuthTestServer(t, ctx)
+	s.SetRuntimeManager(runtime.NewManager(nil, t.TempDir(), "", nil, "", "", nil))
+
+	const (
+		agentID    = "agt_coding_files"
+		sessionKey = "s-coding-url"
+		chatID     = "web-coding-chat"
+		projectID  = "proj_coding"
+		payload    = "from-upload\n"
+	)
+	now := time.Now().UTC()
+	if err := s.dataStore.SaveAgent(ctx, &store.AgentRecord{
+		ID: agentID, UserID: owner.ID, Name: "coding files",
+		Config: map[string]any{}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("save agent: %v", err)
+	}
+	if err := s.dataStore.SaveSession(ctx, owner.ID, agentID, sessionKey, &store.SessionRecord{
+		Channel: "web", ChatID: chatID, ProjectID: projectID,
+	}); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	ws := workspace.NewLocalFS(t.TempDir())
+	s.SetWorkspaceStore(ws)
+	if err := ws.Put(ctx, agentID, projectID, "", "app/src.ts", strings.NewReader("export {}"), 9, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	got := listAgentFilePaths(t, ctx, s, resolver, owner.ID, agentID, "?sessionId="+sessionKey)
+	wantNested := "projects/" + projectID + "/app/src.ts"
+	found := false
+	for _, p := range got {
+		if p == wantNested {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("coding list = %v, want %s", got, wantNested)
+	}
+
+	rr := postAgentUpload(t, ctx, s, resolver, owner.ID, agentID, "?sessionId="+sessionKey, "notes.md", payload)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("upload = %d: %s", rr.Code, rr.Body.String())
+	}
+	if _, err := ws.Get(ctx, agentID, projectID, "", "notes.md"); err != nil {
+		t.Fatalf("coding upload should land at project root: %v", err)
+	}
+	if _, err := ws.Get(ctx, agentID, projectID, chatID, "notes.md"); err == nil {
+		t.Fatal("coding upload must not land in the per-chat prefix")
+	}
+
+	req := authTestRequest(t, ctx, resolver, http.MethodGet, "/api/agents/"+agentID+"/files/app/src.ts?sessionId="+sessionKey, owner.ID)
+	req.SetPathValue("id", agentID)
+	req.SetPathValue("path", "app/src.ts")
+	getRR := httptest.NewRecorder()
+	s.authMiddleware(s.handleAgentFile)(getRR, req)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("GET /workspace/app/src.ts via sessionId = %d: %s", getRR.Code, getRR.Body.String())
+	}
+	if getRR.Body.String() != "export {}" {
+		t.Fatalf("GET body = %q", getRR.Body.String())
 	}
 }

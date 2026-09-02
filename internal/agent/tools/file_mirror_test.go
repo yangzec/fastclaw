@@ -31,8 +31,8 @@ func TestMirrorWorkspaceFileToSandboxProjectChat(t *testing.T) {
 	r.SetSessionID("chat")
 	r.executor = rec
 	r.mirrorWorkspaceFileToSandbox(context.Background(), "notes.md", "hi")
-	if len(rec.writes) != 1 || rec.writes[0] != "/workspace/chat/notes.md" {
-		t.Fatalf("got %#v, want /workspace/chat/notes.md", rec.writes)
+	if len(rec.writes) != 1 || rec.writes[0] != "/workspace/notes.md" {
+		t.Fatalf("got %#v, want /workspace/notes.md", rec.writes)
 	}
 }
 

@@ -368,7 +368,7 @@ Signed URL / Public URL 仍然只在 **已通过现有文件 ACL** 之后签发�
 - 新增 system objectstore：非 super_admin 403；acting-as 不能写 default
 - 现有 `handlers_agents_workspacefile_test.go` 隔离用例必须继续绿
 - sandbox `lifecycle_test.go`：镜像 / snapshot 仍按 session 写入 **router 后面的** Store
-- 项目聊天 vs coding：hydrate 目标、Docker snapshot 子目录、附件 `storeSessionID`、`write_file` 镜像路径必须和 Store 四段 key 一致
+- 项目聊天 vs coding：hydrate 目标、Docker 挂载 = store 前缀、HTTP list/GET/upload 的 session 段必须和 `storeSessionID` 一致
 
 ---
 
@@ -388,27 +388,27 @@ Signed URL / Public URL 仍然只在 **已通过现有文件 ACL** 之后签发�
 
 **整包替换**：某次 `Get(agent, project, session)` 的 `session` 必须等于 file tools 的 `scopeSessionID()` / `Agent.storeSessionID()`。Coding agent（`projectRuntime != nil` 且当前在项目里）把 session 收成 `""`，和 preview 共用 `projects/<pid>/`。
 
-| 模式 | Store `(project, session)` | Docker 挂载 | 容器 cwd / hydrate 目标 | snapshot |
+| 模式 | Store `(project, session)` | Docker / E2B 挂载 | 容器 `/workspace` | snapshot |
 |---|---|---|---|---|
-| 散聊 | `("", sid)` → `sessions/<sid>/` | 该 session 目录 | `/workspace` | 整棵挂载（跳过 `node_modules` 等） |
-| 项目聊天 | `(pid, sid)` → `projects/<pid>/<sid>/` | **项目根** `projects/<pid>/`（同项目其它 chat 在 `/workspace/<other-sid>/` 可见） | `/workspace/<sid>/` | **只扫该子目录**，Put 回 `(pid, sid)` |
-| Coding | `(pid, "")` → `projects/<pid>/` | 项目根 | `/workspace` | 整棵项目（跳过构建产物） |
+| 散聊 | `("", sid)` → `sessions/<sid>/` | 该 session 目录 | store 前缀 | 整棵挂载（跳过 `node_modules` 等） |
+| 项目聊天 | `(pid, sid)` → `projects/<pid>/<sid>/` | **同一套 store 前缀**（不再挂项目根） | `img.save('/workspace/x')` = 本 chat 的 `x` | 整棵挂载 → Put 回 `(pid, sid)` |
+| Coding | `(pid, "")` → `projects/<pid>/` | 项目根 | 项目树 | 整棵项目（跳过构建产物） |
 
 各产物是否打到同一套坐标：
 
 | 产物 | 散聊 | 项目聊天 | Coding |
 |---|---|---|---|
 | `write_file` / `apply_patch` | session 前缀 | `projects/<pid>/<sid>/` | 项目根 |
-| 镜像进 sandbox | `/workspace/<rel>` | `/workspace/<sid>/<rel>` | `/workspace/<rel>` |
-| 附件 `WriteSessionAttachments` | 同上 | 同上（含 sandbox Get 的 session 段） | 项目根 + 共用 sandbox |
+| 镜像进 sandbox | `/workspace/<rel>` | `/workspace/<rel>` | `/workspace/<rel>` |
+| 附件 `WriteSessionAttachments` | 同上 | 同上 | 项目根 + 共用 sandbox |
+| HTTP list / GET / upload / reveal | `?sessionId=` → chat 前缀 | 同左 | `runtimeMgr` 在时收成项目根，和 write_file 一致 |
 | `image_gen` / `tts` archive | `scopeSessionID()` | 同左 | 项目根 |
-| Docker / E2B / Boxlite exec 后 snapshot | 挂载根 | 只 chat 子目录 | 项目根 |
-| sandbox `WriteFile` 镜像 | `/workspace/x` → store `x` | 仅 `/workspace/<sid>/x` 会进本 chat；项目根文件不归这个 session | `/workspace/x` → 项目根 |
-| LocalFS + Docker bind-mount | 无需 post-exec sync | 同左（文件已在挂载上）；对象存储后端仍 post-exec sync | 同左 |
+| Docker / E2B / Boxlite exec 后 snapshot | 挂载根 | 挂载根（= chat 前缀） | 项目根 |
+| sandbox `WriteFile` 镜像 | `/workspace/x` → store `x` | 同左 | 同左 |
+| LocalFS + Docker bind-mount | 无需 post-exec sync | 同左；对象存储后端仍 post-exec sync | 同左 |
 
-有意不共用、或模型必须用相对路径的边：
+实现约束（不是缺口）：
 
-- 项目聊天里，模型若 `img.save('/workspace/chart.svg')`（绝对路径），文件落在**项目根**，不会进该 chat 的 store。相对路径或 `write_file("chart.svg")` 才和 Files 面板一致。系统提示已改成推荐相对保存。
-- Coding 下多个 chat **共用**一个 turn sandbox（`Get(..., session="")`）。不要对单个 chat `Release("",)`。
-- HTTP Files 面板仍按请求里的 `sessionId` 寻址；coding 的 `write_file` 在项目根。面板用项目级 key（`projects/<pid>/...`）才能看到这些文件。
+- Coding 下多个 chat **共用**一个 turn sandbox（`Get(..., session="")`）。`MoveWebChatSession` 的 `Release` 仍用 chat id，对共享槽是 no-op，idle evict 会收。
+- 项目聊天的 sandbox **不再**看到同项目其它 chat 的目录；Files 面板仍按本 chat 前缀列文件。
 - `SOUL.md` 等身份文件、skill 树、`/tmp`、会话 JSON 仍不进 session object store。

@@ -27,10 +27,9 @@ type DockerSandbox struct {
 	image       string
 	workspace   string
 	// workdir is the container's starting working directory. Defaults
-	// to /workspace when empty. Project chats override to
-	// /workspace/<sessionID>/ so the chat sees the whole project at
-	// /workspace (siblings included) but its relative writes default
-	// to its own subdir.
+	// to /workspace when empty. The turn sandbox always mounts the
+	// store prefix at /workspace, so this stays /workspace for loose
+	// chats, project chats, and coding.
 	workdir   string
 	skillDirs []string // host paths to mount read-only at /skills/<name>/
 	// userSkillsHostDir, when non-empty, gets bind-mounted RW at
