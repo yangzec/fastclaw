@@ -1274,7 +1274,7 @@ export interface UploadedFile {
 
 export async function uploadAgentFiles(
   agentId: string,
-  sessionId: string,
+  sessionId: string | undefined,
   files: File[],
   projectId?: string,
 ): Promise<UploadedFile[]> {

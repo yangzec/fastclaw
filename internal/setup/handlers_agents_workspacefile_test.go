@@ -86,6 +86,20 @@ func TestAgentFileGetResolvesWorkspacePathViaSession(t *testing.T) {
 		t.Fatalf("foreign sessionId = %d, want 404", rr.Code)
 	}
 
+	// ?download=1 must force a save (Content-Disposition: attachment)
+	// so the workspace panel can offer per-file downloads instead of
+	// only a zip of everything.
+	dl := get("chart.svg", "?sessionId="+sessionKey+"&download=1")
+	if dl.Code != http.StatusOK {
+		t.Fatalf("GET download=1 = %d: %s", dl.Code, dl.Body.String())
+	}
+	if cd := dl.Header().Get("Content-Disposition"); !strings.Contains(cd, "attachment") || !strings.Contains(cd, "chart.svg") {
+		t.Fatalf("download Content-Disposition = %q, want attachment with chart.svg", cd)
+	}
+	if preview := get("chart.svg", "?sessionId="+sessionKey); strings.Contains(preview.Header().Get("Content-Disposition"), "attachment") {
+		t.Fatalf("preview GET set attachment: %q", preview.Header().Get("Content-Disposition"))
+	}
+
 	list := func(query string) []string {
 		t.Helper()
 		req := authTestRequest(t, ctx, resolver, http.MethodGet, "/api/agents/"+agentID+"/files"+query, owner.ID)
@@ -452,5 +466,73 @@ func TestAgentFileGetRejectsForeignFullStorePath(t *testing.T) {
 
 	if got := listAgentFilePaths(t, ctx, s, resolver, viewer.ID, agentID, "?projectId="+projectID); len(got) != 0 {
 		t.Fatalf("viewer LIST ?projectId= = %v, want empty", got)
+	}
+}
+
+// Workspace panel upload on the project landing page (no chat selected)
+// must land at projects/<pid>/<name>, not the agent root (that's for
+// avatar.png) and not a minted sessions/ folder the project tree
+// wouldn't show.
+func TestAgentFileUploadLandsInProjectRoot(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, owner, viewer := newAuthTestServer(t, ctx)
+
+	const (
+		agentID   = "agt_proj_root_upload"
+		projectID = "proj_root_upload"
+		payload   = "shared-project-file\n"
+	)
+	now := time.Now().UTC()
+	if err := s.dataStore.SaveAgent(ctx, &store.AgentRecord{
+		ID: agentID, UserID: owner.ID, Name: "proj root upload",
+		IsPublic: true, Config: map[string]any{}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("save agent: %v", err)
+	}
+	if err := s.dataStore.SaveProject(ctx, &store.ProjectRecord{
+		UserID: owner.ID, AgentID: agentID, ID: projectID, Name: "root proj",
+	}); err != nil {
+		t.Fatalf("save project: %v", err)
+	}
+	ws := workspace.NewLocalFS(t.TempDir())
+	s.SetWorkspaceStore(ws)
+
+	rr := postAgentUpload(t, ctx, s, resolver, owner.ID, agentID, "?projectId="+projectID, "shared.md", payload)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("upload = %d: %s", rr.Code, rr.Body.String())
+	}
+	want := "projects/" + projectID + "/shared.md"
+	got := listAgentFilePaths(t, ctx, s, resolver, owner.ID, agentID, "?projectId="+projectID)
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("list = %v, want [%s]", got, want)
+	}
+	rc, err := ws.Get(ctx, agentID, projectID, "", "shared.md")
+	if err != nil {
+		t.Fatalf("store get: %v", err)
+	}
+	defer rc.Close()
+	body, _ := io.ReadAll(rc)
+	if string(body) != payload {
+		t.Fatalf("store body = %q, want %q", body, payload)
+	}
+
+	// Upload is owner-gated; a public-agent viewer must not write.
+	view := postAgentUpload(t, ctx, s, resolver, viewer.ID, agentID, "?projectId="+projectID, "evil.md", "nope")
+	if view.Code != http.StatusForbidden {
+		t.Fatalf("viewer upload = %d, want 403: %s", view.Code, view.Body.String())
+	}
+}
+
+func TestContentDispositionAttachment(t *testing.T) {
+	got := contentDispositionAttachment("report.pdf")
+	if !strings.Contains(got, `filename="report.pdf"`) || !strings.Contains(got, "attachment") {
+		t.Fatalf("ascii: %q", got)
+	}
+	got = contentDispositionAttachment("中文报告.pdf")
+	if !strings.Contains(got, "filename*=UTF-8''") || !strings.Contains(got, "%") {
+		t.Fatalf("utf8: %q", got)
+	}
+	if !strings.Contains(contentDispositionAttachment(""), "filename=") {
+		t.Fatal("empty name should still produce a filename")
 	}
 }
