@@ -36,7 +36,7 @@ var wecomOAFromChannel = channels.WeComOAFromChannel
 // (CorpID + Secret), not the AI-bot long-conn secret.
 func RegisterWeComScheduleTools(r *Registry, st store.Store, agentID string) {
 	r.Register("wecom_create_schedule",
-		"Create an official 企业微信 calendar event (appears in WeCom 日程, can invite colleagues). Use this when the user wants something written into the WeCom calendar — a meeting, invite, or calendar block. Do NOT use create_cron_job for that: cron only pings this agent later; it does not create a WeCom schedule. start/end are the chatter's local time unless they include an offset. attendees are WeCom userids (comma-separated). When chatting on WeCom, the current sender is invited automatically if attendees is empty.",
+		"Create an official 企业微信 calendar event (appears in WeCom 日程, can invite colleagues). On WeCom this is the default for 日程 / 开会 / 占日历. Do NOT use create_cron_job for that: cron only pings this agent later; it does not create a WeCom schedule. start/end are the chatter's local time unless they include an offset. attendees are WeCom userids (comma-separated). When chatting on WeCom, the current sender is invited automatically if attendees is empty.",
 		map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

@@ -33,7 +33,7 @@ type deleteCronJobArgs struct {
 // values onto the registry before any tool fires.
 func RegisterCronTools(r *Registry, st store.Store, userID, agentID string) {
 	r.Register("create_cron_job",
-		"Create a scheduled task. Use this for any user request that names a specific time, an interval, or a recurring schedule (e.g. \"5 分钟后提醒\", \"every Monday 9am\", \"each day at 8\"). When the schedule fires, the agent receives `message` as a fresh inbound prompt on the same channel the request originated from. Do NOT write timed reminders into HEARTBEAT.md — that file is only for conditional self-checks reviewed at every heartbeat tick.",
+		"Create a FastClaw scheduler job that wakes this agent later on the same channel. Use this when FastClaw itself must speak or act at that time (过 N 分钟提醒我、每天汇报、反复检查). Do NOT use this for 飞书/企微 日程 or 飞书待办 when those official tools are available — those belong in the user's calendar or 任务中心, not the agent scheduler. When the schedule fires, the agent receives `message` as a fresh inbound prompt. Do NOT write timed reminders into HEARTBEAT.md — that file is only for conditional self-checks reviewed at every heartbeat tick.",
 		map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

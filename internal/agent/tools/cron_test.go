@@ -159,3 +159,23 @@ func TestCronJobsChatterIsolation(t *testing.T) {
 		t.Fatalf("alice failed to delete her own job: %v", err)
 	}
 }
+
+func TestCreateCronJobDescriptionDefersToOfficialOfficeTools(t *testing.T) {
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	RegisterCronTools(r, nil, "user-1", "agent-1")
+	var desc string
+	for _, info := range r.RegisteredTools() {
+		if info.Name == "create_cron_job" {
+			desc = info.Description
+			break
+		}
+	}
+	if desc == "" {
+		t.Fatal("create_cron_job not registered")
+	}
+	for _, needle := range []string{"wakes this agent", "飞书", "企微", "Do NOT use this for"} {
+		if !strings.Contains(desc, needle) {
+			t.Fatalf("create_cron_job description missing %q: %s", needle, desc)
+		}
+	}
+}

@@ -1593,14 +1593,45 @@ func renderChatbotPersistenceReminder(mode, displayName, userMD, memoryMD string
 	return sb.String()
 }
 
+// renderOfficeRoutingHint tells the model that 待办 / 日程 on the
+// current official IM channel should go through Feishu / WeCom APIs
+// instead of create_cron_job. Skipped for chatbot / customize (those
+// modes do not expose the office tools or cron) and for channels that
+// have no official calendar/todo API of their own.
+func renderOfficeRoutingHint(msg bus.InboundMessage, promptMode string) string {
+	if promptMode == config.PromptModeChatbot || promptMode == config.PromptModeCustomize {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(msg.Channel)) {
+	case "feishu":
+		return "## Official calendar & todos (this turn)\n\n" +
+			"This turn is on Feishu. When the matching tool is in this turn's tool list, " +
+			"prefer official Feishu resources over create_cron_job:\n\n" +
+			"- 开会 / 占日历 / 写进日程 / 约同事 → feishu_create_event\n" +
+			"- 待办 / 任务 / 记一笔要做的事 → feishu_create_task\n" +
+			"- FastClaw itself must wake up and speak later (过 N 分钟提醒我、每天汇报、反复检查) → create_cron_job\n\n" +
+			"Do not create a cron job for a calendar event or a todo-list item unless they explicitly want this agent to ping them."
+	case "wecom":
+		return "## Official calendar (this turn)\n\n" +
+			"This turn is on 企业微信. When the matching tool is in this turn's tool list, " +
+			"prefer official WeCom resources over create_cron_job:\n\n" +
+			"- 开会 / 占日历 / 写进日程 / 约同事 → wecom_create_schedule\n" +
+			"- 待办 / 任务清单 → WeCom has no official todo API; use create_cron_job, or feishu_create_task if they asked to write it to 飞书\n" +
+			"- FastClaw itself must wake up and speak later → create_cron_job\n\n" +
+			"Do not create a cron job for a calendar event unless they explicitly want this agent to ping them."
+	default:
+		return ""
+	}
+}
+
 // renderChannelHints emits per-turn protocol notes that the LLM can
-// only honor if it knows about them. Today there's exactly one: IM
-// channels with a single-message-per-bubble UI accept the
-// channels.SplitMessageMarker token as "split this reply into multiple
-// bubbles." The marker constant is colocated with the splitter in
-// internal/channels/base.go so changing the wire token only touches
-// one place; the actual split happens in the channels manager's
-// dispatcher, uniformly across all IM adapters.
+// only honor if it knows about them. IM channels with a
+// single-message-per-bubble UI accept the channels.SplitMessageMarker
+// token as "split this reply into multiple bubbles." The marker
+// constant is colocated with the splitter in internal/channels/base.go
+// so changing the wire token only touches one place; the actual split
+// happens in the channels manager's dispatcher, uniformly across all
+// IM adapters.
 //
 // `splitEnabled` is the per-agent toggle. When false (the default) we
 // skip the hint so the LLM never learns the marker — and the dispatcher
@@ -2947,6 +2978,9 @@ func (a *Agent) assembleTurnMessages(systemPrompt string, msg bus.InboundMessage
 	messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
 	if hints := renderChannelHints(msg, a.splitReplies); hints != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: hints})
+	}
+	if office := renderOfficeRoutingHint(msg, a.promptMode); office != "" {
+		messages = append(messages, provider.Message{Role: "system", Content: office})
 	}
 	if senderMsg := renderSender(msg); senderMsg != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: senderMsg})

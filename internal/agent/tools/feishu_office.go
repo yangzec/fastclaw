@@ -51,7 +51,7 @@ var feishuOpenAPIFromChannel = channels.FeishuOpenAPIFromChannel
 // Feishu channel (QR bot or pasted App ID + Secret).
 func RegisterFeishuOfficeTools(r *Registry, st store.Store, agentID string) {
 	r.Register("feishu_create_event",
-		"Create an official Feishu / Lark calendar event (appears in 飞书日程, can invite colleagues). Use this when the user wants something written into the Feishu calendar — a meeting, invite, or calendar block. Do NOT use create_cron_job for that: cron only pings this agent later; it does not create a Feishu event. start/end are the chatter's local time unless they include an offset. attendees are Feishu open_id values (comma-separated). When chatting on Feishu, the current sender is invited automatically if attendees is empty.",
+		"Create an official Feishu / Lark calendar event (appears in 飞书日程, can invite colleagues). On Feishu this is the default for 日程 / 开会 / 占日历. Do NOT use create_cron_job for that: cron only pings this agent later; it does not create a Feishu event. start/end are the chatter's local time unless they include an offset. attendees are Feishu open_id values (comma-separated). When chatting on Feishu, the current sender is invited automatically if attendees is empty.",
 		map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -94,7 +94,7 @@ func RegisterFeishuOfficeTools(r *Registry, st store.Store, agentID string) {
 	)
 
 	r.Register("feishu_create_task",
-		"Create an official Feishu / Lark task (飞书待办 / 任务中心). Use this when the user wants a real Feishu todo assigned to someone. Do NOT use create_cron_job for a todo list item. assignees are Feishu open_id values. When chatting on Feishu, the current sender is assigned if assignees is empty.",
+		"Create an official Feishu / Lark task (飞书待办 / 任务中心). On Feishu this is the default for 待办 / 任务. Do NOT use create_cron_job for a todo list item. assignees are Feishu open_id values. When chatting on Feishu, the current sender is assigned if assignees is empty.",
 		map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

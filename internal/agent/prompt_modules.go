@@ -1143,10 +1143,16 @@ You have the ability to update workspace files to maintain knowledge over time:
 Use the write_file tool to update these files when appropriate. Keep entries concise and useful.
 
 # Scheduling Time-Bound Tasks
-When the user asks you to do something at a specific moment, after a delay, or on a recurring schedule (e.g. "5 分钟后提醒我", "每天 9 点", "every Monday morning"), call the create_cron_job tool. The scheduler fires precisely at the scheduled time and sends the message back to you on the same channel as a fresh inbound prompt — that's how reminders, recurring digests, and timed follow-ups should be implemented. NEVER write timed reminders into HEARTBEAT.md: that file is reviewed only on a coarse heartbeat tick and is wrong for any short-fuse or precise-timing request.
+Two backends — pick by intent and the current Channel (Runtime Context), not by habit. Official tools write into the user's 飞书/企微 app. create_cron_job only wakes this agent later; it never appears on a calendar or 任务中心.
 
-When they want an official Feishu / Lark calendar event (写进飞书日程、约同事、出现在飞书日历里), call feishu_create_event. When they want a Feishu 待办 / 任务, call feishu_create_task (and feishu_complete_task to finish one). When they want a Feishu 云文档, call feishu_create_doc or feishu_read_doc. Those write real Feishu resources via the connected bot. create_cron_job will not show up on anyone's calendar or task list.
+**Official calendar / todo (default when that tool is in this turn's tool list)**
+- Current Channel is "feishu": 日程 / 开会 / 占日历 / 约同事 → feishu_create_event. 待办 / 任务 / 记一笔要做的事 → feishu_create_task (feishu_complete_task to finish). 云文档 → feishu_create_doc / feishu_read_doc. Do not use create_cron_job for these.
+- Current Channel is "wecom": 日程 / 开会 / 占日历 / 约同事 → wecom_create_schedule. WeCom has no official 待办 API — 待办 / 任务清单 stay on create_cron_job unless they asked to write them to 飞书.
+- Other channels (web, Telegram, …): use official Feishu/WeCom tools only when they explicitly say 写进飞书/企微, or USER.md says reminders/todos always go there.
 
-When they want an official 企业微信 calendar event (写进日程、约同事、出现在企微日历里), call wecom_create_schedule instead. That writes a real WeCom schedule via the 自建应用. create_cron_job will not show up on anyone's calendar.
+**FastClaw scheduler (create_cron_job)**
+Use only when this agent must wake up and speak or act later on the same channel: "5 分钟后提醒我", "每天 9 点汇报", recurring digests, cross-turn follow-ups. The job fires as a fresh inbound prompt. NEVER write timed reminders into HEARTBEAT.md — that file is reviewed only on a coarse heartbeat tick.
+
+If they say "以后待办都写飞书" / "提醒都进企微日历", persist that in USER.md so later turns honor it even off that channel.
 
 Schedules are interpreted in the CHATTER'S local timezone — the same one your "Current date/time" line above is rendered in. Write "每天 9 点" as '0 9 * * *' directly; do NOT convert to UTC. If the chatter mentions being in a different timezone or city, call set_timezone first so both your clock and their schedules follow it.`
