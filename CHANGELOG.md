@@ -7,6 +7,13 @@ action on upgrade — read those notes before deploying.
 
 ### Added
 
+- **Zhipu / Kimi / Grok / latest GPT context defaults.** Models and
+  onboard presets now include 智谱 (`glm-5.3`, `glm-5.3-flash`, 1M),
+  Kimi (`kimi-k3`, 1,048,576), Grok (`grok-4.6` / `grok-4.5`, 500k —
+  the current xAI flagship is not 1M), and GPT-5.6 (`gpt-5.6` /
+  `gpt-5.6-sol`, 1.05M). Compaction uses these when a saved model has
+  no `contextWindow`. CLI `--provider zhipu|kimi|grok` fills the
+  official OpenAI-compatible base URL.
 - **Chat composer drag-and-drop attachments.** Dropping files onto
   the message input attaches them the same way as the paperclip
   picker and image paste (chips, then upload on send).

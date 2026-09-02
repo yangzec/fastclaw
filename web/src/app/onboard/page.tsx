@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import { getStatus, onboard, testProvider } from "@/lib/api";
 import { MIN_PASSWORD_LENGTH } from "@/lib/password";
+import { PROVIDER_PRESETS, PROVIDER_LABELS } from "@/lib/provider-presets";
 
 const STEPS = [
   { id: "welcome", label: "Welcome", icon: PartyPopper },
@@ -51,15 +52,6 @@ const STEPS = [
 // (the SelectItem's `value` prop) by default, not the SelectItem's
 // children — so we explicitly map keys to titles via the children render
 // prop on SelectValue. Keep these in sync with the SelectItem lists.
-const PROVIDER_LABELS: Record<string, string> = {
-  openai: "OpenAI",
-  openrouter: "OpenRouter",
-  anthropic: "Anthropic",
-  deepseek: "DeepSeek",
-  ollama: "Ollama",
-  custom: "Custom",
-};
-
 const API_TYPE_LABELS: Record<string, string> = {
   "openai-chat": "OpenAI Chat Completions",
   "anthropic-messages": "Anthropic Messages",
@@ -70,47 +62,9 @@ const AUTH_TYPE_LABELS: Record<string, string> = {
   "api-key": "API Key Header",
 };
 
-// PROVIDERS holds the per-preset defaults the form pre-fills when the
-// user picks a provider from the dropdown. `models[0]` is shown as the
-// placeholder in the Default model input — the user types over it.
-// authType is synced too so switching from Anthropic (api-key) to a
-// Bearer-token provider doesn't leave the form on the wrong auth.
-const PROVIDERS: Record<
-  string,
-  { apiBase: string; apiType: string; authType: string; models: string[] }
-> = {
-  openai: {
-    apiBase: "https://api.openai.com/v1",
-    apiType: "openai-chat",
-    authType: "bearer-token",
-    models: ["gpt-5.5"],
-  },
-  openrouter: {
-    apiBase: "https://openrouter.ai/api/v1",
-    apiType: "openai-chat",
-    authType: "bearer-token",
-    models: ["google/gemini-3-flash-preview"],
-  },
-  anthropic: {
-    apiBase: "https://api.anthropic.com",
-    apiType: "anthropic-messages",
-    authType: "api-key",
-    models: ["claude-opus-4-7", "claude-sonnet-4-7", "claude-haiku-4-5"],
-  },
-  deepseek: {
-    apiBase: "https://api.deepseek.com",
-    apiType: "openai-chat",
-    authType: "bearer-token",
-    models: ["deepseek-v4-pro"],
-  },
-  ollama: {
-    apiBase: "http://localhost:11434/v1",
-    apiType: "openai-chat",
-    authType: "bearer-token",
-    models: ["qwen3.5:35b-a3b-int4"],
-  },
-  custom: { apiBase: "", apiType: "openai-chat", authType: "bearer-token", models: [] },
-};
+// PROVIDER_PRESETS (shared) holds the per-preset defaults the form
+// pre-fills when the user picks a provider from the dropdown.
+// `models[0]` is shown as the placeholder in the Default model input.
 
 export default function OnboardPage() {
   const router = useRouter();
@@ -143,11 +97,11 @@ export default function OnboardPage() {
   const [providerEnabled, setProviderEnabled] = useState(true);
   const [providerKey, setProviderKey] = useState("openai");
   const [providerName, setProviderName] = useState("openai");
-  const [apiBase, setApiBase] = useState(PROVIDERS.openai.apiBase);
+  const [apiBase, setApiBase] = useState(PROVIDER_PRESETS.openai.apiBase);
   const [apiKey, setApiKey] = useState("");
-  const [apiType, setApiType] = useState(PROVIDERS.openai.apiType);
+  const [apiType, setApiType] = useState(PROVIDER_PRESETS.openai.apiType);
   const [authType, setAuthType] = useState("bearer-token");
-  const [model, setModel] = useState(PROVIDERS.openai.models[0]);
+  const [model, setModel] = useState(PROVIDER_PRESETS.openai.models[0]);
   const [testStatus, setTestStatus] = useState<"" | "ok" | "fail" | "running">(
     "",
   );
@@ -172,7 +126,7 @@ export default function OnboardPage() {
 
   const handleProviderChange = useCallback((next: string) => {
     setProviderKey(next);
-    const preset = PROVIDERS[next];
+    const preset = PROVIDER_PRESETS[next];
     if (preset) {
       setApiBase(preset.apiBase);
       setApiType(preset.apiType);
@@ -587,7 +541,7 @@ function ProviderStep(props: {
   testStatus: "" | "ok" | "fail" | "running";
   testError: string;
 }) {
-  const preset = PROVIDERS[props.providerKey];
+  const preset = PROVIDER_PRESETS[props.providerKey];
   return (
     <Card>
       <CardHeader>
@@ -634,12 +588,11 @@ function ProviderStep(props: {
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="openai">OpenAI</SelectItem>
-                <SelectItem value="openrouter">OpenRouter</SelectItem>
-                <SelectItem value="anthropic">Anthropic</SelectItem>
-                <SelectItem value="deepseek">DeepSeek</SelectItem>
-                <SelectItem value="ollama">Ollama</SelectItem>
-                <SelectItem value="custom">Custom</SelectItem>
+                {Object.keys(PROVIDER_PRESETS).map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {PROVIDER_LABELS[p] ?? p}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>

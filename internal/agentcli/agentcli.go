@@ -604,6 +604,12 @@ func providerPreset(name string) providerDefaults {
 		return providerDefaults{"https://api.deepseek.com", "openai-chat", "bearer-token", "DEEPSEEK_API_KEY"}
 	case "mistral":
 		return providerDefaults{"https://api.mistral.ai/v1", "openai-chat", "bearer-token", "MISTRAL_API_KEY"}
+	case "zhipu", "zai", "glm":
+		return providerDefaults{"https://open.bigmodel.cn/api/paas/v4", "openai-chat", "bearer-token", "ZHIPUAI_API_KEY"}
+	case "kimi", "moonshot":
+		return providerDefaults{"https://api.moonshot.cn/v1", "openai-chat", "bearer-token", "MOONSHOT_API_KEY"}
+	case "grok", "xai":
+		return providerDefaults{"https://api.x.ai/v1", "openai-chat", "bearer-token", "XAI_API_KEY"}
 	case "openai":
 		fallthrough
 	default:
@@ -678,7 +684,11 @@ func appendModel(models []config.ModelEntry, id string) []config.ModelEntry {
 			return models
 		}
 	}
-	return append(models, config.ModelEntry{ID: id, Name: id})
+	return append(models, config.ModelEntry{
+		ID:            id,
+		Name:          id,
+		ContextWindow: config.KnownContextWindow(id),
+	})
 }
 
 // agentScopeKeys maps top-level CLI keys onto the namespace+path they
