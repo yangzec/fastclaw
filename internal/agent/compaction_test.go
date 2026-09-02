@@ -557,3 +557,127 @@ func TestCompactMessagesForceSummarizesUnderThreshold(t *testing.T) {
 		t.Fatal("force summarize should report pruned")
 	}
 }
+
+func TestKeepRecentCutoffKeepsTokenBudget(t *testing.T) {
+	blob := strings.Repeat("n", 400) // 100 tokens each
+	var msgs []provider.Message
+	for i := 0; i < 10; i++ {
+		msgs = append(msgs, provider.Message{Role: "user", Content: blob})
+	}
+	got := keepRecentCutoff(msgs, 250)
+	if got != 7 {
+		t.Fatalf("cutoff = %d, want 7 (keep last 3 × 100-token messages)", got)
+	}
+	if EstimateTokens(msgs[got:]) != 300 {
+		t.Fatalf("tail tokens = %d, want 300", EstimateTokens(msgs[got:]))
+	}
+	if keepRecentCutoff(msgs, 2000) != 0 {
+		t.Fatal("history inside the budget should have cutoff 0")
+	}
+}
+
+func TestSerializeConversationCapsToolResults(t *testing.T) {
+	huge := strings.Repeat("DUMP", 1000) // 4000 runes
+	got := serializeConversation([]provider.Message{
+		{Role: "tool", Name: "exec", Content: huge, Origin: provider.OriginUser},
+	})
+	if strings.Contains(got, huge) {
+		t.Fatal("summarizer serialization must cap oversized tool results")
+	}
+	if !strings.Contains(got, "[tool exec]") {
+		t.Fatalf("tool label missing: %s", got)
+	}
+	if n := len([]rune(got)); n > summarizeToolMaxRunes+80 {
+		t.Fatalf("serialized tool dump still too long: %d runes", n)
+	}
+}
+
+func TestCompressOlderMessagesFeedsPreviousSummary(t *testing.T) {
+	blob := strings.Repeat("p", 200)
+	prev := conversationSummaryMark + "\n## Goal\nship the compact fix"
+	msgs := []provider.Message{
+		{Role: "user", Content: prev, Origin: provider.OriginUser},
+		{Role: "assistant", Content: blob, Origin: provider.OriginUser},
+		{Role: "user", Content: blob, Origin: provider.OriginUser},
+		{Role: "assistant", Content: blob, Origin: provider.OriginUser},
+		{Role: "user", Content: blob, Origin: provider.OriginUser},
+		{Role: "assistant", Content: blob, Origin: provider.OriginUser},
+	}
+	f := &fakeSummarizer{}
+	if _, err := compressOlderMessages(context.Background(), msgs, f, "m", compactOpts{keepRecentTokens: 80}); err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	if !strings.Contains(f.gotSummaryRequest, "Previous summary") {
+		t.Fatalf("iterative compact should send the last handoff back in: %s", f.gotSummaryRequest)
+	}
+	if !strings.Contains(f.gotSummaryRequest, "ship the compact fix") {
+		t.Fatalf("previous goal missing from summarizer prompt: %s", f.gotSummaryRequest)
+	}
+}
+
+func TestCompactMessagesWithOversizedToolSession(t *testing.T) {
+	// Mirrors the original overflow shape: many exec dumps that would
+	// 400 a 32k-class window if left intact. Summarize must win, keep
+	// a recent verbatim tail, and write the full JSONL archive.
+	dump := strings.Repeat("search-hit-42-", 400) // 5600 chars ≈ 1400 tokens
+	var msgs []provider.Message
+	for i := 0; i < 30; i++ {
+		msgs = append(msgs,
+			provider.Message{Role: "user", Content: fmt.Sprintf("round-%d", i), Origin: provider.OriginUser},
+			provider.Message{Role: "assistant", Content: "working", Origin: provider.OriginUser, ToolCalls: []provider.ToolCall{
+				{ID: fmt.Sprintf("t%d", i), Function: provider.FunctionCall{Name: "web_search", Arguments: `{"query":"fastclaw"}`}},
+			}},
+			provider.Message{Role: "tool", Name: "web_search", ToolCallID: fmt.Sprintf("t%d", i), Content: dump, Origin: provider.OriginUser},
+		)
+	}
+	const threshold = 8000
+	before := EstimateTokens(msgs)
+	if before < threshold {
+		t.Fatalf("fixture too small: tokens=%d", before)
+	}
+
+	dir := t.TempDir()
+	f := &fakeSummarizer{}
+	res, err := CompactMessagesWith(context.Background(), msgs, dir, f, "m", threshold, CompactOptions{KeepRecentTokens: 2000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Method != compactMethodSummarize {
+		t.Fatalf("method = %q, want %s", res.Method, compactMethodSummarize)
+	}
+	after := EstimateTokens(res.Messages)
+	if after >= threshold {
+		t.Fatalf("working set still over budget: %d >= %d", after, threshold)
+	}
+	if after >= before {
+		t.Fatalf("compaction did not shrink tokens: before=%d after=%d", before, after)
+	}
+	if len(res.Messages) == 0 || !strings.Contains(res.Messages[0].Content, conversationSummaryMark) {
+		t.Fatal("working set should start with the structured summary")
+	}
+	foundTail := false
+	for _, m := range res.Messages[1:] {
+		if m.Role == "user" && m.Content == "round-29" {
+			foundTail = true
+			break
+		}
+	}
+	if !foundTail {
+		t.Fatal("most recent user turn missing from the verbatim tail")
+	}
+	if !strings.Contains(f.gotSummaryRequest, "search-hit-42-") {
+		t.Fatal("summarizer should see original tool findings, not placeholders")
+	}
+	if strings.Contains(f.gotSummaryRequest, truncatedPlaceholder) {
+		t.Fatal("local prune must not blank tool results before summarize")
+	}
+	if !strings.Contains(f.gotSummaryRequest, "## Goal") {
+		t.Fatal("structured handoff prompt missing")
+	}
+	if res.LogFile == "" {
+		t.Fatal("expected a JSONL history archive")
+	}
+	if notice := compactionNotice(res); strings.Contains(notice, "/new") {
+		t.Fatalf("successful summarize should not push /new, got %q", notice)
+	}
+}
