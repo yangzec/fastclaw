@@ -148,6 +148,36 @@ func TestServeFileFromWorkspaceStoreDoesNotRedirectHTMLToPublicURL(t *testing.T)
 	}
 }
 
+func TestServeFileFromWorkspaceStoreDoesNotRedirectTextForSameOriginFetch(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, owner, _ := newAuthTestServer(t, ctx)
+	const agentID = "agt_md"
+	now := time.Now().UTC()
+	if err := s.dataStore.SaveAgent(ctx, &store.AgentRecord{
+		ID: agentID, UserID: owner.ID, Name: "md",
+		Config: map[string]any{}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	st := &signedURLWorkspaceStore{
+		publicURL: "https://cdn.example.test/fastclaw/agt_md/sessions/s1/notes.md",
+		signedURL: "https://r2.example.test/bucket/notes.md?X-Amz-Signature=abc",
+	}
+	s.SetWorkspaceStore(st)
+
+	rr := getAgentFile(t, ctx, s, resolver, owner.ID, agentID, "sessions/s1/notes.md", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%q", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if got := rr.Header().Get("Location"); got != "" {
+		t.Fatalf("text preview must stay on the gateway; Location = %q", got)
+	}
+	if st.getCalls != 1 {
+		t.Fatalf("Get called %d times, want 1", st.getCalls)
+	}
+}
+
 func TestServeFileRedirectUsesResolvedSessionNotURLPathGuess(t *testing.T) {
 	ctx := context.Background()
 	s, resolver, owner, _ := newAuthTestServer(t, ctx)

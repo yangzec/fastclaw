@@ -1629,11 +1629,21 @@ func (s *Server) callerOwnsProject(r *http.Request, agentID, projectID string) b
 // no matter how the file is loaded.
 func shouldRedirectWorkspaceFileToSignedURL(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
-	// Keep user-generated HTML same-origin so setFileResponseHeaders can
-	// apply CSP sandboxing. Images/PDFs/downloads may use the object
-	// store's public or signed URL so R2-backed agents don't appear to
-	// serve media from the gateway host.
-	return ext != ".html" && ext != ".htm"
+	// Only types the browser loads as <img>/<iframe>/<a>, not files the
+	// SPA fetch()es as text. A 302 to R2/CDN is cross-origin: images
+	// still render, but Files-panel source preview would fail CORS.
+	// HTML stays same-origin so CSP sandbox applies.
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico",
+		".pdf",
+		".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac",
+		".mp4", ".webm", ".mov", ".mkv",
+		".zip", ".tar", ".gz", ".tgz", ".7z", ".rar",
+		".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx":
+		return true
+	default:
+		return false
+	}
 }
 
 func setFileResponseHeaders(w http.ResponseWriter, path string) {
