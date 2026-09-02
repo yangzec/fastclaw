@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1453,11 +1454,10 @@ func (s *Server) handleAgentFile(w http.ResponseWriter, r *http.Request) {
 	}
 	// ServeFile sets Content-Type from the mime database itself; we just
 	// add the CSP sandbox for HTML on top — same rationale as in
-	// setFileResponseHeaders above.
-	if ext := strings.ToLower(filepath.Ext(rel)); ext == ".html" || ext == ".htm" {
-		w.Header().Set("Content-Security-Policy", "sandbox allow-scripts")
-	}
-	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// setFileResponseHeaders above. ?download=1 still needs our
+	// Content-Disposition so the browser saves the file instead of
+	// navigating to it.
+	setFileResponseHeaders(w, r, rel)
 	http.ServeFile(w, r, abs)
 }
 
@@ -1485,7 +1485,7 @@ func (s *Server) serveFileFromWorkspaceStore(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	defer rc.Close()
-	setFileResponseHeaders(w, rel)
+	setFileResponseHeaders(w, r, rel)
 	io.Copy(w, rc)
 }
 
@@ -1582,7 +1582,7 @@ func (s *Server) callerOwnsProject(r *http.Request, agentID, projectID string) b
 // `sandbox` header is the same protection the chat preview gets via the
 // iframe `sandbox` attribute, but applied at the HTTP layer so it kicks in
 // no matter how the file is loaded.
-func setFileResponseHeaders(w http.ResponseWriter, path string) {
+func setFileResponseHeaders(w http.ResponseWriter, r *http.Request, path string) {
 	ext := strings.ToLower(filepath.Ext(path))
 	ctype := mime.TypeByExtension(ext)
 	if ctype == "" {
@@ -1593,6 +1593,31 @@ func setFileResponseHeaders(w http.ResponseWriter, path string) {
 	if ext == ".html" || ext == ".htm" {
 		w.Header().Set("Content-Security-Policy", "sandbox allow-scripts")
 	}
+	// fileUrl(..., download=true) appends ?download=1 so a click saves
+	// the file instead of the browser navigating to (or previewing) it.
+	if r != nil && r.URL.Query().Get("download") == "1" {
+		w.Header().Set("Content-Disposition", contentDispositionAttachment(filepath.Base(path)))
+	}
+}
+
+// contentDispositionAttachment builds a Content-Disposition value that
+// keeps an ASCII fallback for old clients and an RFC 5987 filename*
+// for UTF-8 names (中文报告.pdf, etc.).
+func contentDispositionAttachment(name string) string {
+	name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+	if name == "" || name == "." || name == "/" {
+		name = "download"
+	}
+	fallback := strings.Map(func(r rune) rune {
+		if r < 32 || r > 126 || r == '"' || r == '\\' {
+			return '_'
+		}
+		return r
+	}, name)
+	if fallback == "" || fallback == "." {
+		fallback = "download"
+	}
+	return fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`, fallback, url.PathEscape(name))
 }
 
 func (s *Server) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
@@ -1631,6 +1656,16 @@ func (s *Server) handleAgentFileUpload(w http.ResponseWriter, r *http.Request) {
 		sessionID = s.pendingOwnerSessionID(r, id, sessionKey)
 	}
 	projectID := s.resolveSessionProject(r.Context(), r, id, sessionKey)
+	// Project landing (no chat selected): honor ?projectId= so the
+	// workspace panel can drop shared files at projects/<pid>/. Leave
+	// both empty for agent-root uploads (avatar.png).
+	if sessionID == "" && projectID == "" {
+		if raw := strings.TrimSpace(r.URL.Query().Get("projectId")); raw != "" && safeScopeSegment(raw) {
+			if s.callerOwnsAgent(r, id) || s.callerOwnsProject(r, id, raw) {
+				projectID = raw
+			}
+		}
+	}
 	saved := make([]map[string]any, 0, len(headers))
 	for _, h := range headers {
 		fh, err := h.Open()
