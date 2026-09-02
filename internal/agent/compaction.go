@@ -31,8 +31,11 @@ const (
 	// summarizeMaxRunes caps the text shipped to the summarizer so the
 	// compression call itself cannot 400 on an oversized prompt. ~20k
 	// tokens at chars/4 — enough to keep key facts, not the whole dump.
-	summarizeMaxRunes    = 80000
-	droppedHistoryNotice = "[Earlier turns were dropped to fit the model context window. Full history is in memory logs.]"
+	summarizeMaxRunes = 80000
+	// summarizeToolMaxRunes keeps each tool result in the summarizer
+	// prompt without letting one exec/search dump eat the whole budget.
+	summarizeToolMaxRunes = 4000
+	droppedHistoryNotice  = "[Earlier turns were dropped to fit the model context window. Full history is in memory logs.]"
 )
 
 const (
@@ -167,15 +170,22 @@ func compactionModelHint(method string) string {
 	}
 }
 
-// CompactMessages prunes and optionally compresses the message history when it exceeds the token threshold.
-// Step 1 (Pruning): For messages older than PruneTurnAge, strip tool result content.
-// Step 2 (Compression): If still over threshold after pruning, summarize older messages
-// using the LLM and write full history to a log file.
-// Step 3 (Hard trim): If compression fails or the result is still over
-// the threshold, drop oldest turns (keeping a valid tool-call tail)
-// until the history fits. Without this step a 400k-token session that
-// failed to summarize would keep sending 400k-token requests and the
-// upstream gateway would 400 every turn.
+// CompactMessages compresses the message history when it exceeds the
+// token threshold. Full history is written to a log file first.
+//
+// Step 1 (Summarize): Ask the current model to fold older turns into a
+// short summary. Tool findings stay in the summarizer input (capped)
+// so the cheap local "delete old tool dumps" pass is not the first
+// knife — those results are usually the facts the next turn needs.
+//
+// Step 2 (Prune): If summarize is unavailable or fails, strip oversized
+// tool results older than PruneTurnAge. Last resort before dropping
+// whole turns.
+//
+// Step 3 (Hard trim): Drop oldest turns (keeping a valid tool-call
+// tail) until the history fits. Without this a session that failed to
+// summarize would keep sending oversized requests and 400 every turn.
+//
 // threshold 0 uses CompactThreshold with the default context window.
 func CompactMessages(ctx context.Context, messages []provider.Message, workspace string, prov provider.Provider, model string, threshold int) (*CompactResult, error) {
 	if ctx == nil {
@@ -197,12 +207,33 @@ func CompactMessages(ctx context.Context, messages []provider.Message, workspace
 		slog.Warn("failed to write history log", "error", err)
 	}
 
-	// Step 1: Pruning - strip tool results from older messages
+	// Step 1: LLM summary first — preserve meaning, including tool
+	// findings, instead of blanking old tool results just to save a call.
+	if len(messages) > PruneTurnAge && prov != nil {
+		compressed, err := compressOlderMessages(ctx, messages, prov, model)
+		if err == nil {
+			after := EstimateTokens(compressed)
+			slog.Info("after compression", "tokens_before", tokens, "tokens_after", after)
+			method := compactMethodSummarize
+			if after >= threshold {
+				slog.Warn("compression still over threshold, hard-trimming", "tokens", after, "threshold", threshold)
+				compressed = hardTrimMessages(compressed, threshold)
+				method = compactMethodHardTrim
+			}
+			return &CompactResult{
+				Messages: compressed,
+				Pruned:   true,
+				Method:   method,
+				LogFile:  logFile,
+			}, nil
+		}
+		slog.Warn("compression failed, falling back to local shrink", "error", err)
+	}
+
+	// Step 2: Local prune — only when summarize did not run or failed.
 	pruned := pruneOldToolResults(messages)
 	prunedTokens := EstimateTokens(pruned)
-
 	slog.Info("after pruning", "tokens_before", tokens, "tokens_after", prunedTokens)
-
 	if prunedTokens < threshold {
 		return &CompactResult{
 			Messages: pruned,
@@ -212,31 +243,11 @@ func CompactMessages(ctx context.Context, messages []provider.Message, workspace
 		}, nil
 	}
 
-	// Step 2: Compression - summarize older messages
-	compressed, err := compressOlderMessages(ctx, pruned, prov, model)
-	if err != nil {
-		slog.Warn("compression failed, hard-trimming to fit window", "error", err)
-		return &CompactResult{
-			Messages: hardTrimMessages(pruned, threshold),
-			Pruned:   true,
-			Method:   compactMethodHardTrim,
-			LogFile:  logFile,
-		}, nil
-	}
-
-	after := EstimateTokens(compressed)
-	slog.Info("after compression", "tokens_before", prunedTokens, "tokens_after", after)
-	method := compactMethodSummarize
-	if after >= threshold {
-		slog.Warn("compression still over threshold, hard-trimming", "tokens", after, "threshold", threshold)
-		compressed = hardTrimMessages(compressed, threshold)
-		method = compactMethodHardTrim
-	}
-
+	// Step 3: Hard trim
 	return &CompactResult{
-		Messages: compressed,
+		Messages: hardTrimMessages(pruned, threshold),
 		Pruned:   true,
-		Method:   method,
+		Method:   compactMethodHardTrim,
 		LogFile:  logFile,
 	}, nil
 }
@@ -358,6 +369,29 @@ func shrinkMessage(m provider.Message, tokenBudget int) provider.Message {
 	return m
 }
 
+func formatMessageForSummary(m provider.Message) string {
+	content := m.Content
+	if m.Role == "tool" {
+		label := m.Name
+		if label == "" {
+			label = "tool"
+		}
+		return fmt.Sprintf("[tool %s] %s\n", label, capRunes(content, summarizeToolMaxRunes))
+	}
+	return fmt.Sprintf("[%s] %s\n", m.Role, content)
+}
+
+func capRunes(text string, max int) string {
+	if max <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= max {
+		return text
+	}
+	return string(runes[:max]) + "…"
+}
+
 func capSummaryText(text string) string {
 	runes := []rune(text)
 	if len(runes) <= summarizeMaxRunes {
@@ -390,23 +424,21 @@ func compressOlderMessages(ctx context.Context, messages []provider.Message, pro
 	// pinned-head protection design §5.3 (b) calls for: old
 	// goal_context messages are dropped entirely from the
 	// compaction output; the live one rides through unchanged.
-	// Tool results are already placeholders after pruning and add
-	// noise to the summarizer prompt, so they are skipped too.
+	// Tool results stay in — they usually hold the facts (search hits,
+	// file reads, exec output) the next turn still needs. Each one is
+	// capped so a single dump cannot blow the summarizer prompt.
 	var text string
 	for _, m := range olderMessages {
 		if m.Origin != provider.OriginUser {
 			continue
 		}
-		if m.Role == "tool" {
-			continue
-		}
-		text += fmt.Sprintf("[%s] %s\n", m.Role, m.Content)
+		text += formatMessageForSummary(m)
 	}
 
 	summaryPrompt := []provider.Message{
 		{
 			Role:    "system",
-			Content: "You are a conversation summarizer. Summarize the following conversation history into a compact summary that preserves key facts, decisions, and context. Be concise but don't lose important details.",
+			Content: "You are a conversation summarizer. Summarize the following conversation history into a compact summary that preserves key facts, decisions, tool findings, and context. Be concise but don't lose important details.",
 		},
 		{
 			Role:    "user",
