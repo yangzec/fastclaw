@@ -957,10 +957,16 @@ func (r *Registry) mirrorWorkspaceFileToSandbox(ctx context.Context, path, conte
 	if rel == "" || rel == "." {
 		return
 	}
-	dest := sandboxWorkspaceRoot + "/" + rel
+	dest := r.sandboxWorkspaceFile(rel)
 	if _, err := r.executor.WriteFile(ctx, dest, content); err != nil {
 		slog.Warn("workspace write mirror to sandbox failed", "path", dest, "err", err)
 	}
+}
+
+// sandboxWorkspaceFile maps a store-relative key onto the physical
+// sandbox path for this registry's (project, session) scope.
+func (r *Registry) sandboxWorkspaceFile(rel string) string {
+	return sandbox.ChatSandboxFile(r.projectID, r.scopeSessionID(), rel)
 }
 
 // mirrorCodingWriteToSandbox pushes a coding-agent workspace write into the
@@ -1039,8 +1045,15 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 			}
 			// Fall through to sandbox on store miss so a freshly-written
 			// file the agent put inside the sandbox (mid-turn, not yet
-			// mirrored to store) is still readable.
+			// mirrored to store) is still readable. Try the model path
+			// first, then the physical chat-subdir path project chats use.
 			out, err := ex.ReadFile(ctx, args.Path)
+			if err != nil {
+				alt := r.sandboxWorkspaceFile(r.wsPath(args.Path))
+				if alt != "" && alt != args.Path {
+					out, err = ex.ReadFile(ctx, alt)
+				}
+			}
 			if err == nil && looksBinary([]byte(out)) {
 				return binaryRefusal(args.Path, len(out)), nil
 			}

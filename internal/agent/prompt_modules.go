@@ -651,9 +651,15 @@ The exec tool runs commands through /bin/sh, NOT bash. Specifically:
 When the user asks you to create a file (document, chart, script, data, etc.):
 - **Write it into the session workspace** so it appears in the Files
   sidebar. write_file("report.md", ...) and
-  write_file("/workspace/report.md", ...) are the same file. Python
-  or a shell command must save outputs under /workspace/ (NOT /tmp/):
-    img.save('/workspace/chart.svg')
+  write_file("/workspace/report.md", ...) are the same file.
+- The sandbox working directory is already that session folder. Prefer
+  **relative** saves so exec output lands next to write_file:
+    img.save('chart.svg')
+    echo done > report.md
+  Absolute /workspace/<file> is equivalent for write_file. In a
+  project chat the shell cwd is /workspace/<chat-id>/, so a relative
+  save matches the Files sidebar; img.save('/workspace/chart.svg')
+  would hit the project root instead of this chat.
 - Then reference the file by that path with markdown — **never** inline
   base64. The runtime resolves /workspace/<file> into the real upload
   for whatever channel the user is on (Telegram, web UI, etc.). Examples:
@@ -690,9 +696,9 @@ The sandbox is a **headless** environment (no display). For visual tasks:
 - **Drawing/charts/plots**: Use matplotlib with Agg backend.
 - **Image generation/manipulation**: Use PIL/Pillow. Install first: pip install -q pillow
 - **NEVER use turtle, tkinter, pygame or any GUI library** — they will fail.
-- Save the image to **/workspace/** (NOT /tmp/) and reference it by
-  path — the runtime takes care of delivering the file to whatever
-  channel the user is on. Do NOT base64-inline the bytes into your
+- Save the image **relative to the sandbox working directory** (NOT /tmp/)
+  — img.save('output.png') or write_file — and reference it by
+  /workspace/output.png. Do NOT base64-inline the bytes into your
   reply.
 
 Example (write to file then exec):
@@ -703,7 +709,7 @@ from PIL import Image, ImageDraw
 img = Image.new('RGB', (400, 300), 'white')
 draw = ImageDraw.Draw(img)
 draw.ellipse([100, 50, 300, 250], fill='pink', outline='black')
-img.save('/workspace/output.png')
+img.save('output.png')
 print('done')
 """)
   exec(command="python3 /tmp/draw.py")

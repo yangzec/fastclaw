@@ -5,7 +5,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
@@ -204,16 +203,19 @@ func (p *LifecyclePool) syncSnapshot(ctx context.Context, sc sandboxScope, ex Ex
 		return
 	}
 	written := 0
-	for path, data := range files {
+	for rel, data := range files {
+		if skipSnapshotRel(rel) {
+			continue
+		}
 		// Skip files that the store already has with identical size —
 		// avoids rewriting every file every sync when nothing changed.
 		// Content equality would be stricter but requires a full
 		// round-trip per file; size is usually enough.
-		if info, err := p.workspace.Stat(ctx, sc.agentID, sc.projectID, sc.sessionID, path); err == nil && info.Size == int64(len(data)) {
+		if info, err := p.workspace.Stat(ctx, sc.agentID, sc.projectID, sc.sessionID, rel); err == nil && info.Size == int64(len(data)) {
 			continue
 		}
-		if err := p.workspace.Put(ctx, sc.agentID, sc.projectID, sc.sessionID, path, bytesReader(data), int64(len(data)), ""); err != nil {
-			slog.Warn("sandbox sync: put failed", "agent", sc.agentID, "session", sc.sessionID, "cause", cause, "path", path, "error", err)
+		if err := p.workspace.Put(ctx, sc.agentID, sc.projectID, sc.sessionID, rel, bytesReader(data), int64(len(data)), ""); err != nil {
+			slog.Warn("sandbox sync: put failed", "agent", sc.agentID, "session", sc.sessionID, "cause", cause, "path", rel, "error", err)
 			continue
 		}
 		written++
@@ -385,12 +387,8 @@ func (p *LifecyclePool) mirrorSandboxWrite(ctx context.Context, sc sandboxScope,
 	if p.workspace == nil {
 		return
 	}
-	const prefix = "/workspace/"
-	if !strings.HasPrefix(sandboxPath, prefix) {
-		return
-	}
-	key := strings.TrimPrefix(sandboxPath, prefix)
-	if key == "" {
+	key, ok := RelFromSandboxPath(sc.projectID, sc.sessionID, sandboxPath)
+	if !ok {
 		return
 	}
 	if err := p.workspace.Put(ctx, sc.agentID, sc.projectID, sc.sessionID, key,

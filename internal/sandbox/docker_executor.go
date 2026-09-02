@@ -87,7 +87,7 @@ func (d *DockerExecutor) Exec(ctx context.Context, command string, timeout time.
 	}()
 	defer close(done)
 
-	out, err := d.sb.Exec(execCtx, wrapped, "/workspace")
+	out, err := d.sb.Exec(execCtx, wrapped, d.execWorkdir())
 	// On normal exit, the goroutine never fires — clean the marker
 	// ourselves. On timeout, the goroutine already rm'd it.
 	if execCtx.Err() == nil {
@@ -105,6 +105,13 @@ func randomExecMarker() string {
 		return "0000000000000000"
 	}
 	return hex.EncodeToString(buf[:])
+}
+
+func (d *DockerExecutor) execWorkdir() string {
+	if d != nil && d.sb != nil && d.sb.workdir != "" {
+		return d.sb.workdir
+	}
+	return "/workspace"
 }
 
 func (d *DockerExecutor) ReadFile(ctx context.Context, path string) (string, error) {
@@ -148,6 +155,14 @@ func (d *DockerExecutor) SnapshotWorkspace(ctx context.Context) (map[string][]by
 	root := d.sb.workspace
 	if root == "" {
 		return nil, nil
+	}
+	// Project chats mount the project root but cwd into /workspace/<sid>.
+	// Snapshot only that subdir so sibling chats and the coding app tree
+	// don't get copied into this chat's store prefix.
+	if wd := d.execWorkdir(); strings.HasPrefix(wd, "/workspace/") {
+		if sub := strings.TrimPrefix(wd, "/workspace/"); sub != "" && !strings.Contains(sub, "..") {
+			root = filepath.Join(root, filepath.FromSlash(sub))
+		}
 	}
 	out := make(map[string][]byte)
 	err := filepath.WalkDir(root, func(p string, entry fs.DirEntry, walkErr error) error {

@@ -201,6 +201,7 @@ func (a *Agent) bindSession(ctx context.Context, channel, accountID, sessionID, 
 	// agent's edits land where the dev server serves. Only when actually
 	// inside a project; loose chats and non-coding agents are unaffected.
 	a.registry.SetCodingRootScope(a.projectRuntime != nil && projectID != "")
+	sandboxSession := a.storeSessionID(projectID, sessionID)
 	// If this scope already has a running app (a runtime record exists),
 	// redirect file tools into its app subfolder so edits keep landing
 	// where the dev server serves — across turns, not just the turn that
@@ -229,12 +230,12 @@ func (a *Agent) bindSession(ctx context.Context, channel, accountID, sessionID, 
 		pool := a.sandboxPool
 		agentName := a.name
 		a.registry.SetSandboxProvider(func(ctx context.Context) (sandbox.Executor, error) {
-			return pool.Get(ctx, agentName, projectID, sessionID)
+			return pool.Get(ctx, agentName, projectID, sandboxSession)
 		})
 		return
 	}
 	a.registry.SetSandboxProvider(nil)
-	ex, err := a.sandboxPool.Get(ctx, a.name, projectID, sessionID)
+	ex, err := a.sandboxPool.Get(ctx, a.name, projectID, sandboxSession)
 	if err != nil {
 		// Error level (not warn) — when sandbox is required and we
 		// can't bind, the next exec call will refuse with the
@@ -1236,6 +1237,17 @@ func (a *Agent) MoveWebChatSession(ctx context.Context, sessionId, projectID str
 	return a.sessions.MoveSessionByID(sessionId, projectID)
 }
 
+// storeSessionID is the session segment workspace.Store and the turn
+// sandbox share. Coding agents (project runtime + in a project) drop it
+// so edits, exec output, hydrate, and the preview mount all address
+// projects/<pid>/ — the same tree the dev server serves.
+func (a *Agent) storeSessionID(projectID, sessionID string) string {
+	if a != nil && a.projectRuntime != nil && strings.TrimSpace(projectID) != "" {
+		return ""
+	}
+	return sessionID
+}
+
 // Model returns the agent's model name.
 func (a *Agent) Model() string {
 	return a.model
@@ -2099,7 +2111,8 @@ func (a *Agent) pendingTodoItems(ctx context.Context) []string {
 	if a.workspaceStore == nil || a.agentID == "" || a.registry == nil {
 		return nil
 	}
-	rc, err := a.workspaceStore.Get(ctx, a.agentID, a.registry.ProjectID(), a.registry.SessionID(), "todo.md")
+	pid := a.registry.ProjectID()
+	rc, err := a.workspaceStore.Get(ctx, a.agentID, pid, a.storeSessionID(pid, a.registry.SessionID()), "todo.md")
 	if err != nil {
 		return nil
 	}
