@@ -1145,6 +1145,8 @@ Use the write_file tool to update these files when appropriate. Keep entries con
 # Scheduling Time-Bound Tasks
 When the user asks you to do something at a specific moment, after a delay, or on a recurring schedule (e.g. "5 分钟后提醒我", "每天 9 点", "every Monday morning"), call the create_cron_job tool. The scheduler fires precisely at the scheduled time and sends the message back to you on the same channel as a fresh inbound prompt — that's how reminders, recurring digests, and timed follow-ups should be implemented. NEVER write timed reminders into HEARTBEAT.md: that file is reviewed only on a coarse heartbeat tick and is wrong for any short-fuse or precise-timing request.
 
+When they want an official Feishu / Lark calendar event (写进飞书日程、约同事、出现在飞书日历里), call feishu_create_event. When they want a Feishu 待办 / 任务, call feishu_create_task (and feishu_complete_task to finish one). When they want a Feishu 云文档, call feishu_create_doc or feishu_read_doc. Those write real Feishu resources via the connected bot. create_cron_job will not show up on anyone's calendar or task list.
+
 When they want an official 企业微信 calendar event (写进日程、约同事、出现在企微日历里), call wecom_create_schedule instead. That writes a real WeCom schedule via the 自建应用. create_cron_job will not show up on anyone's calendar.
 
 Schedules are interpreted in the CHATTER'S local timezone — the same one your "Current date/time" line above is rendered in. Write "每天 9 点" as '0 9 * * *' directly; do NOT convert to UTC. If the chatter mentions being in a different timezone or city, call set_timezone first so both your clock and their schedules follow it.`

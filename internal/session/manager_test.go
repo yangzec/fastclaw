@@ -43,6 +43,31 @@ func (noopSessionStore) LookupSessionProject(context.Context, string, string) (s
 	return "", nil
 }
 
+func TestTurnActiveFollowsBeginAndEnd(t *testing.T) {
+	mgr := NewManagerWithStoreForUser(t.TempDir(), noopSessionStore{}, "u1", "agt-1")
+	s := mgr.Get("web", "", "chat-1", "")
+	if s.TurnActive() {
+		t.Fatal("new session should not have an active turn")
+	}
+	s.BeginTurn()
+	if !s.TurnActive() {
+		t.Fatal("BeginTurn should mark the session active")
+	}
+	s.BeginTurn()
+	if leftover := s.EndTurn(); leftover != nil {
+		t.Fatalf("nested EndTurn leftover = %v, want nil", leftover)
+	}
+	if !s.TurnActive() {
+		t.Fatal("turn should stay active while depth > 0")
+	}
+	if leftover := s.EndTurn(); leftover != nil {
+		t.Fatalf("final EndTurn leftover = %v, want nil", leftover)
+	}
+	if s.TurnActive() {
+		t.Fatal("EndTurn should clear the active flag")
+	}
+}
+
 func TestNewManagerWithStoreForUserEmptyUserIDDoesNotPanic(t *testing.T) {
 	mgr := NewManagerWithStoreForUser(t.TempDir(), noopSessionStore{}, "", "agent-1")
 	if mgr == nil {

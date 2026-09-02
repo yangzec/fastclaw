@@ -89,7 +89,7 @@ func (a *Agent) handleSlashCommand(msg bus.InboundMessage) slashResult {
 		return a.slashUndo(msg)
 
 	case "/compact":
-		return a.slashCompact(msg)
+		return a.slashCompact(msg, args)
 
 	case "/status":
 		return a.slashStatus(msg)
@@ -299,7 +299,7 @@ func (a *Agent) slashUndo(msg bus.InboundMessage) slashResult {
 	return slashResult{handled: true, reply: "Nothing to undo."}
 }
 
-func (a *Agent) slashCompact(msg bus.InboundMessage) slashResult {
+func (a *Agent) slashCompact(msg bus.InboundMessage, args []string) slashResult {
 	sess := a.sessions.Get(msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
 	sessionMsgs := sess.GetMessages()
 
@@ -307,7 +307,10 @@ func (a *Agent) slashCompact(msg bus.InboundMessage) slashResult {
 		return slashResult{handled: true, reply: "No messages to compact."}
 	}
 
-	result, err := CompactMessages(context.Background(), sessionMsgs, a.homePath, a.provider, a.model, a.compactTokenThreshold(a.chatterUserID(msg)))
+	result, err := CompactMessagesWith(context.Background(), sessionMsgs, a.homePath, a.provider, a.model, a.compactTokenThreshold(a.chatterUserID(msg)), CompactOptions{
+		Instructions: strings.Join(args, " "),
+		Force:        true,
+	})
 	if err != nil {
 		return slashResult{handled: true, reply: fmt.Sprintf("Compaction error: %v", err)}
 	}
@@ -591,7 +594,7 @@ Conversation
   /undo           — Undo last turn
 
 Context
-  /compact        — Compress context window
+  /compact [focus…] — Compress context window (optional focus notes)
   /status         — Agent status & memory info
   /usage          — Session token/turn stats
   /insights [N]   — Activity insights (last N days, default 7)

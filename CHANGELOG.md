@@ -7,17 +7,30 @@ action on upgrade — read those notes before deploying.
 
 ### Added
 
-<<<<<<< HEAD
+- **Zhipu / Kimi / Grok / latest GPT context defaults.** Models and
+  onboard presets now include 智谱 (`glm-5.3`, `glm-5.3-flash`, 1M),
+  Kimi (`kimi-k3`, 1,048,576), Grok (`grok-4.6` / `grok-4.5`, 500k —
+  the current xAI flagship is not 1M), and GPT-5.6 (`gpt-5.6` /
+  `gpt-5.6-sol`, 1.05M). These numbers only prefill the Context window
+  field — you can type any size; the saved value is what compaction
+  uses. "Reset to default" restores the official size. CLI
+  `--provider zhipu|kimi|grok` fills the official OpenAI-compatible
+  base URL.
 - **Chat composer drag-and-drop attachments.** Dropping files onto
   the message input attaches them the same way as the paperclip
   picker and image paste (chips, then upload on send).
-=======
 - **Inherited global skills on the agent Skills page.** The agent
   Skills tab lists global `~/.fastclaw/skills` entries as
   **Inherited** (same merge the runtime uses). An agent-local copy
   with the same name still wins and can be removed without deleting
   the global skill.
->>>>>>> origin/cursor/agent-inherited-skills-16c5
+- **Feishu official calendar, tasks, and docs from chat.** The
+  connected Feishu / Lark bot can create 日程, 待办, and 云文档
+  via OpenAPI (`feishu_create_event`, `feishu_create_task`,
+  `feishu_complete_task`, `feishu_create_doc`, `feishu_read_doc`)
+  using the same tenant token as IM. QR login now requests
+  calendar / task / docs-create / share scopes. Bots created
+  before this update must disconnect and scan again.
 - **WeCom (企业微信) scan-to-create + long-connection.** New
   channel type `wecom` (does not reuse personal WeChat iLink).
   The dashboard opens Tencent's official `@wecom/wecom-aibot-sdk`
@@ -53,6 +66,34 @@ action on upgrade — read those notes before deploying.
 
 ### Fixed
 
+- **Compaction follows Pi's working-set shrink.** Auto-compact and
+  `/compact [focus…]` now keep a ~20k-token verbatim hot tail (not
+  the last 20 messages), ask the model for a structured Goal /
+  Constraints / Progress / Decisions / Next Steps / Critical Context
+  handoff, and attach `<read-files>` / `<modified-files>` so the next
+  turn can rehydrate. The loop also compact-checks after each tool
+  round and, on a context-overflow 400, force-compacts once and
+  retries the turn. Successful summarize no longer tells the user to
+  `/new`; that hint stays on hard-trim only.
+- **Compaction no longer blanks old tool results before summarizing.**
+  The first pass used to replace every tool output older than 20
+  messages with a placeholder, then (if still over budget) ask the
+  model to summarize a history that no longer had the search hits /
+  file reads / exec output. Summarize now runs first and keeps capped
+  tool findings in the summarizer prompt. Local prune is only the
+  fallback when summarize is unavailable or fails.
+- **Refreshing the chat page killed in-flight tools.** The stream
+  handler detached the agent from the HTTP request context
+  (`context.WithoutCancel`) so a refresh would not cancel the turn,
+  then immediately `defer cancel()`'d that same context when the
+  browser disconnected. Exec / fetch / subagent calls saw
+  `context.Canceled` and stopped. The handler now leaves the detached
+  timeout running after a client drop. Reload also keeps unfinished
+  tools spinning and resumes `tool_call` / `tool_result` over
+  `/api/chat/subscribe` instead of painting them `(stopped)`.
+  **Stop** now calls `POST /api/chat/stop` so it still cancels the
+  server turn after a refresh (aborting the browser SSE is no longer
+  enough).
 - **Chat bubbles swallowed the rest of a reply into one numbered
   code card.** A stray or unclosed ` ``` ` (common when the model
   quotes an `API error 400` dump) is a CommonMark fence that runs

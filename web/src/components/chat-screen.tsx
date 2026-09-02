@@ -7,10 +7,11 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { fileUrl, getAgent, getAgentKnowledgeFile, getChangedFiles, getChatHistoryWithCursor, getChatSessions, getChatTodo, getMe, getScopePreview, getScopePreviewLogs, getSessionHistory, listAgentFiles, listProjects, renameChatSession, restoreSessionHistory, revealAgentWorkspace, sendChatStream, steerChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type KnowledgeSource, type ScopePreview, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile, type WorkspaceHistoryEntry } from "@/lib/api";
-import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, Folder, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal, ExternalLink, MoreHorizontal, PanelLeftClose, PanelLeftOpen, BookOpen } from "lucide-react";
+import { fileUrl, getAgent, getAgentKnowledgeFile, getChangedFiles, getChatHistoryWithCursor, getChatSessions, getChatTodo, getMe, getScopePreview, getScopePreviewLogs, getSessionHistory, listAgentFiles, listProjects, renameChatSession, restoreSessionHistory, revealAgentWorkspace, sendChatStream, steerChat, stopChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type KnowledgeSource, type ScopePreview, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile, type WorkspaceHistoryEntry } from "@/lib/api";
+import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, Folder, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal, ExternalLink, MoreHorizontal, PanelLeftClose, PanelLeftOpen, BookOpen, Upload } from "lucide-react";
 import Link from "next/link";
 import { ChatMarkdown } from "@/components/chat-markdown";
+import { applyToolCallEvent, applyToolResultEvent } from "@/lib/resume-tool-events";
 
 // Split a string on `![alt](data:image/...;base64,...)` markdown.
 //
@@ -287,7 +288,10 @@ function namePastedImage(file: File, pasteId: number, index: number): File {
 }
 
 /** Convert raw history messages into UI ChatMessages, grouping tool calls with results. */
-function buildChatMessages(history: ChatHistoryMessage[]): ChatMessage[] {
+function buildChatMessages(
+  history: ChatHistoryMessage[],
+  opts?: { keepRunningTools?: boolean },
+): ChatMessage[] {
   const msgs: ChatMessage[] = [];
   let i = 0;
   while (i < history.length) {
@@ -337,12 +341,15 @@ function buildChatMessages(history: ChatHistoryMessage[]): ChatMessage[] {
       // Defensive: any tool_use that still has no result by the time
       // we leave the tool-result run got orphaned (client aborted, server
       // crashed mid-turn, persistence path raced). Mark them stopped so
-      // the UI shows a terminal state instead of spinning forever.
-      // Newer turns will have these padded server-side via
+      // the UI shows a terminal state instead of spinning forever —
+      // unless this session still has a live turn (page reload mid-tool).
+      // Newer finished turns will have these padded server-side via
       // padOrphanToolResults; this catches sessions that pre-date the fix.
-      for (const c of calls) {
-        if (c.result === undefined) {
-          c.result = "(stopped)";
+      if (!opts?.keepRunningTools) {
+        for (const c of calls) {
+          if (c.result === undefined) {
+            c.result = "(stopped)";
+          }
         }
       }
       // If this assistant turn produced text alongside its tool calls
@@ -690,6 +697,10 @@ export function ChatScreen() {
   // reload, which replaces the placeholder with the canonical message
   // pulled from session_messages.
   const transientBubbleIdRef = useRef<string | null>(null);
+  // True after a history load that reported an in-flight server turn.
+  // Subscribe uses this to render tool_call / tool_result live and to
+  // reload history on `done` even when no content bubble was created.
+  const resumeTurnRef = useRef(false);
   // streamingMsgIdRef holds the id of the assistant bubble currently
   // accreting content_delta chunks via the active POST sendChatStream.
   // Shared with the parallel /api/chat/subscribe SSE handler so that
@@ -944,6 +955,10 @@ export function ChatScreen() {
           content?: string;
           message?: string;
           metadata?: ToolResultMetadata;
+          id?: string;
+          name?: string;
+          arguments?: string;
+          result?: string;
           // subagent_progress fields
           iteration?: number;
           max?: number;
@@ -967,13 +982,10 @@ export function ChatScreen() {
         // replies are event-only, so that reload clears the visible
         // answer and makes the send look like it did nothing.
         if (inFlightSessionsRef.current.has(chatScopeKey(selectedAgent, sessionId))) return;
-        // CAREFUL: do NOT bump maxSeqRef before the switch. This handler
-        // intentionally drops tool_call / tool_result during catch-up
-        // (the post-`done` history reload renders them properly) — but
-        // a pre-switch bump would mark those seqs as "rendered" and the
-        // parallel POST sendChatStream callback would dedup-skip the
-        // very same events when it tries to actually render them. Bump
-        // only inside cases that really took ownership of this seq.
+        // CAREFUL: do NOT bump maxSeqRef before the switch. Bump only
+        // inside cases that really took ownership of this seq so a
+        // dropped event can still be rendered by the parallel POST
+        // sendChatStream callback.
         const claim = () => {
           if (seq >= 0) maxSeqRef.current = seq;
         };
@@ -1070,17 +1082,17 @@ export function ChatScreen() {
             // the ref dangling and cause the next turn's first
             // content_delta to write into the stale id.
             streamingMsgIdRef.current = null;
-            // Only reload history when we actually built a transient
-            // bubble from subscribe-replayed content events (i.e. the
-            // user reloaded mid-turn and we need to swap the
-            // placeholder for the canonical message saved in
-            // session_messages). When the active POST stream rendered
-            // the turn directly, transient bubble is null — a reload
-            // here would clobber any rendered error bubbles too,
+            // Reload history when we actually built a transient bubble
+            // from subscribe-replayed content, OR when we resumed an
+            // in-flight turn (tools were still running after refresh).
+            // Skip when the active POST stream rendered the turn
+            // directly — a reload here would clobber error bubbles
             // because LLM-error turns never write an assistant
             // message to session_messages.
-            if (transientBubbleIdRef.current) {
+            if (transientBubbleIdRef.current || resumeTurnRef.current) {
               transientBubbleIdRef.current = null;
+              resumeTurnRef.current = false;
+              setSending(false);
               getChatHistoryWithCursor(selectedAgent, sessionId)
                 .then(({ history, latestEventSeq }) => {
                   if (latestEventSeq > maxSeqRef.current) maxSeqRef.current = latestEventSeq;
@@ -1100,9 +1112,29 @@ export function ChatScreen() {
             }
             break;
           }
-          // tool_call / tool_result during catch-up are skipped here —
-          // the next history reload (on `done`) will render them
-          // properly via buildChatMessages.
+          case "tool_call": {
+            claim();
+            setMessages((prev) =>
+              applyToolCallEvent(prev, {
+                id: data.data?.id,
+                name: data.data?.name,
+                arguments: data.data?.arguments,
+              }),
+            );
+            break;
+          }
+          case "tool_result": {
+            claim();
+            setMessages((prev) =>
+              applyToolResultEvent(prev, {
+                id: data.data?.id,
+                name: data.data?.name,
+                result: data.data?.result,
+                metadata: data.data?.metadata,
+              }),
+            );
+            break;
+          }
         }
         return;
       }
@@ -1313,6 +1345,7 @@ export function ChatScreen() {
     maxSeqRef.current = maxSeqBySessionRef.current.get(chatScopeKey(selectedAgent, sessionId)) ?? -1;
     subscribeSinceRef.current = -1;
     transientBubbleIdRef.current = null;
+    resumeTurnRef.current = false;
     // Close the SSE gate for this sessionId; reopens once the history
     // fetch lands and subscribeSinceRef has been set to the real cursor.
     setLoadedSessionId(null);
@@ -1335,12 +1368,16 @@ export function ChatScreen() {
         if (!aborted) setTodoItems([]);
       });
     getChatHistoryWithCursor(selectedAgent, sessionId)
-      .then(async ({ history, latestEventSeq }) => {
+      .then(async ({ history, latestEventSeq, turnActive }) => {
         if (aborted) return;
         if (!sessionHasActivePost && latestEventSeq > maxSeqRef.current) {
           maxSeqRef.current = latestEventSeq;
         }
         subscribeSinceRef.current = latestEventSeq;
+        if (turnActive && !sessionHasActivePost) {
+          resumeTurnRef.current = true;
+          setSending(true);
+        }
         if (!history || history.length === 0) {
           if (!sessionHasActivePost) {
             setMessages([]);
@@ -1348,7 +1385,7 @@ export function ChatScreen() {
           setLoadedSessionId(sessionId);
           return;
         }
-        const built = buildChatMessages(history);
+        const built = buildChatMessages(history, { keepRunningTools: turnActive });
         try {
           // listAgentFiles(agentId, sessionId) lets the backend pick
           // the right prefix — projects/<pid>/ for project chats,
@@ -2040,7 +2077,24 @@ export function ChatScreen() {
   const handleStop = useCallback(() => {
     const key = chatScopeKey(selectedAgent, sessionId);
     const ac = abortBySessionRef.current.get(key) ?? abortRef.current;
+    if (selectedAgent && sessionId) {
+      void stopChat(selectedAgent, sessionId).catch(() => {});
+    }
     ac?.abort();
+    if (resumeTurnRef.current) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.role === "tool-group" && m.toolCalls
+            ? {
+                ...m,
+                toolCalls: m.toolCalls.map((tc) =>
+                  tc.result === undefined ? { ...tc, result: "(stopped)" } : tc,
+                ),
+              }
+            : m,
+        ),
+      );
+    }
   }, [selectedAgent, sessionId]);
 
   // handleSteer fires while a turn is streaming: it buffers the message
@@ -3016,6 +3070,7 @@ export function ChatScreen() {
           // isn't a real chat, so suppress it and list the project.
           sessionId={urlProjectId && !urlSessionId ? "" : sessionId}
           projectId={!urlSessionId && urlProjectId ? urlProjectId : undefined}
+          canUpload={!isReadOnlyView}
           knowledgePreview={knowledgePreview}
           onClearKnowledgePreview={() => setKnowledgePreview(null)}
           onClose={() => {
@@ -3545,12 +3600,16 @@ function FileTreeView({
   rootPrefix,
   selectedPath,
   onSelect,
+  agentId,
+  sessionId,
   defaultExpandDepth = 1,
 }: {
   files: WorkspaceFile[];
   rootPrefix: string;
   selectedPath?: string;
   onSelect: (f: ProducedFile) => void;
+  agentId: string;
+  sessionId?: string;
   // Folders shallower than this are open on first load (1 = open the root
   // folders only) so the user sees the top entries without a deep dump.
   defaultExpandDepth?: number;
@@ -3595,6 +3654,8 @@ function FileTreeView({
           toggle={toggle}
           selectedPath={selectedPath}
           onSelect={onSelect}
+          agentId={agentId}
+          sessionId={sessionId}
         />
       ))}
     </div>
@@ -3608,6 +3669,8 @@ function FileTreeRow({
   toggle,
   selectedPath,
   onSelect,
+  agentId,
+  sessionId,
 }: {
   node: FileTreeNode;
   depth: number;
@@ -3615,6 +3678,8 @@ function FileTreeRow({
   toggle: (p: string) => void;
   selectedPath?: string;
   onSelect: (f: ProducedFile) => void;
+  agentId: string;
+  sessionId?: string;
 }) {
   const pad = { paddingLeft: 8 + depth * 14 };
   if (node.isDir) {
@@ -3644,6 +3709,8 @@ function FileTreeRow({
               toggle={toggle}
               selectedPath={selectedPath}
               onSelect={onSelect}
+              agentId={agentId}
+              sessionId={sessionId}
             />
           ))}
       </>
@@ -3652,16 +3719,31 @@ function FileTreeRow({
   const { icon: Icon } = fileKind(node.path);
   const active = selectedPath === node.path;
   return (
-    <button
-      onClick={() => onSelect({ path: node.path, size: node.size })}
+    <div
       style={pad}
-      className={`flex w-full items-center gap-1.5 py-1 pr-2 rounded-md text-left ${active ? "bg-muted" : "hover:bg-muted/40"}`}
-      title={node.path}
+      className={`group flex w-full items-center rounded-md pr-1 ${active ? "bg-muted" : "hover:bg-muted/40"}`}
     >
-      <span className="w-3.5 shrink-0" />
-      <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
-      <span className="truncate text-foreground">{node.name}</span>
-    </button>
+      <button
+        type="button"
+        onClick={() => onSelect({ path: node.path, size: node.size })}
+        className="flex min-w-0 flex-1 items-center gap-1.5 py-1 text-left"
+        title={node.path}
+      >
+        <span className="w-3.5 shrink-0" />
+        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="truncate text-foreground">{node.name}</span>
+      </button>
+      <a
+        href={fileUrl(agentId, node.path, true, sessionId)}
+        download={node.name}
+        className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground md:opacity-0 md:group-hover:opacity-100"
+        title={`Download ${node.name}`}
+        aria-label={`Download ${node.name}`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Download className="h-3.5 w-3.5" />
+      </a>
+    </div>
   );
 }
 
@@ -3684,6 +3766,7 @@ function WorkspacePanel({
   agentId,
   sessionId,
   projectId,
+  canUpload = false,
   knowledgePreview,
   onClearKnowledgePreview,
   onClose,
@@ -3691,6 +3774,7 @@ function WorkspacePanel({
   agentId: string;
   sessionId: string;
   projectId?: string;
+  canUpload?: boolean;
   knowledgePreview?: KnowledgeSource | null;
   onClearKnowledgePreview?: () => void;
   onClose: () => void;
@@ -3721,6 +3805,14 @@ function WorkspacePanel({
   // null and the button never renders.
   const [deployMode, setDeployMode] = useState<"self-hosted" | "hosted" | null>(null);
   const [revealing, setRevealing] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [panelDragOver, setPanelDragOver] = useState(false);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const panelDragDepthRef = useRef(0);
+  // Chat scope (sessionId) or project landing (projectId) can accept
+  // files. Agent-root uploads are reserved for avatar.png.
+  const canUploadHere = canUpload && (!!sessionId || !!projectId);
   useEffect(() => {
     let cancelled = false;
     getMe()
@@ -3849,6 +3941,58 @@ function WorkspacePanel({
       if (gen === refreshGenRef.current) setLoading(false);
     }
   }, [agentId, sessionId, projectId]);
+
+  const handleWorkspaceUpload = useCallback(async (list: FileList | File[] | null) => {
+    if (!canUploadHere || !agentId || !list) return;
+    const picked = Array.from(list);
+    if (picked.length === 0) return;
+    setUploading(true);
+    setUploadError(null);
+    try {
+      await uploadAgentFiles(agentId, sessionId || "", picked, projectId);
+      notifyWorkspaceChanged(agentId, sessionId || undefined);
+      await refresh();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  }, [canUploadHere, agentId, sessionId, projectId, refresh]);
+
+  const isFileDrag = (e: React.DragEvent) =>
+    Array.from(e.dataTransfer.types).includes("Files");
+
+  const handlePanelDragEnter = useCallback((e: React.DragEvent) => {
+    if (!canUploadHere || !isFileDrag(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    panelDragDepthRef.current += 1;
+    setPanelDragOver(true);
+  }, [canUploadHere]);
+
+  const handlePanelDragOver = useCallback((e: React.DragEvent) => {
+    if (!canUploadHere || !isFileDrag(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "copy";
+  }, [canUploadHere]);
+
+  const handlePanelDragLeave = useCallback((e: React.DragEvent) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    panelDragDepthRef.current = Math.max(0, panelDragDepthRef.current - 1);
+    if (panelDragDepthRef.current === 0) setPanelDragOver(false);
+  }, []);
+
+  const handlePanelDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    panelDragDepthRef.current = 0;
+    setPanelDragOver(false);
+    if (!canUploadHere) return;
+    void handleWorkspaceUpload(e.dataTransfer.files);
+  }, [canUploadHere, handleWorkspaceUpload]);
 
   useEffect(() => {
     const onChange = (event: Event) => {
@@ -3985,6 +4129,21 @@ function WorkspacePanel({
         style={{ width, maxWidth: `min(${FILES_PANEL_MAX}px, 70%)` }}
         className="relative z-30 flex shrink-0 flex-col overflow-hidden border-l border-border bg-background -mt-12 h-screen max-md:fixed max-md:inset-0 max-md:z-40 max-md:mt-0 max-md:!h-dvh max-md:!w-full max-md:!max-w-none max-md:shadow-xl"
       >
+        {canUploadHere && (
+          <input
+            ref={uploadInputRef}
+            type="file"
+            multiple
+            className="sr-only"
+            onChange={(e) => {
+              const picked = e.target.files;
+              if (!picked || picked.length === 0) return;
+              const files = Array.from(picked);
+              e.target.value = "";
+              void handleWorkspaceUpload(files);
+            }}
+          />
+        )}
         <div
           onMouseDown={(e) => { e.preventDefault(); setResizing(true); }}
           className={`absolute left-0 top-0 bottom-0 w-2 cursor-col-resize z-10 group max-md:hidden ${resizing ? "" : ""}`}
@@ -4028,6 +4187,15 @@ function WorkspacePanel({
                       <span>Open in new tab</span>
                     </DropdownMenuItem>
                   )}
+                  {canUploadHere && (
+                    <DropdownMenuItem
+                      disabled={uploading}
+                      onClick={() => uploadInputRef.current?.click()}
+                    >
+                      <Upload className="h-4 w-4 text-muted-foreground" />
+                      <span>Upload files</span>
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuItem
                     disabled={files.length === 0}
                     onClick={() => {
@@ -4039,7 +4207,7 @@ function WorkspacePanel({
                     }}
                   >
                     <Download className="h-4 w-4 text-muted-foreground" />
-                    <span>Download zip</span>
+                    <span>Download all as zip</span>
                   </DropdownMenuItem>
                   {deployMode === "self-hosted" && (
                     <DropdownMenuItem
@@ -4068,6 +4236,17 @@ function WorkspacePanel({
                   >
                     <ExternalLink className="h-4 w-4" />
                   </a>
+                )}
+                {canUploadHere && (
+                  <button
+                    type="button"
+                    onClick={() => uploadInputRef.current?.click()}
+                    disabled={uploading}
+                    className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground disabled:opacity-50"
+                    title="Upload files to this workspace"
+                  >
+                    <Upload className={`h-4 w-4 ${uploading ? "animate-pulse" : ""}`} />
+                  </button>
                 )}
                 <a
                   href={files.length > 0 ? zipUrl(agentId, sessionId, projectId) : undefined}
@@ -4184,21 +4363,49 @@ function WorkspacePanel({
           ) : (
             <span className="px-1 text-xs font-medium text-muted-foreground">Files</span>
           )}
-          {tab === "code" && !isMobile && (
-            <button
-              onClick={() => setTreeCollapsed((c) => !c)}
-              className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-              title={treeCollapsed ? "Show file tree" : "Hide file tree"}
-            >
-              {treeCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
-            </button>
-          )}
+          <div className="flex items-center gap-1">
+            {canUploadHere && tab === "code" && (
+              <button
+                type="button"
+                onClick={() => uploadInputRef.current?.click()}
+                disabled={uploading}
+                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground disabled:opacity-50"
+                title="Upload files to this workspace"
+              >
+                <Upload className={`h-4 w-4 ${uploading ? "animate-pulse" : ""}`} />
+              </button>
+            )}
+            {tab === "code" && !isMobile && (
+              <button
+                onClick={() => setTreeCollapsed((c) => !c)}
+                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+                title={treeCollapsed ? "Show file tree" : "Hide file tree"}
+              >
+                {treeCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+              </button>
+            )}
+          </div>
         </div>
         {tab === "code" ? (
           <div className="flex min-h-0 flex-1">
             {/* Left: file tree (collapsible). */}
             {(!treeCollapsed && !(isMobile && showingFile)) && (
-            <div className={cn("flex shrink-0 flex-col border-r border-border", isMobile ? "w-full border-r-0" : "w-56")}>
+            <div
+              className={cn(
+                "relative flex shrink-0 flex-col border-r border-border",
+                isMobile ? "w-full border-r-0" : "w-56",
+                panelDragOver && "ring-2 ring-inset ring-primary/40",
+              )}
+              onDragEnter={handlePanelDragEnter}
+              onDragOver={handlePanelDragOver}
+              onDragLeave={handlePanelDragLeave}
+              onDrop={handlePanelDrop}
+            >
+              {panelDragOver && canUploadHere && (
+                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-primary/10">
+                  <p className="px-3 text-center text-xs font-medium text-foreground">Drop files to upload</p>
+                </div>
+              )}
               {/* When there's a template baseline, default to showing only the
                   files THIS task changed; let the user flip to the full tree. */}
               {changed.available && (
@@ -4221,19 +4428,35 @@ function WorkspacePanel({
                   </button>
                 </div>
               )}
+              {uploadError && (
+                <p className="border-b border-border px-3 py-1.5 text-[11px] text-destructive">{uploadError}</p>
+              )}
               <div className="flex-1 overflow-y-auto p-2">
                 {(() => {
                   const showChanged = changed.available && !showAll;
                   const list = showChanged ? changed.files : files;
                   if (!loading && list.length === 0) {
                     return (
-                      <p className="px-3 py-8 text-center text-sm text-muted-foreground">
-                        {showChanged
-                          ? "No changes yet — the agent hasn't edited any files."
-                          : projectId
-                            ? "No files in this project yet."
-                            : "No files in this session yet."}
-                      </p>
+                      <div className="px-3 py-8 text-center text-sm text-muted-foreground">
+                        <p>
+                          {showChanged
+                            ? "No changes yet — the agent hasn't edited any files."
+                            : projectId
+                              ? "No files in this project yet."
+                              : "No files in this session yet."}
+                        </p>
+                        {canUploadHere && !showChanged && (
+                          <button
+                            type="button"
+                            onClick={() => uploadInputRef.current?.click()}
+                            disabled={uploading}
+                            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-muted/60 disabled:opacity-50"
+                          >
+                            <Upload className="h-3.5 w-3.5" />
+                            {uploading ? "Uploading…" : "Upload files"}
+                          </button>
+                        )}
+                      </div>
                     );
                   }
                   return (
@@ -4241,6 +4464,8 @@ function WorkspacePanel({
                       files={list}
                       rootPrefix={workspaceTreePrefix(list, projectId, sessionId)}
                       selectedPath={previewing?.path}
+                      agentId={agentId}
+                      sessionId={sessionId || undefined}
                       onSelect={(f) => {
                         onClearKnowledgePreview?.();
                         setPreviewing(f);
@@ -4471,6 +4696,14 @@ function FileViewer({ agentId, file, sessionId, onClose }: { agentId: string; fi
               title="Open in new tab"
             >
               <ExternalLink className="h-4 w-4" />
+            </a>
+            <a
+              href={downloadUrl}
+              download={basename}
+              className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted/50"
+              title="Download file"
+            >
+              <Download className="h-4 w-4" />
             </a>
             {onClose && (
               <button

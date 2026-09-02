@@ -1040,6 +1040,23 @@ func (a *Agent) Sessions() *session.Manager {
 	return a.sessions
 }
 
+// WebChatTurnActive reports whether HandleMessage is currently running
+// for this session. A page reload uses this so in-progress tool calls
+// stay "running" instead of being painted as stopped.
+func (a *Agent) WebChatTurnActive(sessionId string) bool {
+	if a == nil || a.sessions == nil {
+		return false
+	}
+	if sessionId == "" {
+		sessionId = "web-ui"
+	}
+	resolved := a.sessions.ResolveSessionKey(sessionId)
+	if resolved == "" {
+		return false
+	}
+	return a.sessions.GetByKey(resolved).TurnActive()
+}
+
 // WebChatHistory returns chat history for a specific session — the
 // name is historical; it now serves any channel because the dashboard
 // surfaces all-channel chats in the sidebar.
@@ -2419,30 +2436,8 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	sess.Append(userMsg)
 
 	sessionMsgs, compactNotice, compactHint := a.applySessionCompaction(ctx, sess, chatterUID)
-
-	messages := make([]provider.Message, 0, len(sessionMsgs)+4)
-	messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
-	if hints := renderChannelHints(msg, a.splitReplies); hints != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: hints})
-	}
-	if senderMsg := renderSender(msg); senderMsg != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: senderMsg})
-	}
-	if paramsMsg := renderClientParams(msg.Params); paramsMsg != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: paramsMsg})
-	}
-	// Persistence reminder — chatbot-only, positioned just before the
-	// session history so recency weight outranks the model's training
-	// prior of "I have no cross-session memory". See
-	// renderChatbotPersistenceReminder for why this isn't enough to put
-	// in the main system prompt alone.
-	if reminder := renderChatbotPersistenceReminder(a.promptMode, a.displayName, chatterMem.LoadUserFile(), chatterMem.LoadMemory()); reminder != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: reminder})
-	}
-	messages = append(messages, withConversationGapContext(sessionMsgs)...)
-	if compactHint != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: compactHint})
-	}
+	messages := a.assembleTurnMessages(systemPrompt, msg, chatterMem, sessionMsgs, compactHint)
+	overflowRetried := false
 
 	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 
@@ -2573,6 +2568,18 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				slog.Info("LLM chat canceled", "agent", a.name)
 				emitEvent(ctx, ChatEvent{Type: "done"})
 				return ""
+			}
+			if !overflowRetried && isContextOverflowError(err) {
+				if rebuilt, hint, notice, ok := a.retryAfterOverflow(ctx, sess, chatterUID, systemPrompt, msg, chatterMem); ok {
+					overflowRetried = true
+					messages = rebuilt
+					compactHint = hint
+					if notice != "" {
+						replyParts = append(replyParts, notice)
+					}
+					i--
+					continue
+				}
 			}
 			slog.Error("LLM chat failed after retries", "agent", a.name, "error", err)
 			fallback := buildFallbackReply(err, replyParts, streakState.lastFailedTool, streakState.lastFailureText)
@@ -2859,6 +2866,13 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		if steer := sess.DrainSteer(); len(steer) > 0 {
 			messages = a.appendSteer(ctx, sess, messages, steer)
 		}
+		if rebuilt, hint, notice, did := a.maybeCompactMidTurn(ctx, sess, chatterUID, systemPrompt, msg, chatterMem); did {
+			messages = rebuilt
+			compactHint = hint
+			if notice != "" {
+				replyParts = append(replyParts, notice)
+			}
+		}
 	}
 
 	slog.Warn("max tool iterations reached — forcing final delivery", "agent", a.name, "max", a.maxToolIterations)
@@ -2924,18 +2938,54 @@ func joinReplyParts(parts []string) string {
 	return strings.Join(out, channels.SplitMessageMarker)
 }
 
+// assembleTurnMessages builds the per-turn LLM prefix (system prompt,
+// channel/sender/params, chatbot reminder) plus compacted session
+// history. Used at turn start and again after mid-turn / overflow
+// compaction so the next model call sees a consistent working set.
+func (a *Agent) assembleTurnMessages(systemPrompt string, msg bus.InboundMessage, chatterMem *Memory, sessionMsgs []provider.Message, compactHint string) []provider.Message {
+	messages := make([]provider.Message, 0, len(sessionMsgs)+6)
+	messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
+	if hints := renderChannelHints(msg, a.splitReplies); hints != "" {
+		messages = append(messages, provider.Message{Role: "system", Content: hints})
+	}
+	if senderMsg := renderSender(msg); senderMsg != "" {
+		messages = append(messages, provider.Message{Role: "system", Content: senderMsg})
+	}
+	if paramsMsg := renderClientParams(msg.Params); paramsMsg != "" {
+		messages = append(messages, provider.Message{Role: "system", Content: paramsMsg})
+	}
+	var userFile, mem string
+	if chatterMem != nil {
+		userFile = chatterMem.LoadUserFile()
+		mem = chatterMem.LoadMemory()
+	}
+	if reminder := renderChatbotPersistenceReminder(a.promptMode, a.displayName, userFile, mem); reminder != "" {
+		messages = append(messages, provider.Message{Role: "system", Content: reminder})
+	}
+	messages = append(messages, withConversationGapContext(sessionMsgs)...)
+	if compactHint != "" {
+		messages = append(messages, provider.Message{Role: "system", Content: compactHint})
+	}
+	return messages
+}
+
 // applySessionCompaction runs automatic context compaction after the
 // inbound user message is stored. On a hit it replaces the working
-// set, emits a user-visible /new hint, and returns a model hint so
-// this turn does not pretend the dropped history is still there.
+// set and returns a model hint so this turn does not pretend the
+// dropped history is still there.
 func (a *Agent) applySessionCompaction(ctx context.Context, sess *session.Session, chatterUID string) (msgs []provider.Message, notice, modelHint string) {
+	msgs, notice, modelHint, _ = a.compactSession(ctx, sess, chatterUID, CompactOptions{})
+	return msgs, notice, modelHint
+}
+
+func (a *Agent) compactSession(ctx context.Context, sess *session.Session, chatterUID string, opts CompactOptions) (msgs []provider.Message, notice, modelHint string, pruned bool) {
 	sessionMsgs := sess.GetMessages()
-	compactResult, err := CompactMessages(ctx, sessionMsgs, a.homePath, a.provider, a.model, a.compactTokenThreshold(chatterUID))
+	compactResult, err := CompactMessagesWith(ctx, sessionMsgs, a.homePath, a.provider, a.model, a.compactTokenThreshold(chatterUID), opts)
 	if err != nil {
 		slog.Warn("compaction error", "agent", a.name, "error", err)
 	}
 	if compactResult == nil || !compactResult.Pruned {
-		return sessionMsgs, "", ""
+		return sessionMsgs, "", "", false
 	}
 	sess.ReplaceMessages(compactResult.Messages)
 	notice = compactionNotice(compactResult)
@@ -2946,7 +2996,24 @@ func (a *Agent) applySessionCompaction(ctx context.Context, sess *session.Sessio
 		"agent", a.name,
 		"method", compactResult.Method,
 		"log_file", compactResult.LogFile)
-	return compactResult.Messages, notice, compactionModelHint(compactResult.Method)
+	return compactResult.Messages, notice, compactionModelHint(compactResult.Method), true
+}
+
+func (a *Agent) maybeCompactMidTurn(ctx context.Context, sess *session.Session, chatterUID, systemPrompt string, msg bus.InboundMessage, chatterMem *Memory) (messages []provider.Message, hint, notice string, did bool) {
+	sessionMsgs, notice, hint, did := a.compactSession(ctx, sess, chatterUID, CompactOptions{})
+	if !did {
+		return nil, "", "", false
+	}
+	return a.assembleTurnMessages(systemPrompt, msg, chatterMem, sessionMsgs, hint), hint, notice, true
+}
+
+func (a *Agent) retryAfterOverflow(ctx context.Context, sess *session.Session, chatterUID, systemPrompt string, msg bus.InboundMessage, chatterMem *Memory) (messages []provider.Message, hint, notice string, ok bool) {
+	sessionMsgs, notice, hint, did := a.compactSession(ctx, sess, chatterUID, CompactOptions{Force: true})
+	if !did {
+		return nil, "", "", false
+	}
+	slog.Warn("retrying turn after context-overflow compaction", "agent", a.name)
+	return a.assembleTurnMessages(systemPrompt, msg, chatterMem, sessionMsgs, hint), hint, notice, true
 }
 
 // isFailedToolResult is the agent loop's heuristic for "this tool
@@ -3239,25 +3306,8 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	sess.Append(userMsg)
 
 	sessionMsgs, _, compactHint := a.applySessionCompaction(ctx, sess, chatterUID)
-
-	messages := make([]provider.Message, 0, len(sessionMsgs)+4)
-	messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
-	if hints := renderChannelHints(msg, a.splitReplies); hints != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: hints})
-	}
-	if senderMsg := renderSender(msg); senderMsg != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: senderMsg})
-	}
-	if paramsMsg := renderClientParams(msg.Params); paramsMsg != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: paramsMsg})
-	}
-	if reminder := renderChatbotPersistenceReminder(a.promptMode, a.displayName, chatterMem.LoadUserFile(), chatterMem.LoadMemory()); reminder != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: reminder})
-	}
-	messages = append(messages, withConversationGapContext(sessionMsgs)...)
-	if compactHint != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: compactHint})
-	}
+	messages := a.assembleTurnMessages(systemPrompt, msg, chatterMem, sessionMsgs, compactHint)
+	overflowRetried := false
 
 	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
 
@@ -3311,6 +3361,15 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		a.hooks.Run(ctx, hcAfter)
 
 		if err != nil {
+			if !overflowRetried && isContextOverflowError(err) {
+				if rebuilt, hint, _, ok := a.retryAfterOverflow(ctx, sess, chatterUID, systemPrompt, msg, chatterMem); ok {
+					overflowRetried = true
+					messages = rebuilt
+					compactHint = hint
+					i--
+					continue
+				}
+			}
 			slog.Error("LLM chat failed after retries", "agent", a.name, "error", err)
 			return a.stringStream(buildFallbackReply(err, nil, streakState.lastFailedTool, streakState.lastFailureText))
 		}
@@ -3487,6 +3546,10 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		}
 		if loopDetected {
 			break
+		}
+		if rebuilt, hint, _, did := a.maybeCompactMidTurn(ctx, sess, chatterUID, systemPrompt, msg, chatterMem); did {
+			messages = rebuilt
+			compactHint = hint
 		}
 	}
 

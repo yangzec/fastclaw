@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/fastclaw-ai/fastclaw/internal/config"
@@ -24,15 +26,25 @@ const (
 	// compactMinThreshold is the lowest trigger so a small window still
 	// compact before overflowing.
 	compactMinThreshold = 4096
-	// PruneTurnAge is the number of recent turns to keep intact; older messages get pruned.
+	// PruneTurnAge is the fallback message-count floor used only when
+	// token-based keepRecentCutoff cannot run (empty/short history).
 	PruneTurnAge = 20
+	// KeepRecentTokens is the Pi-style hot tail: recent messages kept
+	// verbatim after a summary. ~20k tokens of raw history, not 20 turns.
+	KeepRecentTokens = 20000
 	// truncatedPlaceholder replaces pruned tool results.
 	truncatedPlaceholder = "[Result truncated - see memory logs]"
 	// summarizeMaxRunes caps the text shipped to the summarizer so the
-	// compression call itself cannot 400 on an oversized prompt. ~20k
-	// tokens at chars/4 — enough to keep key facts, not the whole dump.
-	summarizeMaxRunes    = 80000
-	droppedHistoryNotice = "[Earlier turns were dropped to fit the model context window. Full history is in memory logs.]"
+	// compression call itself cannot 400 on an oversized prompt.
+	summarizeMaxRunes = 80000
+	// summarizeToolMaxRunes matches Pi's serializeConversation cap so
+	// one exec/read dump cannot blow the summarizer prompt.
+	summarizeToolMaxRunes = 2000
+	// compactSummaryMaxTokens is the structured-handoff budget.
+	compactSummaryMaxTokens = 4096
+	droppedHistoryNotice    = "[Earlier turns were dropped to fit the model context window. Full history is in memory logs.]"
+	conversationSummaryMark = "[Conversation Summary]"
+	compactionSummaryMark   = "[Compaction]"
 )
 
 const (
@@ -148,9 +160,9 @@ func compactionNotice(r *CompactResult) string {
 	case compactMethodHardTrim:
 		return "⚠️ This session was too long to keep intact — older turns were dropped so the model request would not be rejected. Send /new to start a clean session."
 	case compactMethodSummarize:
-		return "📦 Earlier turns were automatically summarized to fit the context window. Send /new if you want a clean session."
+		return "📦 Earlier turns were summarized. Full history is still in this chat; the model will continue from the summary and the recent messages."
 	default:
-		return "📦 Context was compacted (older tool results trimmed). Send /new if replies start to miss earlier details."
+		return "📦 Older tool results were trimmed to fit the context window. Full history is still in this chat."
 	}
 }
 
@@ -161,82 +173,105 @@ func compactionModelHint(method string) string {
 	case compactMethodHardTrim:
 		return "The session working set was just hard-trimmed to fit the model context window. Older turns are gone from your messages. Do not claim you remember details that are not present. If the user needs the earlier thread, tell them to send /new."
 	case compactMethodSummarize:
-		return "The session working set was just compacted: older turns were replaced with a short summary. Treat the summary as incomplete. If the user needs the original thread, tell them to send /new."
+		return "The session was just compacted. Continue from the structured summary plus the recent verbatim messages. Read listed files if you need details. Do not invent dropped history."
 	default:
-		return "Older tool results in this session were just truncated to fit the context window. If the user refers to a missing tool output, tell them to send /new."
+		return "Older tool results were truncated to fit the context window. Re-read files or re-run tools if you need the full output."
 	}
 }
 
-// CompactMessages prunes and optionally compresses the message history when it exceeds the token threshold.
-// Step 1 (Pruning): For messages older than PruneTurnAge, strip tool result content.
-// Step 2 (Compression): If still over threshold after pruning, summarize older messages
-// using the LLM and write full history to a log file.
-// Step 3 (Hard trim): If compression fails or the result is still over
-// the threshold, drop oldest turns (keeping a valid tool-call tail)
-// until the history fits. Without this step a 400k-token session that
-// failed to summarize would keep sending 400k-token requests and the
-// upstream gateway would 400 every turn.
-// threshold 0 uses CompactThreshold with the default context window.
+// CompactOptions tunes one CompactMessages run. Zero values use defaults.
+type CompactOptions struct {
+	// KeepRecentTokens overrides the hot-tail budget. 0 → KeepRecentTokens.
+	KeepRecentTokens int
+	// Instructions are extra /compact focus notes for the summarizer.
+	Instructions string
+	// Force compact even when the estimate is still under threshold
+	// (overflow recovery after a provider 400).
+	Force bool
+}
+
+// CompactMessages compresses the message history when it exceeds the
+// token threshold. See CompactMessagesWith for options.
 func CompactMessages(ctx context.Context, messages []provider.Message, workspace string, prov provider.Provider, model string, threshold int) (*CompactResult, error) {
+	return CompactMessagesWith(ctx, messages, workspace, prov, model, threshold, CompactOptions{})
+}
+
+// CompactMessagesWith is the Pi-style pipeline:
+//
+//  1. Summarize everything older than a token-budget hot tail
+//     (keepRecentTokens). The summarizer gets a structured handoff
+//     prompt, capped tool results, and cumulative file lists.
+//  2. If summarize is unavailable or fails, strip oversized tool
+//     results outside the hot tail.
+//  3. Hard-trim oldest turns until the estimate fits.
+func CompactMessagesWith(ctx context.Context, messages []provider.Message, workspace string, prov provider.Provider, model string, threshold int, opts CompactOptions) (*CompactResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if threshold <= 0 {
 		threshold = CompactThreshold(0, 0)
 	}
+	keep := opts.KeepRecentTokens
+	if keep <= 0 {
+		keep = KeepRecentTokens
+	}
 	tokens := EstimateTokens(messages)
-	if tokens < threshold {
+	if !opts.Force && tokens < threshold {
 		return &CompactResult{Messages: messages}, nil
 	}
 
-	slog.Info("context compaction triggered", "tokens", tokens, "threshold", threshold, "message_count", len(messages))
+	slog.Info("context compaction triggered", "tokens", tokens, "threshold", threshold, "message_count", len(messages), "keep_recent", keep, "force", opts.Force)
 
-	// Write full history to log file before any modifications
 	logFile, err := writeHistoryLog(messages, workspace)
 	if err != nil {
 		slog.Warn("failed to write history log", "error", err)
 	}
 
-	// Step 1: Pruning - strip tool results from older messages
-	pruned := pruneOldToolResults(messages)
+	cutoff := keepRecentCutoff(messages, keep)
+	if prov != nil && (cutoff > 0 || opts.Force) {
+		compressed, err := compressOlderMessages(ctx, messages, prov, model, compactOpts{
+			keepRecentTokens: keep,
+			instructions:     opts.Instructions,
+			force:            opts.Force,
+		})
+		if err == nil {
+			after := EstimateTokens(compressed)
+			slog.Info("after compression", "tokens_before", tokens, "tokens_after", after)
+			method := compactMethodSummarize
+			if after >= threshold {
+				slog.Warn("compression still over threshold, hard-trimming", "tokens", after, "threshold", threshold)
+				compressed = hardTrimMessages(compressed, threshold)
+				method = compactMethodHardTrim
+			}
+			return &CompactResult{
+				Messages: compressed,
+				Pruned:   true,
+				Method:   method,
+				LogFile:  logFile,
+			}, nil
+		}
+		slog.Warn("compression failed, falling back to local shrink", "error", err)
+	}
+
+	pruned := pruneToolResultsBefore(messages, keepRecentCutoff(messages, keep))
 	prunedTokens := EstimateTokens(pruned)
-
 	slog.Info("after pruning", "tokens_before", tokens, "tokens_after", prunedTokens)
-
 	if prunedTokens < threshold {
-		return &CompactResult{
-			Messages: pruned,
-			Pruned:   true,
-			Method:   compactMethodPrune,
-			LogFile:  logFile,
-		}, nil
-	}
-
-	// Step 2: Compression - summarize older messages
-	compressed, err := compressOlderMessages(ctx, pruned, prov, model)
-	if err != nil {
-		slog.Warn("compression failed, hard-trimming to fit window", "error", err)
-		return &CompactResult{
-			Messages: hardTrimMessages(pruned, threshold),
-			Pruned:   true,
-			Method:   compactMethodHardTrim,
-			LogFile:  logFile,
-		}, nil
-	}
-
-	after := EstimateTokens(compressed)
-	slog.Info("after compression", "tokens_before", prunedTokens, "tokens_after", after)
-	method := compactMethodSummarize
-	if after >= threshold {
-		slog.Warn("compression still over threshold, hard-trimming", "tokens", after, "threshold", threshold)
-		compressed = hardTrimMessages(compressed, threshold)
-		method = compactMethodHardTrim
+		if prunedTokens < tokens {
+			return &CompactResult{
+				Messages: pruned,
+				Pruned:   true,
+				Method:   compactMethodPrune,
+				LogFile:  logFile,
+			}, nil
+		}
+		return &CompactResult{Messages: messages, LogFile: logFile}, nil
 	}
 
 	return &CompactResult{
-		Messages: compressed,
+		Messages: hardTrimMessages(pruned, threshold),
 		Pruned:   true,
-		Method:   method,
+		Method:   compactMethodHardTrim,
 		LogFile:  logFile,
 	}, nil
 }
@@ -358,6 +393,215 @@ func shrinkMessage(m provider.Message, tokenBudget int) provider.Message {
 	return m
 }
 
+type compactOpts struct {
+	keepRecentTokens int
+	instructions     string
+	force            bool
+}
+
+// keepRecentCutoff is the first index not in the verbatim hot tail.
+// The tail is a token budget (KeepRecentTokens), not a message count.
+// The cut never lands on a lone tool reply.
+func keepRecentCutoff(messages []provider.Message, keepRecentTokens int) int {
+	if keepRecentTokens <= 0 {
+		keepRecentTokens = KeepRecentTokens
+	}
+	if len(messages) == 0 {
+		return 0
+	}
+	total := EstimateTokens(messages)
+	if total <= keepRecentTokens {
+		return 0
+	}
+	acc := 0
+	cutoff := len(messages)
+	for i := len(messages) - 1; i >= 0; i-- {
+		acc += EstimateTokens([]provider.Message{messages[i]})
+		cutoff = i
+		if acc >= keepRecentTokens {
+			break
+		}
+	}
+	return safeCompactionCutoff(messages, cutoff)
+}
+
+func serializeConversation(messages []provider.Message) string {
+	var b strings.Builder
+	for _, m := range messages {
+		if m.Origin != provider.OriginUser {
+			continue
+		}
+		b.WriteString(formatMessageForSummary(m))
+		if len(m.ToolCalls) > 0 {
+			b.WriteString("tool_calls: ")
+			for i, tc := range m.ToolCalls {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				b.WriteString(tc.Function.Name)
+				args := compactSummarizeArgs(tc.Function.Arguments)
+				if args != "" {
+					b.WriteByte('(')
+					b.WriteString(args)
+					b.WriteByte(')')
+				}
+			}
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+func formatMessageForSummary(m provider.Message) string {
+	content := m.TextContent()
+	if m.Role == "tool" {
+		label := m.Name
+		if label == "" {
+			label = "tool"
+		}
+		return fmt.Sprintf("[tool %s] %s\n", label, capRunes(content, summarizeToolMaxRunes))
+	}
+	return fmt.Sprintf("[%s] %s\n", m.Role, content)
+}
+
+func extractFileOps(messages []provider.Message) (readFiles, modifiedFiles []string) {
+	seenRead := map[string]struct{}{}
+	seenMod := map[string]struct{}{}
+	for _, m := range messages {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				path := filePathFromArgs(tc.Function.Arguments)
+				if path == "" {
+					continue
+				}
+				switch tc.Function.Name {
+				case "read_file", "read", "cat":
+					if _, ok := seenRead[path]; !ok {
+						seenRead[path] = struct{}{}
+						readFiles = append(readFiles, path)
+					}
+				case "write_file", "edit_file", "write", "edit":
+					if _, ok := seenMod[path]; !ok {
+						seenMod[path] = struct{}{}
+						modifiedFiles = append(modifiedFiles, path)
+					}
+				}
+			}
+		}
+		if m.Role == "tool" && strings.HasPrefix(strings.TrimSpace(m.Content), "Wrote ") {
+			path := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(m.Content), "Wrote "))
+			if path != "" {
+				if _, ok := seenMod[path]; !ok {
+					seenMod[path] = struct{}{}
+					modifiedFiles = append(modifiedFiles, path)
+				}
+			}
+		}
+	}
+	sort.Strings(readFiles)
+	sort.Strings(modifiedFiles)
+	return readFiles, modifiedFiles
+}
+
+func filePathFromArgs(arguments string) string {
+	if arguments == "" {
+		return ""
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(arguments), &raw); err != nil {
+		return ""
+	}
+	for _, key := range []string{"path", "file_path", "filename"} {
+		if v, ok := raw[key]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func formatFileTag(tag string, files []string) string {
+	if len(files) == 0 {
+		return ""
+	}
+	return "<" + tag + ">\n" + strings.Join(files, "\n") + "\n</" + tag + ">"
+}
+
+func lastConversationSummary(messages []provider.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" {
+			continue
+		}
+		c := messages[i].Content
+		if strings.Contains(c, conversationSummaryMark) || strings.Contains(c, compactionSummaryMark) {
+			return c
+		}
+	}
+	return ""
+}
+
+func compactSummarizeArgs(arguments string) string {
+	if arguments == "" {
+		return ""
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(arguments), &raw); err != nil {
+		return capRunes(arguments, 160)
+	}
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		s := fmt.Sprintf("%v", raw[k])
+		if len([]rune(s)) > 80 {
+			s = capRunes(s, 80)
+		}
+		parts = append(parts, k+"="+s)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func isContextOverflowError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	needles := []string{
+		"context length",
+		"context window",
+		"maximum context",
+		"max context",
+		"too many tokens",
+		"prompt is too long",
+		"prompt too long",
+		"token limit",
+		"context_length_exceeded",
+		"request too large",
+		"payload too large",
+	}
+	for _, n := range needles {
+		if strings.Contains(s, n) {
+			return true
+		}
+	}
+	return false
+}
+
+func capRunes(text string, max int) string {
+	if max <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= max {
+		return text
+	}
+	return string(runes[:max]) + "…"
+}
+
 func capSummaryText(text string) string {
 	runes := []rune(text)
 	if len(runes) <= summarizeMaxRunes {
@@ -366,67 +610,94 @@ func capSummaryText(text string) string {
 	return string(runes[:summarizeMaxRunes]) + "\n\n[... older turns omitted from summarizer input ...]"
 }
 
-// compressOlderMessages asks the LLM to summarize older messages into a compact summary.
-func compressOlderMessages(ctx context.Context, messages []provider.Message, prov provider.Provider, model string) ([]provider.Message, error) {
-	if len(messages) <= PruneTurnAge {
-		return messages, nil
-	}
+// compressOlderMessages asks the LLM for a structured handoff of
+// everything older than the token-budget hot tail.
+func compressOlderMessages(ctx context.Context, messages []provider.Message, prov provider.Provider, model string, opt compactOpts) ([]provider.Message, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	keep := opt.keepRecentTokens
+	if keep <= 0 {
+		keep = KeepRecentTokens
+	}
+	cutoff := keepRecentCutoff(messages, keep)
+	if cutoff <= 0 || cutoff >= len(messages) {
+		if !opt.force {
+			return messages, nil
+		}
+		cutoff = safeCompactionCutoff(messages, len(messages)/2)
+		if cutoff <= 0 || cutoff >= len(messages) {
+			return messages, fmt.Errorf("nothing to summarize")
+		}
 	}
 	if prov == nil {
 		return nil, fmt.Errorf("summarize conversation: no provider")
 	}
 
-	cutoff := safeCompactionCutoff(messages, len(messages)-PruneTurnAge)
 	olderMessages := messages[:cutoff]
+	prev := lastConversationSummary(olderMessages)
+	readFiles, modifiedFiles := extractFileOps(olderMessages)
+	// serializeConversation skips OriginGoalContext (design §5.3 (b)):
+	// old audit scaffolding is dropped; the live one stays in the tail.
+	serial := serializeConversation(olderMessages)
 
-	// Build a text representation of older messages for summarization.
-	// Skip runtime-injected messages (currently only goal_context
-	// continuations): their content is synthetic audit scaffolding,
-	// not conversation worth summarizing — and the latest one is
-	// already preserved verbatim in the recent tail below, so the
-	// model never loses the current audit context. This is the
-	// pinned-head protection design §5.3 (b) calls for: old
-	// goal_context messages are dropped entirely from the
-	// compaction output; the live one rides through unchanged.
-	// Tool results are already placeholders after pruning and add
-	// noise to the summarizer prompt, so they are skipped too.
-	var text string
-	for _, m := range olderMessages {
-		if m.Origin != provider.OriginUser {
-			continue
-		}
-		if m.Role == "tool" {
-			continue
-		}
-		text += fmt.Sprintf("[%s] %s\n", m.Role, m.Content)
+	var b strings.Builder
+	b.WriteString("Summarize this conversation into a structured handoff so another agent can continue without rereading the full history.\n")
+	if strings.TrimSpace(opt.instructions) != "" {
+		b.WriteString("\nAdditional focus from the user:\n")
+		b.WriteString(strings.TrimSpace(opt.instructions))
+		b.WriteByte('\n')
 	}
+	if prev != "" {
+		b.WriteString("\nPrevious summary (update, do not discard still-relevant facts):\n")
+		b.WriteString(prev)
+		b.WriteByte('\n')
+	}
+	b.WriteString("\nConversation:\n")
+	b.WriteString(capSummaryText(serial))
+	b.WriteString("\nReturn markdown with these sections:\n")
+	b.WriteString("## Goal\n")
+	b.WriteString("## Constraints\n")
+	b.WriteString("## Progress\n")
+	b.WriteString("## Decisions\n")
+	b.WriteString("## Next Steps\n")
+	b.WriteString("## Critical Context\n")
+	b.WriteString("Preserve concrete file paths, commands, errors, and unfinished work. ")
+	b.WriteString("Omit greetings and repeated tool dumps.\n")
 
 	summaryPrompt := []provider.Message{
 		{
 			Role:    "system",
-			Content: "You are a conversation summarizer. Summarize the following conversation history into a compact summary that preserves key facts, decisions, and context. Be concise but don't lose important details.",
+			Content: "You compress agent transcripts into a durable structured handoff. Be concrete and complete.",
 		},
 		{
 			Role:    "user",
-			Content: fmt.Sprintf("Summarize this conversation:\n\n%s", capSummaryText(text)),
+			Content: b.String(),
 		},
 	}
 
-	resp, err := prov.Chat(ctx, summaryPrompt, nil, model, 2048, 0.3)
+	resp, err := prov.Chat(ctx, summaryPrompt, nil, model, compactSummaryMaxTokens, 0.3)
 	if err != nil {
 		return nil, fmt.Errorf("summarize conversation: %w", err)
 	}
+	if strings.TrimSpace(resp.Content) == "" {
+		return nil, fmt.Errorf("summarize conversation: empty summary")
+	}
 
-	// Build new message list: summary + recent messages
-	compressed := make([]provider.Message, 0, PruneTurnAge+1)
+	summary := strings.TrimSpace(resp.Content)
+	if tag := formatFileTag("read-files", readFiles); tag != "" {
+		summary += "\n\n" + tag
+	}
+	if tag := formatFileTag("modified-files", modifiedFiles); tag != "" {
+		summary += "\n\n" + tag
+	}
+
+	compressed := make([]provider.Message, 0, len(messages)-cutoff+1)
 	compressed = append(compressed, provider.Message{
 		Role:    "user",
-		Content: fmt.Sprintf("[Conversation Summary]\n%s", resp.Content),
+		Content: conversationSummaryMark + "\n" + summary + "\n\nContinue from this summary. Do not greet or restart.",
 	})
 	compressed = append(compressed, messages[cutoff:]...)
-
 	return compressed, nil
 }
 

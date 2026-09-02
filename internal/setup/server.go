@@ -37,6 +37,11 @@ type AgentHandle interface {
 	// normal send).
 	SteerWeb(sessionId, projectIDHint, text string) bool
 	WebChatHistory(sessionId string) []map[string]any
+	// WebChatTurnActive is true while HandleMessage is running for
+	// this session. The history endpoint uses it so a page reload
+	// can keep in-progress tools spinning instead of marking them
+	// stopped.
+	WebChatTurnActive(sessionId string) bool
 	WebChatSessions() []session.WebSession
 	DeleteWebChatSession(sessionId string) error
 	RenameWebChatSession(sessionId, title string) error
@@ -86,8 +91,12 @@ type Server struct {
 	// clients across browser tabs. Lazy-init on first use so older
 	// callers that didn't wire it explicitly still work.
 	chatEvents *agent.EventHub
-	usage      usage.Meter
-	startedAt  time.Time
+	// turns holds cancel funcs for in-flight web/team chat turns so
+	// Stop still works after the browser refreshes and the original
+	// SSE handler has returned.
+	turns     turnCancelRegistry
+	usage     usage.Meter
+	startedAt time.Time
 	// runtimeMgr powers the coding-agent project runtime (live dev server
 	// + preview). Optional: nil when the deployment hasn't wired a
 	// sandbox-backed runtime, in which case the /runtime endpoints return
@@ -263,6 +272,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("POST /api/chat/stream", auth(s.handleChatStream))
 	mux.HandleFunc("POST /api/chat/team/stream", auth(s.handleTeamChatStream))
 	mux.HandleFunc("POST /api/chat/steer", auth(s.handleChatSteer))
+	mux.HandleFunc("POST /api/chat/stop", auth(s.handleChatStop))
 	mux.HandleFunc("GET /api/chats", auth(s.handleChats))
 	mux.HandleFunc("GET /api/chat/history", auth(s.handleChatHistory))
 	mux.HandleFunc("GET /api/chat/todo", auth(s.handleChatTodo))

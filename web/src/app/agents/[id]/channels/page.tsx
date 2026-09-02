@@ -100,7 +100,7 @@ const CATALOG: { type: string; label: string; description: string; available: bo
   {
     type: "feishu",
     label: "Feishu",
-    description: "Scan a QR code in Feishu / Lark to create a bot automatically, or paste an existing App ID + Secret.",
+    description: "Scan a QR code in Feishu / Lark to create a bot automatically, or paste an existing App ID + Secret. Chat can create official 日程、待办、云文档.",
     available: true,
   },
   {
@@ -423,6 +423,19 @@ function ConnectedCard({
         <code className="text-xs text-muted-foreground/80 font-mono truncate block">
           {channel.botToken}
         </code>
+        {channel.type === "feishu" && (
+          <div className="rounded-md border bg-muted/20 p-2 space-y-1.5">
+            <div className="flex items-center gap-1.5 text-xs font-medium">
+              <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
+              Official calendar / tasks / docs
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Chat writes into Feishu 日程、待办、云文档 with this bot.
+              Already connected before this update? Disconnect and scan
+              again so the new scopes take effect.
+            </p>
+          </div>
+        )}
         {channel.type === "wecom" && (
           <div className="rounded-md border bg-muted/20 p-2 space-y-1.5">
             <div className="flex items-center gap-1.5 text-xs font-medium">
@@ -1426,8 +1439,8 @@ function ConnectFeishuDialog({
           </DialogTitle>
           <DialogDescription>
             {mode === "qr"
-              ? "Scan with the Feishu or Lark phone app. Official one-click create will register a bot and return credentials — no developer-console setup."
-              : "Paste credentials from an existing custom app at open.feishu.cn or open.larksuite.com."}
+              ? "Scan with the Feishu or Lark phone app. Official one-click create registers a bot with IM plus 日程 / 待办 / 文档 scopes — no developer-console setup."
+              : "Paste credentials from an existing custom app at open.feishu.cn or open.larksuite.com. Grant calendar, task, and docs scopes if you want those chat tools."}
           </DialogDescription>
         </DialogHeader>
 
@@ -1445,10 +1458,10 @@ function ConnectFeishuDialog({
               </p>
             </div>
             <p className="text-xs text-muted-foreground">
-              If you already scanned earlier and got no replies, disconnect
-              this channel and scan again so the official agent scopes
-              (receive/send, cards, chat membership) take effect. Inbound
-              uses long-connection — no public URL needed.
+              If you already scanned earlier, disconnect this channel and
+              scan again so calendar / task / docs scopes take effect
+              (existing bots keep the old permission list). Inbound uses
+              long-connection — no public URL needed.
             </p>
           </div>
         ) : connected ? (
