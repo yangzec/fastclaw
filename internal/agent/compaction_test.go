@@ -299,14 +299,63 @@ func TestCompactMessagesRespectsThreshold(t *testing.T) {
 			provider.Message{Role: "tool", ToolCallID: "t", Content: strings.Repeat("x", 400)},
 		)
 	}
-	// 2500 tokens before prune, ~1135 after. Stay above prune-after
-	// so we don't need an LLM summarizer, but below the raw size.
+	// No provider → summarize is skipped. Prune-after is ~1135, under
+	// 2000, so the local fallback (not the first-choice LLM path) fires.
 	res, err = CompactMessages(context.Background(), long, t.TempDir(), nil, "m", 2000)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !res.Pruned {
 		t.Fatal("oversized history should compact when threshold is 2000")
+	}
+	if res.Method != compactMethodPrune {
+		t.Fatalf("nil provider should fall back to prune, got %q", res.Method)
+	}
+}
+
+func TestCompactMessagesPrefersSummarizeOverLocalPrune(t *testing.T) {
+	var msgs []provider.Message
+	for i := 0; i < 25; i++ {
+		msgs = append(msgs,
+			provider.Message{Role: "user", Content: "u", Origin: provider.OriginUser},
+			provider.Message{Role: "tool", Name: "web_search", ToolCallID: "t", Content: strings.Repeat("finding-"+fmt.Sprint(i)+"-", 40), Origin: provider.OriginUser},
+		)
+	}
+	// Prune-alone would fit (old tool dumps become placeholders), but a
+	// live summarizer must win so those findings reach the summary.
+	f := &fakeSummarizer{}
+	res, err := CompactMessages(context.Background(), msgs, t.TempDir(), f, "m", 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Method != compactMethodSummarize {
+		t.Fatalf("method = %q, want %s", res.Method, compactMethodSummarize)
+	}
+	if !strings.Contains(f.gotSummaryRequest, "finding-0-") {
+		t.Fatalf("summarizer should see original tool results, got %q", f.gotSummaryRequest)
+	}
+	if strings.Contains(f.gotSummaryRequest, truncatedPlaceholder) {
+		t.Fatal("local prune must not blank tool results before summarize")
+	}
+}
+
+func TestCompressOlderMessagesIncludesToolResults(t *testing.T) {
+	var msgs []provider.Message
+	for i := 0; i < PruneTurnAge+3; i++ {
+		msgs = append(msgs,
+			provider.Message{Role: "user", Content: "u", Origin: provider.OriginUser},
+			provider.Message{Role: "tool", Name: "read_file", Content: "SECRET_FILE_BODY", Origin: provider.OriginUser},
+		)
+	}
+	f := &fakeSummarizer{}
+	if _, err := compressOlderMessages(context.Background(), msgs, f, "m"); err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	if !strings.Contains(f.gotSummaryRequest, "SECRET_FILE_BODY") {
+		t.Fatalf("tool result missing from summarizer input: %s", f.gotSummaryRequest)
+	}
+	if !strings.Contains(f.gotSummaryRequest, "[tool read_file]") {
+		t.Fatalf("tool label missing from summarizer input: %s", f.gotSummaryRequest)
 	}
 }
 
