@@ -965,10 +965,11 @@ func allChannelRows(st store.Store) ([]store.ConfigRecord, error) {
 // the chat body.
 var imgRefRegex = regexp.MustCompile(`!\[([^\]]*)\]\(([^)]+)\)`)
 
-// fileRefRegex intentionally accepts only /workspace links. Normal web links
-// remain in the message, and image syntax has already been removed by
-// splitMediaFromReply before this matcher runs.
-var fileRefRegex = regexp.MustCompile(`\[([^\]]*)\]\((/workspace/[^)]+)\)`)
+// fileRefRegex matches markdown links. /workspace/ paths and R2 PublicURLs
+// become attachments; other http(s) links stay in the message. Image
+// syntax has already been removed by splitMediaFromReply before this
+// matcher runs.
+var fileRefRegex = regexp.MustCompile(`\[([^\]]*)\]\(([^)]+)\)`)
 
 // splitFilesFromReply resolves explicitly linked workspace documents into
 // outbound attachments and removes the raw markdown link from IM text.
@@ -983,21 +984,14 @@ func splitFilesFromReply(ctx context.Context, ws workspace.Store, agentID, proje
 	var items []bus.MediaItem
 	var out strings.Builder
 	cursor := 0
+	pub := newPublicURLIndex(ctx, ws, agentID, projectID, sessionID)
 	for _, m := range matches {
-		path := reply[m[4]:m[5]]
-		key := strings.TrimPrefix(path, "/workspace/")
-		rc, err := ws.Get(ctx, agentID, projectID, sessionID, key)
-		if err != nil {
-			slog.Warn("split file: workspace get failed", "key", key, "error", err)
+		href := reply[m[4]:m[5]]
+		item, ok := loadWorkspaceAttachment(ctx, ws, pub, agentID, projectID, sessionID, href)
+		if !ok {
 			continue
 		}
-		data, readErr := io.ReadAll(rc)
-		rc.Close()
-		if readErr != nil || len(data) == 0 || len(data) > maxAttachmentBytes {
-			continue
-		}
-		base := filepath.Base(key)
-		items = append(items, bus.MediaItem{Filename: base, ContentType: mime.TypeByExtension(filepath.Ext(base)), Bytes: data})
+		items = append(items, item)
 		out.WriteString(reply[cursor:m[0]])
 		cursor = m[1]
 		if cursor < len(reply) && reply[cursor] == '\n' {
@@ -1035,13 +1029,27 @@ func splitMediaFromReply(ctx context.Context, ws workspace.Store, agentID, proje
 	}
 	var items []bus.MediaItem
 	var out strings.Builder
+	var pub *publicURLIndex
 	cursor := 0
 	for _, m := range matches {
 		path := reply[m[4]:m[5]]
 
-		// Remote URLs: keep the markdown ref intact so the IM client
-		// can render its own preview. Don't strip, don't fetch.
+		// Remote URLs that are this session's R2/S3 PublicURL become
+		// attachments (IM servers often cannot fetch a private CDN).
+		// Other http(s) refs stay in the markdown so the client can
+		// preview them.
 		if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+			if pub == nil {
+				pub = newPublicURLIndex(ctx, ws, agentID, projectID, sessionID)
+			}
+			if item, ok := loadWorkspaceAttachment(ctx, ws, pub, agentID, projectID, sessionID, path); ok {
+				items = append(items, item)
+				out.WriteString(reply[cursor:m[0]])
+				cursor = m[1]
+				if cursor < len(reply) && reply[cursor] == '\n' {
+					cursor++
+				}
+			}
 			continue
 		}
 
@@ -1093,11 +1101,16 @@ func splitMediaFromReply(ctx context.Context, ws workspace.Store, agentID, proje
 					"agent", agentID, "session", sessionID,
 					"filename", filename, "size", len(bytes), "cap", maxAttachmentBytes)
 			} else {
-				items = append(items, bus.MediaItem{
+				item := bus.MediaItem{
 					Filename:    filename,
 					ContentType: mime.TypeByExtension(filepath.Ext(filename)),
 					Bytes:       bytes,
-				})
+				}
+				if pub == nil {
+					pub = newPublicURLIndex(ctx, ws, agentID, projectID, sessionID)
+				}
+				item.URL = pub.urlFor(filename)
+				items = append(items, item)
 			}
 		}
 
@@ -1205,6 +1218,113 @@ func decodeBase64Tolerant(s string) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("all base64 encodings failed (%s)", strings.Join(errs, "; "))
+}
+
+// publicURLIndex maps this session's R2/S3 PublicURLs back to store keys
+// so a model that copies `URL: https://cdn…` still produces MediaItems.
+type publicURLIndex struct {
+	urlByPath map[string]string
+	pathByURL map[string]string
+}
+
+func newPublicURLIndex(ctx context.Context, ws workspace.Store, agentID, projectID, sessionID string) *publicURLIndex {
+	idx := &publicURLIndex{
+		urlByPath: map[string]string{},
+		pathByURL: map[string]string{},
+	}
+	if ws == nil {
+		return idx
+	}
+	objs, err := ws.List(ctx, agentID, projectID, sessionID)
+	if err != nil {
+		return idx
+	}
+	for _, obj := range objs {
+		u, err := ws.PublicURL(ctx, agentID, projectID, sessionID, obj.Path)
+		if err != nil {
+			continue
+		}
+		u = strings.TrimSpace(u)
+		if u == "" {
+			continue
+		}
+		idx.urlByPath[obj.Path] = u
+		idx.urlByPath[filepath.Base(obj.Path)] = u
+		idx.pathByURL[u] = obj.Path
+		if parsed, perr := url.Parse(u); perr == nil {
+			parsed.RawQuery = ""
+			parsed.Fragment = ""
+			idx.pathByURL[parsed.String()] = obj.Path
+		}
+	}
+	return idx
+}
+
+func (idx *publicURLIndex) urlFor(path string) string {
+	if idx == nil {
+		return ""
+	}
+	if u := idx.urlByPath[path]; u != "" {
+		return u
+	}
+	return idx.urlByPath[filepath.Base(path)]
+}
+
+func (idx *publicURLIndex) pathForURL(href string) string {
+	if idx == nil {
+		return ""
+	}
+	href = strings.TrimSpace(href)
+	if p := idx.pathByURL[href]; p != "" {
+		return p
+	}
+	if parsed, err := url.Parse(href); err == nil {
+		parsed.RawQuery = ""
+		parsed.Fragment = ""
+		return idx.pathByURL[parsed.String()]
+	}
+	return ""
+}
+
+func workspaceKeyFromRef(href string) string {
+	h := strings.TrimSpace(href)
+	if h == "" || strings.HasPrefix(h, "http://") || strings.HasPrefix(h, "https://") || strings.HasPrefix(h, "data:") {
+		return ""
+	}
+	h = strings.TrimPrefix(h, "/workspace/")
+	h = strings.TrimPrefix(h, "workspace/")
+	return strings.TrimPrefix(h, "/")
+}
+
+func loadWorkspaceAttachment(ctx context.Context, ws workspace.Store, pub *publicURLIndex, agentID, projectID, sessionID, href string) (bus.MediaItem, bool) {
+	var zero bus.MediaItem
+	if ws == nil {
+		return zero, false
+	}
+	key := workspaceKeyFromRef(href)
+	if key == "" {
+		key = pub.pathForURL(href)
+	}
+	if key == "" {
+		return zero, false
+	}
+	rc, err := ws.Get(ctx, agentID, projectID, sessionID, key)
+	if err != nil {
+		slog.Warn("split attachment: workspace get failed", "key", key, "error", err)
+		return zero, false
+	}
+	data, readErr := io.ReadAll(rc)
+	rc.Close()
+	if readErr != nil || len(data) == 0 || len(data) > maxAttachmentBytes {
+		return zero, false
+	}
+	base := filepath.Base(key)
+	return bus.MediaItem{
+		Filename:    base,
+		ContentType: mime.TypeByExtension(filepath.Ext(base)),
+		Bytes:       data,
+		URL:         pub.urlFor(key),
+	}, true
 }
 
 // maxAttachmentBytes caps per-file outbound attachments. Sized to fit
@@ -1318,11 +1438,15 @@ func appendNewWorkspaceMedia(ctx context.Context, ws workspace.Store, agentID, p
 				"path", obj.Path, "size", len(data), "cap", maxAttachmentBytes)
 			continue
 		}
-		existing = append(existing, bus.MediaItem{
+		item := bus.MediaItem{
 			Filename:    base,
 			ContentType: mime.TypeByExtension(filepath.Ext(base)),
 			Bytes:       data,
-		})
+		}
+		if u, uerr := ws.PublicURL(ctx, agentID, projectID, sessionID, obj.Path); uerr == nil {
+			item.URL = strings.TrimSpace(u)
+		}
+		existing = append(existing, item)
 		have[base] = true
 		attached++
 	}

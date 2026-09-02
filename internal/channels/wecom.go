@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -58,6 +59,13 @@ const (
 	wecomEventDisconnected = "disconnected_event"
 	wecomTypingPlaceholder = "正在思考…"
 	wecomWelcomeText       = "你好，我是 FastClaw 助手。直接发消息即可开始对话。"
+
+	wecomCmdUploadInit   = "aibot_upload_media_init"
+	wecomCmdUploadChunk  = "aibot_upload_media_chunk"
+	wecomCmdUploadFinish = "aibot_upload_media_finish"
+
+	wecomMediaChunkBytes = 256 * 1024
+	wecomMaxMediaChunks  = 100
 )
 
 // WeCom implements Channel for 企业微信智能机器人 long-conn.
@@ -105,10 +113,19 @@ type wecomCallbackBody struct {
 	Voice struct {
 		Content string `json:"content"`
 	} `json:"voice"`
-	Mixed json.RawMessage `json:"mixed"`
+	Image wecomEncryptedAsset `json:"image"`
+	File  wecomEncryptedAsset `json:"file"`
+	Video wecomEncryptedAsset `json:"video"`
+	Mixed json.RawMessage     `json:"mixed"`
 	Event struct {
 		EventType string `json:"eventtype"`
 	} `json:"event"`
+}
+
+type wecomEncryptedAsset struct {
+	URL    string `json:"url"`
+	AESKey string `json:"aeskey"`
+	Name   string `json:"filename"`
 }
 
 // NewWeCom creates a WeCom adapter. wsURL may be empty (public default)
@@ -181,30 +198,44 @@ func (w *WeCom) SendMessage(msg bus.OutboundMessage) error {
 	if strings.TrimSpace(msg.Text) == "" && len(msg.MediaItems) == 0 {
 		return nil
 	}
-	if len(msg.MediaItems) > 0 {
-		slog.Debug("wecom attachments skipped in v1", "account", w.accountID, "n", len(msg.MediaItems))
-	}
 	text := strings.TrimSpace(msg.Text)
-	if text == "" {
-		return nil
-	}
 	w.mu.Lock()
 	reqID := w.lastReq[msg.ChatID]
 	streamID := w.streamID[msg.ChatID]
 	chatType := w.chatType[msg.ChatID]
 	w.mu.Unlock()
 
-	if streamID != "" && reqID != "" {
-		if err := w.respondStream(reqID, streamID, text, true); err != nil {
+	if text != "" {
+		var err error
+		if streamID != "" && reqID != "" {
+			err = w.respondStream(reqID, streamID, text, true)
+			w.clearStream(msg.ChatID)
+		} else if reqID != "" {
+			err = w.respondMarkdown(reqID, text)
+		} else {
+			err = w.sendMarkdown(msg.ChatID, chatType, text)
+		}
+		if err != nil {
 			return err
 		}
-		w.clearStream(msg.ChatID)
-		return nil
 	}
-	if reqID != "" {
-		return w.respondMarkdown(reqID, text)
+	for _, item := range msg.MediaItems {
+		if err := w.sendMediaItem(msg.ChatID, reqID, chatType, item); err != nil {
+			if item.URL != "" {
+				link := fmt.Sprintf("[%s](%s)", item.Filename, item.URL)
+				if reqID != "" {
+					_ = w.respondMarkdown(reqID, link)
+				} else {
+					_ = w.sendMarkdown(msg.ChatID, chatType, link)
+				}
+				slog.Warn("wecom media upload failed, sent public URL",
+					"account", w.accountID, "file", item.Filename, "error", err)
+				continue
+			}
+			return fmt.Errorf("wecom send attachment %q: %w", item.Filename, err)
+		}
 	}
-	return w.sendMarkdown(msg.ChatID, chatType, text)
+	return nil
 }
 
 // SendTyping starts (or refreshes) an official stream bubble.
@@ -347,42 +378,8 @@ func wecomSessionChatID(body wecomCallbackBody) (chatID string, group bool) {
 }
 
 func wecomInboundText(body wecomCallbackBody) string {
-	switch body.MsgType {
-	case "text":
-		return strings.TrimSpace(body.Text.Content)
-	case "voice":
-		return strings.TrimSpace(body.Voice.Content)
-	case "mixed":
-		return wecomMixedText(body.Mixed)
-	default:
-		return ""
-	}
-}
-
-func wecomMixedText(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var parsed struct {
-		Items []struct {
-			Type string `json:"type"`
-			Text struct {
-				Content string `json:"content"`
-			} `json:"text"`
-		} `json:"item"`
-	}
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return ""
-	}
-	var parts []string
-	for _, it := range parsed.Items {
-		if it.Type == "text" || it.Text.Content != "" {
-			if s := strings.TrimSpace(it.Text.Content); s != "" {
-				parts = append(parts, s)
-			}
-		}
-	}
-	return strings.TrimSpace(strings.Join(parts, "\n"))
+	text, _ := wecomInboundPayload(body)
+	return text
 }
 
 func wecomSubscribeBody(botID, secret string) map[string]string {

@@ -118,6 +118,7 @@ type MediaItem struct {
 	Filename    string // for content-type sniffing + display in IM
 	ContentType string // optional override; channels can sniff if empty
 	Bytes       []byte
+	URL         string // optional public CDN URL (R2/S3). Channels that cannot upload bytes can still send this link.
 }
 
 // OutboundMessage represents a message to be sent to a channel.

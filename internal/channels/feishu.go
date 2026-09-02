@@ -720,7 +720,7 @@ func (l *Feishu) dispatchInbound(ev feishuMessageEvent) {
 			return
 		}
 		text = content.Text
-	case "file", "image":
+	case "file", "image", "audio", "media":
 		var content struct {
 			FileKey  string `json:"file_key"`
 			ImageKey string `json:"image_key"`
@@ -826,8 +826,16 @@ func mimeExtFromContentType(contentType string) string {
 		return ".png"
 	case "image/gif":
 		return ".gif"
+	case "image/webp":
+		return ".webp"
 	case "application/pdf":
 		return ".pdf"
+	case "audio/mpeg", "audio/mp3":
+		return ".mp3"
+	case "audio/ogg":
+		return ".ogg"
+	case "video/mp4":
+		return ".mp4"
 	}
 	return ".bin"
 }

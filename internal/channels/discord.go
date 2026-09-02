@@ -510,12 +510,21 @@ func (d *Discord) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCrea
 	}
 	avatarURL := m.Author.AvatarURL("256")
 
+	media := discordInboundAttachments(m.Attachments)
+	if text == "" && len(media) > 0 {
+		text = "请查看我发送的附件。"
+	}
+	if text == "" && len(media) == 0 {
+		return
+	}
+
 	slog.Info("discord message received",
 		"from", m.Author.Username,
 		"channel_id", m.ChannelID,
 		"guild_id", m.GuildID,
 		"peer_kind", peerKind,
 		"is_bot", isBot,
+		"media", len(media),
 	)
 
 	d.bus.Inbound <- bus.InboundMessage{
@@ -530,5 +539,29 @@ func (d *Discord) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCrea
 		SenderAvatarURL: avatarURL,
 		Mentions:        mentions,
 		IsBotMessage:    isBot,
+		MediaItems:      media,
 	}
+}
+
+func discordInboundAttachments(atts []*discordgo.MessageAttachment) []bus.MediaItem {
+	var items []bus.MediaItem
+	for _, a := range atts {
+		if a == nil || a.URL == "" {
+			continue
+		}
+		data, ctype, err := fetchInboundBytes(a.URL, nil)
+		if err != nil {
+			slog.Warn("discord attachment download failed", "name", a.Filename, "error", err)
+			continue
+		}
+		if a.ContentType != "" {
+			ctype = a.ContentType
+		}
+		name := a.Filename
+		if name == "" {
+			name = "discord" + mimeExtFromContentType(ctype)
+		}
+		items = append(items, bus.MediaItem{Filename: name, ContentType: ctype, Bytes: data, URL: a.URL})
+	}
+	return items
 }
