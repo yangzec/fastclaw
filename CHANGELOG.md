@@ -7,17 +7,21 @@ action on upgrade — read those notes before deploying.
 
 ### Added
 
-<<<<<<< HEAD
 - **Chat composer drag-and-drop attachments.** Dropping files onto
   the message input attaches them the same way as the paperclip
   picker and image paste (chips, then upload on send).
-=======
 - **Inherited global skills on the agent Skills page.** The agent
   Skills tab lists global `~/.fastclaw/skills` entries as
   **Inherited** (same merge the runtime uses). An agent-local copy
   with the same name still wins and can be removed without deleting
   the global skill.
->>>>>>> origin/cursor/agent-inherited-skills-16c5
+- **Feishu official calendar, tasks, and docs from chat.** The
+  connected Feishu / Lark bot can create 日程, 待办, and 云文档
+  via OpenAPI (`feishu_create_event`, `feishu_create_task`,
+  `feishu_complete_task`, `feishu_create_doc`, `feishu_read_doc`)
+  using the same tenant token as IM. QR login now requests
+  calendar / task / docs-create / share scopes. Bots created
+  before this update must disconnect and scan again.
 - **WeCom (企业微信) scan-to-create + long-connection.** New
   channel type `wecom` (does not reuse personal WeChat iLink).
   The dashboard opens Tencent's official `@wecom/wecom-aibot-sdk`

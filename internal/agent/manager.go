@@ -268,6 +268,10 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 		// the wecom channel row at execute time — registering always
 		// means enabling calendar on Channels does not need a rebuild.
 		tools.RegisterWeComScheduleTools(ag.registry, m.opts.dataStore, rc.ID)
+		// Official Feishu 日程 / 待办 / 文档. Same QR bot tenant token
+		// as the IM channel — registering always means a reconnect
+		// (new scopes) does not need an agent rebuild.
+		tools.RegisterFeishuOfficeTools(ag.registry, m.opts.dataStore, rc.ID)
 		// set_timezone persists the chatter's IANA timezone into scope
 		// prefs — the same rows the system-prompt date line and cron
 		// scheduling resolve through. Needs the relational store, so it

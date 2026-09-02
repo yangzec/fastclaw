@@ -305,6 +305,11 @@ func TestFeishuRegistrationOptionsDefaults(t *testing.T) {
 		"cardkit:card:write",
 		"application:bot.basic_info:read",
 		"im:chat.members:bot_access",
+		"calendar:calendar",
+		"calendar:calendar.event:create",
+		"task:task:write",
+		"docx:document:create",
+		"docs:permission.member:create",
 	} {
 		if !containsStr(opts.Addons.Scopes.Tenant, scope) {
 			t.Fatalf("missing scope %s in %v", scope, opts.Addons.Scopes.Tenant)
