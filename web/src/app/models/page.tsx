@@ -45,8 +45,9 @@ import {
   type ProviderRow,
 } from "@/lib/api";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
-import { DEFAULT_CONTEXT_WINDOW, knownContextWindow, presetContextWindow } from "@/lib/model-defaults";
+import { DEFAULT_CONTEXT_WINDOW, nextContextWindowOnIdChange, presetContextWindow } from "@/lib/model-defaults";
 import { PROVIDER_PRESETS, PROVIDER_LABELS } from "@/lib/provider-presets";
+import { ContextWindowField } from "@/components/context-window-field";
 
 const API_TYPE_LABELS: Record<string, string> = {
   "openai-chat": "OpenAI Chat Completions",
@@ -307,6 +308,8 @@ export default function ModelsPage() {
           ...m,
           cost: { ...base.cost, ...(m.cost || {}) },
           input: m.input && m.input.length > 0 ? [...m.input] : base.input,
+          contextWindow:
+            m.contextWindow > 0 ? m.contextWindow : presetContextWindow(m.id || ""),
         };
       }),
     );
@@ -414,18 +417,7 @@ export default function ModelsPage() {
       if (field === "id") {
         const prevID = m.id;
         m.id = value as string;
-        const known = knownContextWindow(m.id);
-        const prevKnown = knownContextWindow(prevID);
-        // Only overwrite when the window is still the old default / old
-        // preset. A number the user typed must survive an id tweak.
-        if (
-          known > 0 &&
-          (m.contextWindow === 0 ||
-            m.contextWindow === DEFAULT_CONTEXT_WINDOW ||
-            m.contextWindow === prevKnown)
-        ) {
-          m.contextWindow = known;
-        }
+        m.contextWindow = nextContextWindowOnIdChange(m.id, prevID, m.contextWindow);
       }
       else if (field === "name") m.name = value as string;
       else if (field === "reasoning") m.reasoning = value as boolean;
@@ -1023,20 +1015,11 @@ export default function ModelsPage() {
                       />
                     </div>
                   </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">Context window (tokens)</Label>
-                    <Input
-                      type="number"
-                      min={0}
-                      value={m.contextWindow || ""}
-                      onChange={(e) => handleUpdateModel(idx, "contextWindow", e.target.value)}
-                      placeholder={String(DEFAULT_CONTEXT_WINDOW)}
-                      className="font-mono text-xs h-8"
-                    />
-                    <p className="text-[11px] text-muted-foreground/70">
-                      Official window for this model id when we know it; edit if your provider differs. History is compacted as the session approaches this, minus room for the reply.
-                    </p>
-                  </div>
+                  <ContextWindowField
+                    modelId={m.id}
+                    value={m.contextWindow}
+                    onChange={(next) => handleUpdateModel(idx, "contextWindow", next)}
+                  />
                 </div>
                 );
               })}

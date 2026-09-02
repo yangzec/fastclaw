@@ -396,6 +396,7 @@ export interface OnboardRequest {
   apiType?: string;
   authType?: string;
   model?: string;
+  contextWindow?: number;
   agentName?: string;
   sandboxEnabled?: boolean;
   sandboxBackend?: string;

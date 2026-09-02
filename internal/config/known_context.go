@@ -3,9 +3,10 @@ package config
 import "strings"
 
 // Official (or vendor-documented) input context sizes for the model IDs
-// FastClaw ships as provider presets. Used when a saved ModelEntry has
-// contextWindow 0 — onboard used to persist only id/name — and as the
-// prefill when the Models dialog picks a preset.
+// FastClaw ships as provider presets. These are defaults only: a saved
+// ModelEntry.ContextWindow always wins. Used when that field is 0 —
+// onboard used to persist only id/name — and as the prefill when the
+// Models dialog picks a preset.
 //
 // Keep in sync with web/src/lib/model-defaults.ts.
 //
@@ -62,4 +63,14 @@ func KnownContextWindow(model string) int {
 		}
 	}
 	return 0
+}
+
+// ContextWindowOrDefault returns a saved operator override when it is
+// set, otherwise the official preset for model. 0 means we still don't
+// know.
+func ContextWindowOrDefault(model string, saved int) int {
+	if saved > 0 {
+		return saved
+	}
+	return KnownContextWindow(model)
 }

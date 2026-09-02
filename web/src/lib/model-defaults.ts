@@ -55,3 +55,24 @@ export function knownContextWindow(modelId: string): number {
 export function presetContextWindow(modelId: string): number {
   return knownContextWindow(modelId) || DEFAULT_CONTEXT_WINDOW;
 }
+
+// nextContextWindowOnIdChange updates the window only while it still
+// looks like a default (unset, the generic UI fallback, or the previous
+// model's official size). A number the user typed is kept.
+export function nextContextWindowOnIdChange(
+  nextId: string,
+  prevId: string,
+  currentWindow: number,
+): number {
+  const known = knownContextWindow(nextId);
+  if (known <= 0) return currentWindow;
+  const prevKnown = knownContextWindow(prevId);
+  if (
+    currentWindow <= 0 ||
+    currentWindow === DEFAULT_CONTEXT_WINDOW ||
+    currentWindow === prevKnown
+  ) {
+    return known;
+  }
+  return currentWindow;
+}

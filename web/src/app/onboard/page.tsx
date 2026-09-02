@@ -38,6 +38,8 @@ import {
 import { getStatus, onboard, testProvider } from "@/lib/api";
 import { MIN_PASSWORD_LENGTH } from "@/lib/password";
 import { PROVIDER_PRESETS, PROVIDER_LABELS } from "@/lib/provider-presets";
+import { nextContextWindowOnIdChange, presetContextWindow } from "@/lib/model-defaults";
+import { ContextWindowField } from "@/components/context-window-field";
 
 const STEPS = [
   { id: "welcome", label: "Welcome", icon: PartyPopper },
@@ -102,6 +104,9 @@ export default function OnboardPage() {
   const [apiType, setApiType] = useState(PROVIDER_PRESETS.openai.apiType);
   const [authType, setAuthType] = useState("bearer-token");
   const [model, setModel] = useState(PROVIDER_PRESETS.openai.models[0]);
+  const [contextWindow, setContextWindow] = useState(
+    presetContextWindow(PROVIDER_PRESETS.openai.models[0]),
+  );
   const [testStatus, setTestStatus] = useState<"" | "ok" | "fail" | "running">(
     "",
   );
@@ -131,7 +136,10 @@ export default function OnboardPage() {
       setApiBase(preset.apiBase);
       setApiType(preset.apiType);
       setAuthType(preset.authType);
-      if (preset.models[0]) setModel(preset.models[0]);
+      if (preset.models[0]) {
+        setModel(preset.models[0]);
+        setContextWindow(presetContextWindow(preset.models[0]));
+      }
     }
     // Provider name auto-fills with the preset key — user can still
     // override (lets them rename "openai" to e.g. "production" before
@@ -179,6 +187,7 @@ export default function OnboardPage() {
       apiType: providerEnabled ? apiType : "",
       authType: providerEnabled ? authType : "",
       model: providerEnabled ? model : "",
+      contextWindow: providerEnabled ? contextWindow : undefined,
       agentName,
       sandboxEnabled,
       sandboxBackend: sandboxEnabled ? sandboxBackend : undefined,
@@ -269,7 +278,12 @@ export default function OnboardPage() {
             authType={authType}
             setAuthType={setAuthType}
             model={model}
-            setModel={setModel}
+            setModel={(next) => {
+              setContextWindow((prev) => nextContextWindowOnIdChange(next, model, prev));
+              setModel(next);
+            }}
+            contextWindow={contextWindow}
+            setContextWindow={setContextWindow}
             onTest={handleTest}
             testStatus={testStatus}
             testError={testError}
@@ -537,6 +551,8 @@ function ProviderStep(props: {
   setAuthType: (v: string) => void;
   model: string;
   setModel: (v: string) => void;
+  contextWindow: number;
+  setContextWindow: (v: number) => void;
   onTest: () => void;
   testStatus: "" | "ok" | "fail" | "running";
   testError: string;
@@ -616,6 +632,11 @@ function ProviderStep(props: {
             className="font-mono text-sm"
           />
         </div>
+        <ContextWindowField
+          modelId={props.model}
+          value={props.contextWindow}
+          onChange={props.setContextWindow}
+        />
         <div className="space-y-1.5">
           <Label>API Base URL</Label>
           <Input

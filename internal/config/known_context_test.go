@@ -35,3 +35,15 @@ func TestKnownContextWindowPresetIDs(t *testing.T) {
 		}
 	}
 }
+
+func TestContextWindowOrDefaultPrefersSaved(t *testing.T) {
+	if got := ContextWindowOrDefault("glm-5.3", 256_000); got != 256_000 {
+		t.Fatalf("saved override = %d, want 256000", got)
+	}
+	if got := ContextWindowOrDefault("glm-5.3", 0); got != 1_000_000 {
+		t.Fatalf("empty saved = %d, want official 1000000", got)
+	}
+	if got := ContextWindowOrDefault("unknown", 0); got != 0 {
+		t.Fatalf("unknown = %d, want 0", got)
+	}
+}
