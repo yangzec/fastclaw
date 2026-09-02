@@ -88,10 +88,12 @@ func TestWorkspaceUpdateRoutesOfficialByChannel(t *testing.T) {
 			t.Fatalf("scheduling section missing %q", needle)
 		}
 	}
-	// Cron must not be the first recommendation in the scheduling block.
-	cronAt := strings.Index(sched, "create_cron_job")
-	feishuAt := strings.Index(sched, "feishu_create_event")
-	if cronAt < 0 || feishuAt < 0 || cronAt < feishuAt {
-		t.Fatalf("official Feishu tools should be recommended before create_cron_job")
+	officialAt := strings.Index(sched, "**Official calendar")
+	cronAt := strings.Index(sched, "**FastClaw scheduler")
+	if officialAt < 0 || cronAt < 0 || cronAt < officialAt {
+		t.Fatal("official routing should come before the cron section")
+	}
+	if strings.Contains(sched, "call the create_cron_job tool") {
+		t.Fatal("scheduling section still leads with cron as the default")
 	}
 }
