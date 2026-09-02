@@ -1605,17 +1605,19 @@ func renderOfficeRoutingHint(msg bus.InboundMessage, promptMode string) string {
 	switch strings.ToLower(strings.TrimSpace(msg.Channel)) {
 	case "feishu":
 		return "## Official calendar & todos (this turn)\n\n" +
-			"This turn is on Feishu. When the matching tool is in this turn's tool list, " +
-			"prefer official Feishu resources over create_cron_job:\n\n" +
-			"- 开会 / 占日历 / 写进日程 / 约同事 → feishu_create_event\n" +
+			"This turn is on Feishu. The current channel IS the calendar — do NOT ask 飞书还是企微, " +
+			"and do NOT ask for confirmation. If they gave a title and a time (or a day), call the tool in this turn. " +
+			"Only ask when title or start time is missing.\n\n" +
+			"- 开会 / 占日历 / 写进日程 / 约同事 / 创建日程 → feishu_create_event\n" +
 			"- 待办 / 任务 / 记一笔要做的事 → feishu_create_task\n" +
 			"- FastClaw itself must wake up and speak later (过 N 分钟提醒我、每天汇报、反复检查) → create_cron_job\n\n" +
 			"Do not create a cron job for a calendar event or a todo-list item unless they explicitly want this agent to ping them."
 	case "wecom":
 		return "## Official calendar (this turn)\n\n" +
-			"This turn is on 企业微信. When the matching tool is in this turn's tool list, " +
-			"prefer official WeCom resources over create_cron_job:\n\n" +
-			"- 开会 / 占日历 / 写进日程 / 约同事 → wecom_create_schedule\n" +
+			"This turn is on 企业微信. The current channel IS the calendar — do NOT ask 飞书还是企微, " +
+			"and do NOT ask for confirmation. If they gave a title and a time (or a day), call wecom_create_schedule in this turn. " +
+			"Only ask when title or start time is missing.\n\n" +
+			"- 开会 / 占日历 / 写进日程 / 约同事 / 创建日程 → wecom_create_schedule\n" +
 			"- 待办 / 任务清单 → WeCom has no official todo API; use create_cron_job, or feishu_create_task if they asked to write it to 飞书\n" +
 			"- FastClaw itself must wake up and speak later → create_cron_job\n\n" +
 			"Do not create a cron job for a calendar event unless they explicitly want this agent to ping them."
@@ -1858,7 +1860,7 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 	// as if delegate_task / web_search / camoufox-cli didn't exist —
 	// which defeated the whole point of having Plan mode set up fan-out
 	// work for the execution turn.
-	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
+	toolDefs := a.toolDefsForTurn(msg.Channel)
 	catalog := buildToolCatalogForPlan(toolDefs)
 	messages := []provider.Message{
 		{Role: "system", Content: systemPrompt},
@@ -2470,7 +2472,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	messages := a.assembleTurnMessages(systemPrompt, msg, chatterMem, sessionMsgs, compactHint)
 	overflowRetried := false
 
-	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
+	toolDefs := a.toolDefsForTurn(msg.Channel)
 
 	// Loop detection: track consecutive identical tool calls and results.
 	var loopDetector toolLoopDetector
@@ -3343,7 +3345,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	messages := a.assembleTurnMessages(systemPrompt, msg, chatterMem, sessionMsgs, compactHint)
 	overflowRetried := false
 
-	toolDefs := a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode))
+	toolDefs := a.toolDefsForTurn(msg.Channel)
 
 	var loopDetector toolLoopDetector
 	totalToolCalls := 0
@@ -3876,6 +3878,54 @@ var chatbotBuiltinAllowlist = []string{
 	// extension mechanism — without exec the chatbot can't run them.
 	"exec",
 	"load_skill",
+}
+
+// toolDefsForTurn is the LLM-visible tool catalog for this inbound
+// message. Prompt-mode allowlisting happens first; then the other
+// platform's official calendar tools are dropped on Feishu / WeCom
+// so "创建一个日程" is not a 飞书-vs-企微 choice.
+func (a *Agent) toolDefsForTurn(channel string) []provider.Tool {
+	if a == nil || a.registry == nil {
+		return nil
+	}
+	return filterOfficeToolsForChannel(
+		a.registry.DefinitionsForMode(builtinAllowForMode(a.promptMode)),
+		channel,
+	)
+}
+
+// filterOfficeToolsForChannel hides the other platform's official
+// calendar tools on Feishu / WeCom turns. Web and other channels keep
+// both so an explicit "写进飞书/企微" still works there.
+func filterOfficeToolsForChannel(defs []provider.Tool, channel string) []provider.Tool {
+	hide := hiddenOfficeToolsForChannel(channel)
+	if len(hide) == 0 {
+		return defs
+	}
+	out := make([]provider.Tool, 0, len(defs))
+	for _, d := range defs {
+		if _, skip := hide[d.Function.Name]; skip {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+func hiddenOfficeToolsForChannel(channel string) map[string]struct{} {
+	switch strings.ToLower(strings.TrimSpace(channel)) {
+	case "feishu":
+		return map[string]struct{}{
+			"wecom_create_schedule": {},
+			"wecom_get_schedule":    {},
+		}
+	case "wecom":
+		return map[string]struct{}{
+			"feishu_create_event": {},
+		}
+	default:
+		return nil
+	}
 }
 
 // builtinAllowForMode returns the built-in tool name allowlist for the

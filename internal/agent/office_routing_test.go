@@ -6,6 +6,7 @@ import (
 
 	"github.com/fastclaw-ai/fastclaw/internal/bus"
 	"github.com/fastclaw-ai/fastclaw/internal/config"
+	"github.com/fastclaw-ai/fastclaw/internal/provider"
 )
 
 func TestRenderOfficeRoutingHint(t *testing.T) {
@@ -16,6 +17,9 @@ func TestRenderOfficeRoutingHint(t *testing.T) {
 	if strings.Contains(feishu, "wecom_create_schedule") {
 		t.Fatalf("feishu hint leaked wecom: %q", feishu)
 	}
+	if !strings.Contains(feishu, "do NOT ask") {
+		t.Fatalf("feishu hint must forbid asking which calendar: %q", feishu)
+	}
 
 	wecom := renderOfficeRoutingHint(bus.InboundMessage{Channel: "WeCom"}, "")
 	if !strings.Contains(wecom, "wecom_create_schedule") {
@@ -23,6 +27,9 @@ func TestRenderOfficeRoutingHint(t *testing.T) {
 	}
 	if !strings.Contains(wecom, "no official todo") {
 		t.Fatalf("wecom hint should say there is no official todo API: %q", wecom)
+	}
+	if !strings.Contains(wecom, "do NOT ask") {
+		t.Fatalf("wecom hint must forbid asking which calendar: %q", wecom)
 	}
 
 	if got := renderOfficeRoutingHint(bus.InboundMessage{Channel: "web"}, ""); got != "" {
@@ -83,6 +90,7 @@ func TestWorkspaceUpdateRoutesOfficialByChannel(t *testing.T) {
 		"wecom_create_schedule",
 		"wake up and speak",
 		"以后待办都写飞书",
+		"Never ask",
 	} {
 		if !strings.Contains(sched, needle) {
 			t.Fatalf("scheduling section missing %q", needle)
@@ -96,4 +104,43 @@ func TestWorkspaceUpdateRoutesOfficialByChannel(t *testing.T) {
 	if strings.Contains(sched, "call the create_cron_job tool") {
 		t.Fatal("scheduling section still leads with cron as the default")
 	}
+}
+
+func TestFilterOfficeToolsForChannelHidesTheOtherCalendar(t *testing.T) {
+	defs := []provider.Tool{
+		{Type: "function", Function: provider.ToolFunction{Name: "feishu_create_event"}},
+		{Type: "function", Function: provider.ToolFunction{Name: "feishu_create_task"}},
+		{Type: "function", Function: provider.ToolFunction{Name: "wecom_create_schedule"}},
+		{Type: "function", Function: provider.ToolFunction{Name: "wecom_get_schedule"}},
+		{Type: "function", Function: provider.ToolFunction{Name: "create_cron_job"}},
+	}
+
+	feishu := namesOf(filterOfficeToolsForChannel(defs, "feishu"))
+	if feishu["wecom_create_schedule"] || feishu["wecom_get_schedule"] {
+		t.Fatalf("feishu turn still sees WeCom calendar tools: %v", feishu)
+	}
+	if !feishu["feishu_create_event"] || !feishu["create_cron_job"] {
+		t.Fatalf("feishu turn dropped its own tools: %v", feishu)
+	}
+
+	wecom := namesOf(filterOfficeToolsForChannel(defs, "wecom"))
+	if wecom["feishu_create_event"] {
+		t.Fatalf("wecom turn still sees Feishu calendar tool: %v", wecom)
+	}
+	if !wecom["wecom_create_schedule"] || !wecom["feishu_create_task"] {
+		t.Fatalf("wecom turn dropped the wrong tools: %v", wecom)
+	}
+
+	web := namesOf(filterOfficeToolsForChannel(defs, "web"))
+	if len(web) != len(defs) {
+		t.Fatalf("web should keep every office tool, got %v", web)
+	}
+}
+
+func namesOf(defs []provider.Tool) map[string]bool {
+	out := make(map[string]bool, len(defs))
+	for _, d := range defs {
+		out[d.Function.Name] = true
+	}
+	return out
 }
