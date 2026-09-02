@@ -64,3 +64,19 @@ func TestSplitFilesFromReplyUsesExplicitFinalDocument(t *testing.T) {
 		t.Fatalf("items = %#v, want only final.pdf", items)
 	}
 }
+
+func TestSplitFilesFromReplyUsesCodingProjectRoot(t *testing.T) {
+	ctx := context.Background()
+	ws := workspace.NewLocalFS(t.TempDir())
+	if err := ws.Put(ctx, "agent", "proj", "", "final.pdf", bytes.NewBufferString("root"), 4, "application/pdf"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Put(ctx, "agent", "proj", "chat", "final.pdf", bytes.NewBufferString("chat"), 4, "application/pdf"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, items := splitFilesFromReply(ctx, ws, "agent", "proj", "", "见 [报告](/workspace/final.pdf)")
+	if len(items) != 1 || string(items[0].Bytes) != "root" {
+		t.Fatalf("coding store session must read project root, got %#v", items)
+	}
+}

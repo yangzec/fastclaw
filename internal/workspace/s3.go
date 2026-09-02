@@ -23,9 +23,10 @@ import (
 // Use NewS3 to build one from a config block rather than constructing the
 // struct directly — the minio client needs specific endpoint parsing.
 type S3 struct {
-	client *minio.Client
-	bucket string
-	prefix string // prepended to every key; can be "" for bucket root
+	client        *minio.Client
+	bucket        string
+	prefix        string // prepended to every key; can be "" for bucket root
+	publicBaseURL string
 }
 
 // S3Config holds the bits NewS3 needs. Field naming follows the fastclaw.json
@@ -35,9 +36,10 @@ type S3Config struct {
 	Region    string `json:"region,omitempty"`    // AWS region; "" for R2/MinIO
 	Bucket    string `json:"bucket"`              // target bucket
 	Prefix    string `json:"prefix,omitempty"`    // key prefix; useful for multi-env share
-	AccessKey string `json:"accessKey"`
-	SecretKey string `json:"secretKey"`
-	UseSSL    bool   `json:"useSSL"`              // default false — most managed services enforce SSL anyway
+	PublicBaseURL string `json:"publicBaseURL,omitempty"` // stable public CDN/custom-domain base for direct artifact links
+	AccessKey     string `json:"accessKey"`
+	SecretKey     string `json:"secretKey"`
+	UseSSL        bool   `json:"useSSL"` // default false — most managed services enforce SSL anyway
 }
 
 // NewS3 builds an S3 Store. Returns a wrapped error instead of panicking so
@@ -55,9 +57,10 @@ func NewS3(cfg S3Config) (*S3, error) {
 		return nil, fmt.Errorf("s3 client: %w", err)
 	}
 	return &S3{
-		client: client,
-		bucket: cfg.Bucket,
-		prefix: strings.Trim(cfg.Prefix, "/"),
+		client:        client,
+		bucket:        cfg.Bucket,
+		prefix:        strings.Trim(cfg.Prefix, "/"),
+		publicBaseURL: strings.TrimRight(strings.TrimSpace(cfg.PublicBaseURL), "/"),
 	}, nil
 }
 
@@ -240,6 +243,35 @@ func (s *S3) SignedURL(ctx context.Context, agentID, projectID, sessionID, p str
 		return "", err
 	}
 	return u.String(), nil
+}
+
+// PublicURL joins publicBaseURL with the object key. Segments are
+// escaped once so a prefix like "fast claw" becomes one %20, not
+// double-encoded. Missing / invalid base → ErrSignedURLUnsupported.
+func (s *S3) PublicURL(ctx context.Context, agentID, projectID, sessionID, p string) (string, error) {
+	if s.publicBaseURL == "" {
+		return "", ErrSignedURLUnsupported
+	}
+	u, err := url.Parse(s.publicBaseURL + "/")
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("s3 public base URL is invalid")
+	}
+	basePath := strings.TrimRight(u.Path, "/")
+	baseEscapedPath := strings.TrimRight(u.EscapedPath(), "/")
+	key := s.key(agentID, projectID, sessionID, p)
+	u.Path = basePath + "/" + key
+	u.RawPath = baseEscapedPath + "/" + pathEscapePreservingSlashes(key)
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String(), nil
+}
+
+func pathEscapePreservingSlashes(p string) string {
+	parts := strings.Split(strings.TrimPrefix(p, "/"), "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
 }
 
 // mapS3Err normalises minio's errors to our ErrNotFound so callers can do a

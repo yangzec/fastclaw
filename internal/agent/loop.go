@@ -1252,6 +1252,20 @@ func (a *Agent) storeSessionID(projectID, sessionID string) string {
 	return sessionID
 }
 
+// StoreSessionID is the exported form of storeSessionID so IM / HTTP
+// callers can Get the same store tuple write_file used.
+func (a *Agent) StoreSessionID(projectID, sessionID string) string {
+	return a.storeSessionID(projectID, sessionID)
+}
+
+// WorkspaceStore returns the agent's durable artifact store, or nil.
+func (a *Agent) WorkspaceStore() workspace.Store {
+	if a == nil {
+		return nil
+	}
+	return a.workspaceStore
+}
+
 // Model returns the agent's model name.
 func (a *Agent) Model() string {
 	return a.model

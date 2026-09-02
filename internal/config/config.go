@@ -101,13 +101,14 @@ type ObjectStoreLocalCfg struct {
 }
 
 type ObjectStoreS3Cfg struct {
-	Endpoint  string `json:"endpoint,omitempty"`
-	Region    string `json:"region,omitempty"`
-	Bucket    string `json:"bucket"`
-	Prefix    string `json:"prefix,omitempty"`
-	AccessKey string `json:"accessKey"`
-	SecretKey string `json:"secretKey"`
-	UseSSL    bool   `json:"useSSL"`
+	Endpoint      string `json:"endpoint,omitempty"`
+	Region        string `json:"region,omitempty"`
+	Bucket        string `json:"bucket"`
+	Prefix        string `json:"prefix,omitempty"`
+	PublicBaseURL string `json:"publicBaseURL,omitempty"`
+	AccessKey     string `json:"accessKey"`
+	SecretKey     string `json:"secretKey"`
+	UseSSL        bool   `json:"useSSL"`
 }
 
 // ToolProviderCfg holds credentials/endpoint for one provider (e.g. "exa").

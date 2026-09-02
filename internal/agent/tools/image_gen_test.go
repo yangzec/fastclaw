@@ -15,9 +15,10 @@ import (
 )
 
 type imageArchiveStore struct {
-	puts   []string
-	dels   []string
-	failAt int
+	puts      []string
+	dels      []string
+	failAt    int
+	publicURL string
 }
 
 func (s *imageArchiveStore) Put(ctx context.Context, agentID, projectID, sessionID, path string, r io.Reader, size int64, contentType string) error {
@@ -45,6 +46,12 @@ func (s *imageArchiveStore) Move(context.Context, string, string, string, string
 	return nil
 }
 func (s *imageArchiveStore) SignedURL(context.Context, string, string, string, string, time.Duration) (string, error) {
+	return "", workspace.ErrSignedURLUnsupported
+}
+func (s *imageArchiveStore) PublicURL(context.Context, string, string, string, string) (string, error) {
+	if s.publicURL != "" {
+		return s.publicURL, nil
+	}
 	return "", workspace.ErrSignedURLUnsupported
 }
 

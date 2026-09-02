@@ -1,17 +1,21 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/fastclaw-ai/fastclaw/internal/agent"
 	"github.com/fastclaw-ai/fastclaw/internal/auth"
 	"github.com/fastclaw-ai/fastclaw/internal/bus"
 	"github.com/fastclaw-ai/fastclaw/internal/provider"
+	"github.com/fastclaw-ai/fastclaw/internal/workspace"
 )
 
 // apiStreamHeartbeatInterval is how often /v1/chat/completions writes an
@@ -321,16 +325,23 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().Unix()
 
 	isStream := req.Stream != nil && *req.Stream
+	// API chats have no project addressing today — attachments and
+	// write_file land in the loose-chat scope keyed by ChatID. Rewrite
+	// uses that same store session so PublicURL matches the object.
+	storeSess := ag.StoreSessionID("", msg.ChatID)
 	if isStream {
-		s.streamResponseFromAgent(w, r, ag, msg, chatID, model, now)
+		s.streamResponseFromAgent(w, r, ag, msg, chatID, model, now, storeSess)
 	} else {
-		// Get reply from agent
+		// Get reply from agent. Rewrite /workspace/ → PublicURL on the
+		// HTTP response only; the stored session markdown stays as
+		// /workspace/<rel> so history survives CDN / source switches.
 		reply := ag.HandleMessage(r.Context(), msg)
+		reply = rewriteWorkspaceURLsToPublic(r.Context(), ag.WorkspaceStore(), ag.Name(), "", storeSess, reply)
 		s.fullResponse(w, reply, chatID, model, now, sessionKey, nativeSessionID)
 	}
 }
 
-func (s *Server) streamResponseFromAgent(w http.ResponseWriter, r *http.Request, ag *agent.Agent, msg bus.InboundMessage, chatID, model string, created int64) {
+func (s *Server) streamResponseFromAgent(w http.ResponseWriter, r *http.Request, ag *agent.Agent, msg bus.InboundMessage, chatID, model string, created int64, storeSess string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -387,10 +398,15 @@ func (s *Server) streamResponseFromAgent(w http.ResponseWriter, r *http.Request,
 		}
 	}()
 
+	rewriter := newWorkspaceURLStreamRewriter(r.Context(), ag.WorkspaceStore(), ag.Name(), "", storeSess)
 	for {
 		select {
 		case chunk, open := <-chunkCh:
 			if !open {
+				if flushed := rewriter.Flush(); flushed != "" {
+					s.writeSSEChunk(w, chatID, model, created, "", flushed, nil)
+					flush()
+				}
 				done := "stop"
 				s.writeSSEChunk(w, chatID, model, created, "", "", &done)
 				fmt.Fprint(w, "data: [DONE]\n\n")
@@ -398,8 +414,10 @@ func (s *Server) streamResponseFromAgent(w http.ResponseWriter, r *http.Request,
 				return
 			}
 			if chunk.Content != "" {
-				s.writeSSEChunk(w, chatID, model, created, "", chunk.Content, nil)
-				flush()
+				if content := rewriter.Write(chunk.Content); content != "" {
+					s.writeSSEChunk(w, chatID, model, created, "", content, nil)
+					flush()
+				}
 			}
 		case <-ticker.C:
 			writeSSEComment(w, "heartbeat")
@@ -487,4 +505,148 @@ func resolveAgent(space *UserSpaceView, agentID string) *agent.Agent {
 		return all[0]
 	}
 	return nil
+}
+
+var workspaceURLRefRegex = regexp.MustCompile(`https?://[^\s)]+/workspace/[^\s)]+|/workspace/[^\s)]+`)
+
+// rewriteWorkspaceURLsToPublic rewrites /workspace/<rel> (and host-absolutized
+// variants) to Store.PublicURL on the HTTP response only. Missing PublicURL
+// leaves the session-stable /workspace/ path in place.
+func rewriteWorkspaceURLsToPublic(ctx context.Context, ws workspace.Store, agentID, projectID, sessionID, text string) string {
+	if text == "" || ws == nil || agentID == "" {
+		return text
+	}
+	return workspaceURLRefRegex.ReplaceAllStringFunc(text, func(raw string) string {
+		rel := raw
+		if i := strings.Index(rel, "/workspace/"); i >= 0 {
+			rel = rel[i+len("/workspace/"):]
+		}
+		rel = strings.TrimPrefix(rel, "/")
+		if rel == "" {
+			return raw
+		}
+		if u, err := ws.PublicURL(ctx, agentID, projectID, sessionID, rel); err == nil && strings.TrimSpace(u) != "" {
+			return strings.TrimSpace(u)
+		}
+		return raw
+	})
+}
+
+type workspaceURLStreamRewriter struct {
+	ctx       context.Context
+	ws        workspace.Store
+	agentID   string
+	projectID string
+	sessionID string
+	pending   string
+}
+
+func newWorkspaceURLStreamRewriter(ctx context.Context, ws workspace.Store, agentID, projectID, sessionID string) *workspaceURLStreamRewriter {
+	return &workspaceURLStreamRewriter{
+		ctx:       ctx,
+		ws:        ws,
+		agentID:   agentID,
+		projectID: projectID,
+		sessionID: sessionID,
+	}
+}
+
+func (r *workspaceURLStreamRewriter) Write(content string) string {
+	if content == "" {
+		return ""
+	}
+	if r.ws == nil || r.agentID == "" {
+		return content
+	}
+
+	r.pending += content
+	start := workspaceURLStreamPendingStart(r.pending)
+	if start == 0 {
+		return ""
+	}
+	if start < 0 {
+		content, r.pending = r.pending, ""
+	} else {
+		content, r.pending = r.pending[:start], r.pending[start:]
+	}
+	return rewriteWorkspaceURLsToPublic(r.ctx, r.ws, r.agentID, r.projectID, r.sessionID, content)
+}
+
+func (r *workspaceURLStreamRewriter) Flush() string {
+	if r.pending == "" {
+		return ""
+	}
+	content := r.pending
+	r.pending = ""
+	return rewriteWorkspaceURLsToPublic(r.ctx, r.ws, r.agentID, r.projectID, r.sessionID, content)
+}
+
+func workspaceURLStreamPendingStart(text string) int {
+	if text == "" {
+		return -1
+	}
+
+	const workspaceMarker = "/workspace/"
+	if marker := strings.LastIndex(text, workspaceMarker); marker >= 0 {
+		tail := text[marker+len(workspaceMarker):]
+		if !workspaceURLTokenTerminated(tail) {
+			return workspaceURLTokenStart(text, marker)
+		}
+	} else if n := longestSuffixPrefix(text, workspaceMarker); n > 0 {
+		return workspaceURLTokenStart(text, len(text)-n)
+	}
+
+	if start := lastUnterminatedHTTPURLStart(text); start >= 0 {
+		return start
+	}
+	return -1
+}
+
+func workspaceURLTokenStart(text string, workspaceMarkerStart int) int {
+	prefix := text[:workspaceMarkerStart]
+	httpsStart := strings.LastIndex(prefix, "https://")
+	httpStart := strings.LastIndex(prefix, "http://")
+	if httpStart > httpsStart {
+		httpsStart = httpStart
+	}
+	if httpsStart >= 0 && !workspaceURLTokenTerminated(prefix[httpsStart:]) {
+		return httpsStart
+	}
+	return workspaceMarkerStart
+}
+
+func lastUnterminatedHTTPURLStart(text string) int {
+	httpsStart := strings.LastIndex(text, "https://")
+	httpStart := strings.LastIndex(text, "http://")
+	if httpStart > httpsStart {
+		httpsStart = httpStart
+	}
+	if httpsStart >= 0 && !workspaceURLTokenTerminated(text[httpsStart:]) {
+		return httpsStart
+	}
+	for _, prefix := range []string{"https://", "http://"} {
+		if n := longestSuffixPrefix(text, prefix); n > 0 {
+			return len(text) - n
+		}
+	}
+	return -1
+}
+
+func workspaceURLTokenTerminated(text string) bool {
+	return strings.IndexFunc(text, func(r rune) bool {
+		return unicode.IsSpace(r) || r == ')'
+	}) >= 0
+}
+
+func longestSuffixPrefix(text, prefix string) int {
+	limit := len(text)
+	if limit >= len(prefix) {
+		limit = len(prefix) - 1
+	}
+	for n := limit; n > 0; n-- {
+		if strings.HasSuffix(text, prefix[:n]) {
+			return n
+		}
+	}
+	return 0
 }

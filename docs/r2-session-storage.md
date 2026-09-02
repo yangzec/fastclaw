@@ -343,11 +343,16 @@ Signed URL / Public URL 仍然只在 **已通过现有文件 ACL** 之后签发�
 
 ### 切片 C — 对外 URL（保存之后能打开）
 
-对照 tencent `e1f3e92`，只移植展示，不改存储布局。落地本身已在 yangzec 完成（`image_gen` / `tts` archive、Docker+对象存储 post-exec sync）。
+对照 tencent `e1f3e92`，只移植展示，不改存储布局。落地本身已在 yangzec 完成（`image_gen` / `tts` archive、Docker+对象存储 post-exec sync）。**会话回写约定见 §13。**
 
-- `Store.PublicURL`；无 publicBaseURL 则 signed URL；再没有则 `/api/agents/{id}/files/...`
-- 聊天 markdown / OpenAI 兼容回复改写 `/workspace/<file>`
-- 前端不要用 `session_key` 猜 `sessions/<session_key>/...`（tencent 总结里的 404 根因）
+已落地：
+
+- `Store.PublicURL` + `S3Config.PublicBaseURL` / `FASTCLAW_OBJECT_STORE_PUBLIC_BASE_URL`
+- 工具结果：`Workspace path: /workspace/<rel>` + 稳定展示 URL（PublicURL，否则网关 `?sessionId=`；coding 省略 sessionId）
+- 文件 GET：过 ACL 后非 HTML 302 → PublicURL → 10m SignedURL → 网关代读
+- IM：`StoreSessionID`（coding 收成项目根）
+- OpenAI：只改 HTTP 响应，不改已落库的 `/workspace/` markdown
+- 前端继续用 `?sessionId=`，不用 `session_key` 猜 `sessions/<session_key>/...`
 
 ### 明确不做
 
@@ -378,7 +383,7 @@ Signed URL / Public URL 仍然只在 **已通过现有文件 ACL** 之后签发�
 
 切片 B 让用户自己配，而不是只靠 env。
 
-切片 C 解决“文件在 R2 里，但聊天链接还是 `/workspace/...` 或拼错 session”。
+切片 C（§13）解决“文件在 R2 里，如何正确回到会话”：历史只存 `/workspace/`，展示 URL 在读时解析。
 
 ---
 
@@ -412,3 +417,59 @@ Signed URL / Public URL 仍然只在 **已通过现有文件 ACL** 之后签发�
 - Coding 下多个 chat **共用**一个 turn sandbox（`Get(..., session="")`）。`MoveWebChatSession` 的 `Release` 仍用 chat id，对共享槽是 no-op，idle evict 会收。
 - 项目聊天的 sandbox **不再**看到同项目其它 chat 的目录；Files 面板仍按本 chat 前缀列文件。
 - `SOUL.md` 等身份文件、skill 树、`/tmp`、会话 JSON 仍不进 session object store。
+
+---
+
+## 13. R2 路径如何正确回到会话
+
+对象进了 R2 之后，**不要把 R2 key、`r2.dev` 直链或 signed URL 写进会话 JSON**。会话里只存 sandbox 稳定路径；展示 URL 在读的时候再算。
+
+### 13.1 三层路径，各管各的
+
+| 层 | 例子 | 谁看见 | 能不能进聊天记录 |
+|---|---|---|---|
+| 会话路径 | `/workspace/report.md` | 模型、历史、IM 解析、Web 改写 | **必须**。跨存储源、跨 TTL 都稳定 |
+| Store 坐标 | `Put(agent, project, storeSessionID, "report.md")` → `sessions/<chat_id>/report.md` 或 `projects/<pid>/[sid/]report.md` | 网关 / Store | 不写进 markdown。读时由 `(agent, project, storeSessionID)` 推出来 |
+| 展示 URL | `/api/agents/{id}/files/report.md?sessionId=<session_key>`，或 ACL 之后的 PublicURL / 短 TTL SignedURL | 浏览器、OpenAI 响应、CDN | **不持久化** signed URL（会过期）。PublicURL / 网关 URL 可以出现在**工具结果**里给模型看，最终回复仍应引用 `/workspace/` |
+
+tencent 404 的根因是把 `session_key` 猜成 `sessions/<session_key>/…`。yangzec 的约定：
+
+- 模型写 `[report](/workspace/report.md)`
+- Web `chat-markdown.tsx` 改写成 `/api/agents/{id}/files/report.md?sessionId=<session_key 或 chat_id>`
+- `GET` 用 `workspaceSessionScope` 把 token 收成 `chat_id`，再用 `httpStoreSession` 收 coding（`session=""`）
+- **禁止**在 URL path 里手拼 `sessions/<session_key>/`
+
+### 13.2 各通道怎么回写
+
+**工具结果（`write_file` / `tts`）**
+
+```
+Written N bytes to report.md
+Workspace path: /workspace/report.md
+URL: /api/agents/{id}/files/report.md?sessionId=<goalSessionKey>
+```
+
+`URL` 优先 `Store.PublicURL`（配了 `publicBaseURL`）。没有则走网关文件接口；`sessionId` 用持久 `session_key`，**coding 根省略 sessionId**（文件在 `projects/<pid>/`）。工具结果里**从不**放 signed URL。
+
+`image_gen` 的 markdown 继续用 `![x](/workspace/generated-images/…)`，让模型原样抄进最终回复。
+
+**Web 聊天**
+
+历史里仍是 `/workspace/…`。前端 `fileUrl()` 拼 cookie 鉴权的 files API。GET 过 ACL 之后：非 HTML 先 302 到 PublicURL，再没有则 10 分钟 SignedURL，再没有则网关代读。HTML 不跳转，好让 CSP `sandbox` 生效。
+
+**IM**
+
+`splitMediaFromReply` / `splitFilesFromReply` / `appendNewWorkspaceMedia` 用 `Agent.StoreSessionID(project, chatID)` 去 `Store.Get` 字节，再当 MediaItem 发出去，并剥掉 markdown。Coding 下 session 收成 `""`，否则会去 `projects/<pid>/<chatID>/` 找项目根上的文件。
+
+**OpenAI 兼容 API**
+
+只改 **HTTP 响应**（含流式 chunk），不改已经落库的 assistant markdown。有 PublicURL 就把 `/workspace/foo` 换成 CDN；没有就保持 `/workspace/`，由调用方自己解析。
+
+### 13.3 不要做的事
+
+- 把 `s3://…`、R2 key、`*.r2.cloudflarestorage.com` 预签名链接写进 session
+- 用 `session_key` 当 Store 的 session 段
+- 切换 objectstore source 时期望旧 URL 还指向同一对象
+- 在签发 PublicURL / SignedURL **之前**跳过文件 ACL
+
+`publicBaseURL` 把 bucket 配成公开读，等于该 prefix 对互联网可见。默认仍走网关 + 短 TTL signed URL。

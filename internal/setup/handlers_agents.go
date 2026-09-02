@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/fastclaw-ai/fastclaw/internal/agent/tools"
 	"github.com/fastclaw-ai/fastclaw/internal/auth"
@@ -1508,6 +1509,20 @@ func (s *Server) serveFileFromWorkspaceStore(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
+	if shouldRedirectWorkspaceFileToSignedURL(rel) {
+		if public, err := s.workspaceStore.PublicURL(r.Context(), agentID, projectID, sessionID, rel); err == nil && strings.TrimSpace(public) != "" {
+			http.Redirect(w, r, public, http.StatusFound)
+			return
+		} else if err != nil && !errors.Is(err, workspace.ErrSignedURLUnsupported) {
+			slog.Debug("workspace public URL unavailable; falling back", "agent", agentID, "path", rel, "error", err)
+		}
+		if signed, err := s.workspaceStore.SignedURL(r.Context(), agentID, projectID, sessionID, rel, 10*time.Minute); err == nil && signed != "" {
+			http.Redirect(w, r, signed, http.StatusFound)
+			return
+		} else if err != nil && !errors.Is(err, workspace.ErrSignedURLUnsupported) {
+			slog.Debug("workspace signed URL unavailable; proxying through gateway", "agent", agentID, "path", rel, "error", err)
+		}
+	}
 	rc, err := s.workspaceStore.Get(r.Context(), agentID, projectID, sessionID, rel)
 	if err != nil {
 		jsonResponse(w, http.StatusNotFound, map[string]any{"error": err.Error()})
@@ -1612,6 +1627,15 @@ func (s *Server) callerOwnsProject(r *http.Request, agentID, projectID string) b
 // `sandbox` header is the same protection the chat preview gets via the
 // iframe `sandbox` attribute, but applied at the HTTP layer so it kicks in
 // no matter how the file is loaded.
+func shouldRedirectWorkspaceFileToSignedURL(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	// Keep user-generated HTML same-origin so setFileResponseHeaders can
+	// apply CSP sandboxing. Images/PDFs/downloads may use the object
+	// store's public or signed URL so R2-backed agents don't appear to
+	// serve media from the gateway host.
+	return ext != ".html" && ext != ".htm"
+}
+
 func setFileResponseHeaders(w http.ResponseWriter, path string) {
 	ext := strings.ToLower(filepath.Ext(path))
 	ctype := mime.TypeByExtension(ext)

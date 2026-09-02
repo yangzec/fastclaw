@@ -662,7 +662,7 @@ func makeWriteFile(r *Registry) ToolFunc {
 				return "", fmt.Errorf("workspace put: %w", err)
 			}
 			r.mirrorWorkspaceFileToSandbox(ctx, args.Path, args.Content)
-			return fmt.Sprintf("Written %d bytes to %s", len(args.Content), args.Path), nil
+			return r.writeFileWorkspaceResult(ctx, args.Path, r.wsPath(args.Path), len(args.Content)), nil
 		}
 
 		// Identity files (SOUL.md / IDENTITY.md / ...) need to land in the
@@ -1140,7 +1140,7 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 				return "", fmt.Errorf("workspace put: %w", err)
 			}
 			r.mirrorWorkspaceFileToSandbox(ctx, args.Path, args.Content)
-			return fmt.Sprintf("Written %d bytes to %s", len(args.Content), args.Path), nil
+			return r.writeFileWorkspaceResult(ctx, args.Path, r.wsPath(args.Path), len(args.Content)), nil
 		case RouteSkillStore:
 			// Skill scaffolding (skill-creator's `skills/<name>/...`) lands
 			// on host disk where SkillsLoader scans + mirrors to OSS, NOT

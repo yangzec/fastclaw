@@ -82,7 +82,7 @@ func (r *Registry) archiveTTSOutput(ctx context.Context, text string) (string, e
 		if err := r.workspaceStore.Put(ctx, r.agentID, r.projectID, r.scopeSessionID(), rel, bytes.NewReader(data), int64(len(data)), ctype); err != nil {
 			return "", fmt.Errorf("tts archive put: %w", err)
 		}
-		extras = append(extras, workspaceDisplayPath(rel))
+		extras = append(extras, rel)
 	}
 	if len(extras) == 0 {
 		return text, nil
@@ -90,8 +90,8 @@ func (r *Registry) archiveTTSOutput(ctx context.Context, text string) (string, e
 	var sb strings.Builder
 	sb.WriteString(strings.TrimRight(text, "\n"))
 	sb.WriteString("\n")
-	for _, p := range extras {
-		fmt.Fprintf(&sb, "Workspace path: %s\n", p)
+	for _, rel := range extras {
+		fmt.Fprintf(&sb, "Workspace path: %s\nURL: %s\n", workspaceDisplayPath(rel), r.archiveDisplayURL(ctx, rel))
 	}
 	return sb.String(), nil
 }

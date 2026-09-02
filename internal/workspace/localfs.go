@@ -276,3 +276,10 @@ func (f *LocalFS) Delete(ctx context.Context, agentID, projectID, sessionID, pat
 func (f *LocalFS) SignedURL(ctx context.Context, agentID, projectID, sessionID, path string, ttl time.Duration) (string, error) {
 	return "", ErrSignedURLUnsupported
 }
+
+// PublicURL is not supported for local files — there is no public CDN
+// in front of ~/.fastclaw/workspaces. Callers fall through to the
+// authenticated /api/agents/{id}/files/{path} gateway.
+func (f *LocalFS) PublicURL(ctx context.Context, agentID, projectID, sessionID, path string) (string, error) {
+	return "", ErrSignedURLUnsupported
+}

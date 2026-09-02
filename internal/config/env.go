@@ -175,6 +175,9 @@ func applyObjectStoreEnv(cfg *Config) {
 	if v := read("ENDPOINT"); v != "" {
 		cfg.ObjectStore.S3.Endpoint = v
 	}
+	if v := read("PUBLIC_BASE_URL"); v != "" {
+		cfg.ObjectStore.S3.PublicBaseURL = v
+	}
 	if v := read("USESSL"); v != "" {
 		cfg.ObjectStore.S3.UseSSL = v == "true" || v == "1"
 	}
@@ -220,6 +223,7 @@ func ScrubBootSecrets() {
 		"FASTCLAW_OBJECT_STORE_SECRETKEY",
 		"FASTCLAW_OBJECT_STORE_ACCOUNTID",
 		"FASTCLAW_OBJECT_STORE_ENDPOINT",
+		"FASTCLAW_OBJECT_STORE_PUBLIC_BASE_URL",
 		"FASTCLAW_OBJECT_STORE_USESSL",
 		"FASTCLAW_OBJECT_STORE_ALIYUN_INTERNAL",
 		"FASTCLAW_REDIS_PASSWORD",

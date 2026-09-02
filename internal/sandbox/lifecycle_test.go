@@ -247,6 +247,10 @@ func (w *fakeWorkspace) SignedURL(ctx context.Context, agentID, projectID, sessi
 	return "", workspace.ErrSignedURLUnsupported
 }
 
+func (w *fakeWorkspace) PublicURL(ctx context.Context, agentID, projectID, sessionID, p string) (string, error) {
+	return "", workspace.ErrSignedURLUnsupported
+}
+
 // scopeForKey collapses the (project, session) tuple to a single string
 // the test fakes can use as a map sub-key. Matches LocalFS.scopeDir:
 // project+session stay isolated; coding (session="") shares the project

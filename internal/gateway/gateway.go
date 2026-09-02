@@ -351,13 +351,14 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		AccountID:    osCfg.AccountID,
 		AliyunIntern: osCfg.AliyunIntern,
 		S3: workspace.S3Config{
-			Endpoint:  osCfg.S3.Endpoint,
-			Region:    osCfg.S3.Region,
-			Bucket:    osCfg.S3.Bucket,
-			Prefix:    osCfg.S3.Prefix,
-			AccessKey: osCfg.S3.AccessKey,
-			SecretKey: osCfg.S3.SecretKey,
-			UseSSL:    osCfg.S3.UseSSL,
+			Endpoint:      osCfg.S3.Endpoint,
+			Region:        osCfg.S3.Region,
+			Bucket:        osCfg.S3.Bucket,
+			Prefix:        osCfg.S3.Prefix,
+			PublicBaseURL: osCfg.S3.PublicBaseURL,
+			AccessKey:     osCfg.S3.AccessKey,
+			SecretKey:     osCfg.S3.SecretKey,
+			UseSSL:        osCfg.S3.UseSSL,
 		},
 	}.New(filepath.Join(homeDir, "workspaces"))
 	if err != nil {
@@ -536,7 +537,8 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		// fallback must only attach files created by this turn; sandbox
 		// hydration/sync can refresh the mtime of every historical file,
 		// so a timestamp-only filter can resend the whole workspace.
-		workspaceBefore, workspaceSnapshotOK := snapshotWorkspacePaths(ctx, g.workspace, task.AgentID, task.Message.ProjectID, task.Message.ChatID)
+		storeSess := ag.StoreSessionID(task.Message.ProjectID, task.Message.ChatID)
+		workspaceBefore, workspaceSnapshotOK := snapshotWorkspacePaths(ctx, g.workspace, task.AgentID, task.Message.ProjectID, storeSess)
 
 		// Attach a stream pipeline for web-channel bus-fired turns so
 		// events reach the same SSE hub the user-typed path uses. No-op
@@ -558,13 +560,13 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		// workspace.Store, and ship them as MediaItems so IM channels
 		// can upload as photos. The textual placeholders are stripped
 		// from the body so users don't see the raw `![](...)` syntax.
-		text, items := splitMediaFromReply(ctx, g.workspace, task.AgentID, task.Message.ProjectID, task.Message.ChatID, reply)
+		text, items := splitMediaFromReply(ctx, g.workspace, task.AgentID, task.Message.ProjectID, storeSess, reply)
 		// Ordinary markdown links are how agents expose non-image final
 		// deliverables (`[report](/workspace/report.pdf)`). Resolve those
 		// explicitly as attachments too. Besides fixing document delivery,
 		// this makes the final reply authoritative: when it names one or more
 		// outputs, the fallback below does not sweep up draft/process files.
-		text, fileItems := splitFilesFromReply(ctx, g.workspace, task.AgentID, task.Message.ProjectID, task.Message.ChatID, text)
+		text, fileItems := splitFilesFromReply(ctx, g.workspace, task.AgentID, task.Message.ProjectID, storeSess, text)
 		items = append(items, fileItems...)
 		// Workspace fallback: list the session's files and attach
 		// every image whose mtime falls in this turn's window. Catches
@@ -583,7 +585,7 @@ func New(env *config.EnvConfig) (*Gateway, error) {
 		// the system prompt requires the agent to link each final deliverable.
 		// Other channels retain the legacy safety net for compatibility.
 		if len(items) == 0 && task.Message.Channel != "wechat" {
-			items = appendNewWorkspaceMedia(ctx, g.workspace, task.AgentID, task.Message.ProjectID, task.Message.ChatID, workspaceBefore, workspaceSnapshotOK, items)
+			items = appendNewWorkspaceMedia(ctx, g.workspace, task.AgentID, task.Message.ProjectID, storeSess, workspaceBefore, workspaceSnapshotOK, items)
 		}
 		// Web-streamed turns already delivered the reply via the hub.
 		// Skip the outbound push entirely when there's no media; with
