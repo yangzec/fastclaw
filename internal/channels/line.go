@@ -12,6 +12,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,26 +40,28 @@ import (
 // "extra account-scoped identifier" comment).
 
 const (
-	lineAPIBase         = "https://api.line.me"
-	lineReplyURL        = lineAPIBase + "/v2/bot/message/reply"
-	linePushURL         = lineAPIBase + "/v2/bot/message/push"
-	lineBotInfoURL      = lineAPIBase + "/v2/bot/info"
-	lineSendTimeout     = 15 * time.Second
-	lineReplyTokenTTL   = 4 * time.Minute // server-side limit is ~5min; refresh under to avoid races
+	lineAPIBase       = "https://api.line.me"
+	lineDataAPIBase   = "https://api-data.line.me"
+	lineReplyURL      = lineAPIBase + "/v2/bot/message/reply"
+	linePushURL       = lineAPIBase + "/v2/bot/message/push"
+	lineBotInfoURL    = lineAPIBase + "/v2/bot/info"
+	lineSendTimeout   = 15 * time.Second
+	lineReplyTokenTTL = 4 * time.Minute // server-side limit is ~5min; refresh under to avoid races
 )
 
 // LINE implements the Channel interface for a LINE Messaging API bot.
 type LINE struct {
-	bus            *bus.MessageBus
-	accountID      string // == bot userId (Uxxxxxxxxxxxxxxxx)
-	channelToken   string
-	channelSecret  string
+	bus           *bus.MessageBus
+	accountID     string // == bot userId (Uxxxxxxxxxxxxxxxx)
+	channelToken  string
+	channelSecret string
 
-	httpClient *http.Client
+	httpClient  *http.Client
+	dataAPIBase string // test override; empty → lineDataAPIBase
 
-	mu        sync.Mutex
-	botName   string
-	basicID   string // "@xxx" handle, surfaced for display
+	mu      sync.Mutex
+	botName string
+	basicID string // "@xxx" handle, surfaced for display
 	// replyTokens caches the most recent inbound replyToken per chat.
 	// Single-use, ~5min TTL. First outbound after an inbound pops the
 	// token; subsequent messages in the same turn use the push API
@@ -169,13 +173,13 @@ type LINEEventEnvelope struct {
 }
 
 type LINEEvent struct {
-	Type       string         `json:"type"` // "message" | "follow" | "join" | "leave" | ...
-	Mode       string         `json:"mode,omitempty"`
-	Timestamp  int64          `json:"timestamp"`
-	ReplyToken string         `json:"replyToken,omitempty"`
-	Source     LINESource     `json:"source"`
-	Message    *LINEMessage   `json:"message,omitempty"`
-	WebhookEventID string     `json:"webhookEventId,omitempty"`
+	Type           string       `json:"type"` // "message" | "follow" | "join" | "leave" | ...
+	Mode           string       `json:"mode,omitempty"`
+	Timestamp      int64        `json:"timestamp"`
+	ReplyToken     string       `json:"replyToken,omitempty"`
+	Source         LINESource   `json:"source"`
+	Message        *LINEMessage `json:"message,omitempty"`
+	WebhookEventID string       `json:"webhookEventId,omitempty"`
 }
 
 type LINESource struct {
@@ -186,9 +190,10 @@ type LINESource struct {
 }
 
 type LINEMessage struct {
-	Type string `json:"type"` // "text" | "sticker" | "image" | ...
-	ID   string `json:"id"`
-	Text string `json:"text,omitempty"`
+	Type     string `json:"type"` // "text" | "sticker" | "image" | "video" | "audio" | "file"
+	ID       string `json:"id"`
+	Text     string `json:"text,omitempty"`
+	FileName string `json:"fileName,omitempty"`
 }
 
 // HandleWebhook validates the HMAC signature against `body` (raw bytes
@@ -216,19 +221,27 @@ func (l *LINE) HandleWebhook(body []byte, signature string) (responseBody []byte
 }
 
 // dispatchEvent translates a LINE event into a bus.InboundMessage.
-// Drops non-text events (sticker/image/file/follow/etc.) until we
-// support them. ChatID resolution prefers the most-specific identifier
-// (groupId / roomId / userId) so DMs and groups end up in distinct
-// session keys.
+// Text plus image/video/audio/file content are forwarded; stickers and
+// non-message events stay dropped. ChatID resolution prefers the
+// most-specific identifier (groupId / roomId / userId) so DMs and
+// groups end up in distinct session keys.
 func (l *LINE) dispatchEvent(ev LINEEvent) {
 	if ev.Type != "message" || ev.Message == nil {
 		// Non-message events (follow, unfollow, postback, …) — skip.
 		return
 	}
-	if ev.Message.Type != "text" || ev.Message.Text == "" {
-		slog.Debug("line non-text message skipped",
+	text := ""
+	if ev.Message.Type == "text" {
+		text = ev.Message.Text
+	}
+	media := l.collectInboundMedia(ev.Message)
+	if text == "" && len(media) == 0 {
+		slog.Debug("line unsupported message skipped",
 			"account", l.accountID, "type", ev.Message.Type)
 		return
+	}
+	if text == "" {
+		text = "请查看我发送的附件。"
 	}
 
 	chatID, peerKind := lineChatKey(ev.Source)
@@ -253,17 +266,62 @@ func (l *LINE) dispatchEvent(ev LINEEvent) {
 		"account", l.accountID,
 		"from", ev.Source.UserID,
 		"chat", chatID,
-		"len", len(ev.Message.Text))
+		"len", len(text),
+		"media", len(media))
 
 	l.bus.Inbound <- bus.InboundMessage{
-		Channel:   "line",
-		AccountID: l.accountID,
-		ChatID:    chatID,
-		UserID:    ev.Source.UserID,
-		MessageID: ev.Message.ID,
-		Text:      ev.Message.Text,
-		PeerKind:  peerKind,
+		Channel:    "line",
+		AccountID:  l.accountID,
+		ChatID:     chatID,
+		UserID:     ev.Source.UserID,
+		MessageID:  ev.Message.ID,
+		Text:       text,
+		MediaItems: media,
+		PeerKind:   peerKind,
 	}
+}
+
+func (l *LINE) collectInboundMedia(msg *LINEMessage) []bus.MediaItem {
+	if msg == nil {
+		return nil
+	}
+	switch msg.Type {
+	case "image", "video", "audio", "file":
+	default:
+		return nil
+	}
+	if msg.ID == "" {
+		return nil
+	}
+	item, err := l.downloadMessageContent(msg)
+	if err != nil {
+		slog.Warn("line inbound media download failed",
+			"account", l.accountID, "type", msg.Type, "id", msg.ID, "error", err)
+		return nil
+	}
+	return []bus.MediaItem{item}
+}
+
+func (l *LINE) downloadMessageContent(msg *LINEMessage) (bus.MediaItem, error) {
+	base := l.dataAPIBase
+	if base == "" {
+		base = lineDataAPIBase
+	}
+	rawURL := strings.TrimRight(base, "/") + "/v2/bot/message/" + url.PathEscape(msg.ID) + "/content"
+	h := http.Header{}
+	h.Set("Authorization", "Bearer "+l.channelToken)
+	data, ctype, err := fetchInboundBytes(rawURL, h)
+	if err != nil {
+		return bus.MediaItem{}, err
+	}
+	name := strings.TrimSpace(msg.FileName)
+	if name == "" {
+		name = "line-" + msg.Type + mimeExtFromContentType(ctype)
+	}
+	if ctype == "" {
+		ctype = http.DetectContentType(data)
+	}
+	return bus.MediaItem{Filename: name, ContentType: ctype, Bytes: data}, nil
 }
 
 // lineChatKey picks the most-specific chat identifier from a source

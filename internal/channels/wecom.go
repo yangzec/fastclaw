@@ -113,10 +113,19 @@ type wecomCallbackBody struct {
 	Voice struct {
 		Content string `json:"content"`
 	} `json:"voice"`
-	Mixed json.RawMessage `json:"mixed"`
+	Image wecomEncryptedAsset `json:"image"`
+	File  wecomEncryptedAsset `json:"file"`
+	Video wecomEncryptedAsset `json:"video"`
+	Mixed json.RawMessage     `json:"mixed"`
 	Event struct {
 		EventType string `json:"eventtype"`
 	} `json:"event"`
+}
+
+type wecomEncryptedAsset struct {
+	URL    string `json:"url"`
+	AESKey string `json:"aeskey"`
+	Name   string `json:"filename"`
 }
 
 // NewWeCom creates a WeCom adapter. wsURL may be empty (public default)
@@ -369,42 +378,8 @@ func wecomSessionChatID(body wecomCallbackBody) (chatID string, group bool) {
 }
 
 func wecomInboundText(body wecomCallbackBody) string {
-	switch body.MsgType {
-	case "text":
-		return strings.TrimSpace(body.Text.Content)
-	case "voice":
-		return strings.TrimSpace(body.Voice.Content)
-	case "mixed":
-		return wecomMixedText(body.Mixed)
-	default:
-		return ""
-	}
-}
-
-func wecomMixedText(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var parsed struct {
-		Items []struct {
-			Type string `json:"type"`
-			Text struct {
-				Content string `json:"content"`
-			} `json:"text"`
-		} `json:"item"`
-	}
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return ""
-	}
-	var parts []string
-	for _, it := range parsed.Items {
-		if it.Type == "text" || it.Text.Content != "" {
-			if s := strings.TrimSpace(it.Text.Content); s != "" {
-				parts = append(parts, s)
-			}
-		}
-	}
-	return strings.TrimSpace(strings.Join(parts, "\n"))
+	text, _ := wecomInboundPayload(body)
+	return text
 }
 
 func wecomSubscribeBody(botID, secret string) map[string]string {

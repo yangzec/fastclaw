@@ -181,10 +181,14 @@ func (w *WeCom) handleMsgCallback(fr wecomFrame) {
 		slog.Warn("wecom callback decode failed", "account", w.accountID, "error", err)
 		return
 	}
-	text := wecomInboundText(body)
-	if text == "" {
+	text, assets := wecomInboundPayload(body)
+	media := downloadWeComAssets(assets)
+	if text == "" && len(media) == 0 {
 		slog.Debug("wecom unsupported message skipped", "account", w.accountID, "type", body.MsgType)
 		return
+	}
+	if text == "" {
+		text = "请查看我发送的附件。"
 	}
 	chatID, group := wecomSessionChatID(body)
 	if chatID == "" {
@@ -203,18 +207,20 @@ func (w *WeCom) handleMsgCallback(fr wecomFrame) {
 		"account", w.accountID,
 		"from", body.From.UserID,
 		"chat", chatID,
-		"len", len(text))
+		"len", len(text),
+		"media", len(media))
 	if w.bus == nil {
 		return
 	}
 	w.bus.Inbound <- bus.InboundMessage{
-		Channel:   "wecom",
-		AccountID: w.accountID,
-		ChatID:    chatID,
-		UserID:    body.From.UserID,
-		MessageID: msgID,
-		Text:      text,
-		PeerKind:  peerKind,
+		Channel:    "wecom",
+		AccountID:  w.accountID,
+		ChatID:     chatID,
+		UserID:     body.From.UserID,
+		MessageID:  msgID,
+		Text:       text,
+		MediaItems: media,
+		PeerKind:   peerKind,
 	}
 }
 

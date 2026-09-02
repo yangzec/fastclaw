@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -24,6 +25,7 @@ type Slack struct {
 	accountID   string
 	botUserID   string
 	botUsername string
+	botToken    string
 }
 
 // NewSlack creates a new Slack channel instance using Socket Mode.
@@ -40,6 +42,7 @@ func NewSlack(botToken, appToken, accountID string, mb *bus.MessageBus) (*Slack,
 		socketMode: sm,
 		bus:        mb,
 		accountID:  accountID,
+		botToken:   botToken,
 	}
 
 	return s, nil
@@ -152,8 +155,8 @@ func (s *Slack) handleMessage(ev *slackevents.MessageEvent) {
 	if ev.User == s.botUserID {
 		return
 	}
-	// Ignore message subtypes (edits, deletes, etc.) except empty subtype (normal messages)
-	if ev.SubType != "" {
+	// Ignore edits/deletes. file_share is how Slack delivers uploaded files.
+	if ev.SubType != "" && ev.SubType != "file_share" {
 		return
 	}
 
@@ -188,12 +191,24 @@ func (s *Slack) handleMessage(ev *slackevents.MessageEvent) {
 	}
 
 	isBot := ev.BotID != ""
+	var files []slack.File
+	if ev.Message != nil {
+		files = ev.Message.Files
+	}
+	media := s.downloadSlackFiles(files)
+	if text == "" && len(media) > 0 {
+		text = "请查看我发送的附件。"
+	}
+	if text == "" && len(media) == 0 {
+		return
+	}
 
 	slog.Info("slack message received",
 		"from", ev.User,
 		"channel", ev.Channel,
 		"peer_kind", peerKind,
 		"is_bot", isBot,
+		"media", len(media),
 	)
 
 	d := bus.InboundMessage{
@@ -207,6 +222,38 @@ func (s *Slack) handleMessage(ev *slackevents.MessageEvent) {
 		SenderName:   ev.User,
 		Mentions:     mentions,
 		IsBotMessage: isBot,
+		MediaItems:   media,
 	}
 	s.bus.Inbound <- d
+}
+
+func (s *Slack) downloadSlackFiles(files []slack.File) []bus.MediaItem {
+	var items []bus.MediaItem
+	for _, f := range files {
+		u := f.URLPrivateDownload
+		if u == "" {
+			u = f.URLPrivate
+		}
+		if u == "" {
+			continue
+		}
+		h := http.Header{}
+		if s.botToken != "" {
+			h.Set("Authorization", "Bearer "+s.botToken)
+		}
+		data, ctype, err := fetchInboundBytes(u, h)
+		if err != nil {
+			slog.Warn("slack file download failed", "name", f.Name, "error", err)
+			continue
+		}
+		if f.Mimetype != "" {
+			ctype = f.Mimetype
+		}
+		name := f.Name
+		if name == "" {
+			name = "slack" + mimeExtFromContentType(ctype)
+		}
+		items = append(items, bus.MediaItem{Filename: name, ContentType: ctype, Bytes: data})
+	}
+	return items
 }

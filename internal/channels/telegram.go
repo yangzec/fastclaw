@@ -111,31 +111,21 @@ func (t *Telegram) handleUpdate(update tgbotapi.Update) {
 }
 
 func (t *Telegram) buildInboundMessage(msg *tgbotapi.Message) *bus.InboundMessage {
-	// Handle photos
-	var photoURL string
-	if msg.Photo != nil && len(msg.Photo) > 0 {
-		// Use the largest photo (last in the array)
-		largest := msg.Photo[len(msg.Photo)-1]
-		fileURL, err := t.bot.GetFileDirectURL(largest.FileID)
-		if err != nil {
-			slog.Warn("telegram get photo URL", "error", err)
-		} else {
-			photoURL = fileURL
-		}
-	}
+	photoURL, media := t.collectInboundMedia(msg)
 
-	// Skip messages with no text and no photo
 	text := msg.Text
 	if msg.Caption != "" {
 		text = msg.Caption
 	}
-	if text == "" && photoURL == "" {
-		// Unsupported message type (sticker, voice, etc.) - skip
+	if text == "" && photoURL == "" && len(media) == 0 {
 		slog.Debug("telegram skipping unsupported message type",
 			"chat_id", msg.Chat.ID,
 			"from", msg.From.UserName,
 		)
 		return nil
+	}
+	if text == "" && len(media) > 0 {
+		text = "请查看我发送的附件。"
 	}
 
 	peerKind := "dm"
@@ -171,6 +161,7 @@ func (t *Telegram) buildInboundMessage(msg *tgbotapi.Message) *bus.InboundMessag
 		"is_bot", isBot,
 		"mentions", mentions,
 		"has_photo", photoURL != "",
+		"media", len(media),
 	)
 
 	return &bus.InboundMessage{
@@ -185,8 +176,64 @@ func (t *Telegram) buildInboundMessage(msg *tgbotapi.Message) *bus.InboundMessag
 		Mentions:     mentions,
 		IsBotMessage: isBot,
 		PhotoURL:     photoURL,
+		MediaItems:   media,
 		ReplyToMsgID: replyToMsgID,
 	}
+}
+
+func (t *Telegram) collectInboundMedia(msg *tgbotapi.Message) (photoURL string, items []bus.MediaItem) {
+	add := func(fileID, name, ctype string) {
+		if fileID == "" {
+			return
+		}
+		u, err := t.bot.GetFileDirectURL(fileID)
+		if err != nil {
+			slog.Warn("telegram get file URL", "name", name, "error", err)
+			return
+		}
+		data, fetchedType, err := fetchInboundBytes(u, nil)
+		if err != nil {
+			slog.Warn("telegram download file", "name", name, "error", err)
+			return
+		}
+		if ctype == "" {
+			ctype = fetchedType
+		}
+		if name == "" {
+			name = "telegram" + mimeExtFromContentType(ctype)
+		}
+		items = append(items, bus.MediaItem{Filename: name, ContentType: ctype, Bytes: data, URL: u})
+	}
+	if len(msg.Photo) > 0 {
+		largest := msg.Photo[len(msg.Photo)-1]
+		if u, err := t.bot.GetFileDirectURL(largest.FileID); err != nil {
+			slog.Warn("telegram get photo URL", "error", err)
+		} else {
+			photoURL = u
+			add(largest.FileID, "photo.jpg", "image/jpeg")
+		}
+	}
+	if msg.Document != nil {
+		add(msg.Document.FileID, msg.Document.FileName, msg.Document.MimeType)
+	}
+	if msg.Audio != nil {
+		name := msg.Audio.FileName
+		if name == "" && msg.Audio.Title != "" {
+			name = msg.Audio.Title + ".mp3"
+		}
+		add(msg.Audio.FileID, name, msg.Audio.MimeType)
+	}
+	if msg.Video != nil {
+		name := msg.Video.FileName
+		if name == "" {
+			name = "video.mp4"
+		}
+		add(msg.Video.FileID, name, msg.Video.MimeType)
+	}
+	if msg.Voice != nil {
+		add(msg.Voice.FileID, "voice.ogg", msg.Voice.MimeType)
+	}
+	return photoURL, items
 }
 
 func (t *Telegram) handleCallbackQuery(cq *tgbotapi.CallbackQuery) {
