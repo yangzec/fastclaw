@@ -57,6 +57,15 @@ action on upgrade — read those notes before deploying.
 
 ### Fixed
 
+- **Compaction follows Pi's working-set shrink.** Auto-compact and
+  `/compact [focus…]` now keep a ~20k-token verbatim hot tail (not
+  the last 20 messages), ask the model for a structured Goal /
+  Constraints / Progress / Decisions / Next Steps / Critical Context
+  handoff, and attach `<read-files>` / `<modified-files>` so the next
+  turn can rehydrate. The loop also compact-checks after each tool
+  round and, on a context-overflow 400, force-compacts once and
+  retries the turn. Successful summarize no longer tells the user to
+  `/new`; that hint stays on hard-trim only.
 - **Compaction no longer blanks old tool results before summarizing.**
   The first pass used to replace every tool output older than 20
   messages with a placeholder, then (if still over budget) ask the
