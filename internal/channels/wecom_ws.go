@@ -203,12 +203,21 @@ func (w *WeCom) handleMsgCallback(fr wecomFrame) {
 	if msgID == "" {
 		msgID = fr.Headers.ReqID
 	}
+	// WeCom only pushes group callbacks when the user @-mentioned the
+	// bot. FastClaw group routing is mention-only and matches Mentions
+	// against BotUsername() (the BotID). Without this, @ in a group is
+	// treated as unaddressed chatter and never gets a reply.
+	var mentions []string
+	if group {
+		mentions = wecomGroupMentions(w.BotUsername())
+	}
 	slog.Info("wecom message received",
 		"account", w.accountID,
 		"from", body.From.UserID,
 		"chat", chatID,
 		"len", len(text),
-		"media", len(media))
+		"media", len(media),
+		"mentions", mentions)
 	if w.bus == nil {
 		return
 	}
@@ -220,6 +229,7 @@ func (w *WeCom) handleMsgCallback(fr wecomFrame) {
 		MessageID:  msgID,
 		Text:       text,
 		MediaItems: media,
+		Mentions:   mentions,
 		PeerKind:   peerKind,
 	}
 }

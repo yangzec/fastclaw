@@ -15,6 +15,17 @@ import (
 	"github.com/fastclaw-ai/fastclaw/internal/bus"
 )
 
+// wecomGroupMentions marks a group inbound as addressing this bot.
+// Official long-conn docs: group aibot_msg_callback is only pushed when
+// the user @s the robot. BotUsername is the BotID, which is what
+// gateway.agentByMention compares against.
+func wecomGroupMentions(botUsername string) []string {
+	if strings.TrimSpace(botUsername) == "" {
+		return nil
+	}
+	return []string{botUsername}
+}
+
 func wecomInboundPayload(body wecomCallbackBody) (string, []wecomEncryptedAsset) {
 	switch body.MsgType {
 	case "text":

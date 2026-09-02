@@ -93,6 +93,36 @@ func TestDownloadWeComAssetDecrypts(t *testing.T) {
 	}
 }
 
+func TestWeComGroupMentionsUsesBotID(t *testing.T) {
+	if got := wecomGroupMentions("botA"); len(got) != 1 || got[0] != "botA" {
+		t.Fatalf("got %#v", got)
+	}
+	if wecomGroupMentions("  ") != nil {
+		t.Fatal("empty bot id should yield no mentions")
+	}
+}
+
+func TestWeComHandleMsgCallbackGroupSetsMentions(t *testing.T) {
+	mb := bus.New()
+	w := &WeCom{bus: mb, accountID: "botA", botID: "botA", lastReq: map[string]string{}, chatType: map[string]int{}, streamID: map[string]string{}}
+	body, _ := json.Marshal(map[string]any{
+		"msgid":    "m-group",
+		"chatid":   "wr_group",
+		"chattype": "group",
+		"from":     map[string]string{"userid": "u2"},
+		"msgtype":  "text",
+		"text":     map[string]string{"content": "@机器人 你好"},
+	})
+	w.handleMsgCallback(wecomFrame{Headers: wecomHeaders{ReqID: "req-g"}, Body: body})
+	got := <-mb.Inbound
+	if got.PeerKind != "group" || got.ChatID != "wr_group" {
+		t.Fatalf("inbound = %+v", got)
+	}
+	if len(got.Mentions) != 1 || got.Mentions[0] != "botA" {
+		t.Fatalf("mentions = %#v, want [botA] so mention-only routing replies", got.Mentions)
+	}
+}
+
 func TestWeComHandleMsgCallbackForwardsFile(t *testing.T) {
 	key := bytes.Repeat([]byte("f"), 32)
 	plain := []byte("file-bytes")

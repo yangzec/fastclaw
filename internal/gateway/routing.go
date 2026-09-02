@@ -500,7 +500,10 @@ func (g *Gateway) agentByMention(space *UserSpace, msg bus.InboundMessage, candi
 		return nil
 	}
 	for _, b := range space.Config.Bindings {
-		if b.Match.Channel != msg.Channel || b.Match.AccountID != msg.AccountID {
+		if b.Match.Channel != msg.Channel {
+			continue
+		}
+		if b.Match.AccountID != "" && b.Match.AccountID != msg.AccountID {
 			continue
 		}
 		for _, ag := range candidates {
@@ -508,6 +511,9 @@ func (g *Gateway) agentByMention(space *UserSpace, msg bus.InboundMessage, candi
 				return ag
 			}
 		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0]
 	}
 	return nil
 }
