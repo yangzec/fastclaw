@@ -888,6 +888,7 @@ const (
 	NSObjectStore      = "objectstore"
 	NSHooks            = "hooks"
 	NSPlugins          = "plugins"
+	NSMCPServers       = "mcpServers"
 	NSTaskQueue        = "taskqueue"
 	NSToolProviders    = "tools.providers"
 	NSToolCategories   = "tools.categories"

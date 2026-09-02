@@ -174,6 +174,9 @@ var settingNamespaces = []settingNamespace{
 	{namespace: "plugins",
 		dst:     func(c *config.Config) interface{} { return &c.Plugins },
 		collect: func(c *config.Config) map[string]interface{} { return toMap(c.Plugins) }},
+	{namespace: "mcpServers",
+		dst:     func(c *config.Config) interface{} { return &c.MCPServers },
+		collect: func(c *config.Config) map[string]interface{} { return wrapKeyed(c.MCPServers) }},
 	{namespace: "taskqueue",
 		dst:     func(c *config.Config) interface{} { return &c.TaskQueue },
 		collect: func(c *config.Config) map[string]interface{} { return toMap(c.TaskQueue) }},
@@ -518,6 +521,13 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		masked.Skills.AgentEntries = ma
 	}
+	if len(cfg.MCPServers) > 0 {
+		mm := make(map[string]config.MCPServerConfig, len(cfg.MCPServers))
+		for k, v := range cfg.MCPServers {
+			mm[k] = maskMCPServer(v)
+		}
+		masked.MCPServers = mm
+	}
 	// Compute the system-only resolution of agents.defaults so the
 	// dashboard can tell apart "inheriting from system" vs "overriding
 	// at my user scope" — `cfg` already merges user over system, so
@@ -558,9 +568,10 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var raw struct {
-		Prefs   *config.PrefsCfg `json:"prefs"`
-		Sandbox *json.RawMessage `json:"sandbox"`
-		Skills  *struct {
+		Prefs      *config.PrefsCfg                  `json:"prefs"`
+		Sandbox    *json.RawMessage                  `json:"sandbox"`
+		MCPServers map[string]config.MCPServerConfig `json:"mcpServers"`
+		Skills     *struct {
 			Entries      map[string]config.SkillEntryCfg            `json:"entries"`
 			AgentEntries map[string]map[string]config.SkillEntryCfg `json:"agentEntries"`
 		} `json:"skills"`
@@ -593,6 +604,10 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	for name, entry := range merged.Skills.Entries {
 		existingSkillEntries[name] = entry
 	}
+	existingMCP := make(map[string]config.MCPServerConfig, len(merged.MCPServers))
+	for name, entry := range merged.MCPServers {
+		existingMCP[name] = entry
+	}
 	if err := json.Unmarshal(buf, merged); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -600,6 +615,11 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	if raw.Skills != nil {
 		for name, in := range raw.Skills.Entries {
 			merged.Skills.Entries[name] = mergeSkillEntry(existingSkillEntries[name], in)
+		}
+	}
+	if raw.MCPServers != nil {
+		for name, in := range raw.MCPServers {
+			merged.MCPServers[name] = mergeMCPServer(existingMCP[name], in)
 		}
 	}
 	if err := s.saveUserConfig(r, merged); err != nil {
@@ -2139,6 +2159,47 @@ func maskSkillEntry(v config.SkillEntryCfg) config.SkillEntryCfg {
 				out.Env[ek] = maskAPIKey(ev)
 			} else {
 				out.Env[ek] = ev
+			}
+		}
+	}
+	return out
+}
+
+func maskMCPServer(v config.MCPServerConfig) config.MCPServerConfig {
+	out := v
+	if len(v.Headers) > 0 {
+		out.Headers = make(map[string]string, len(v.Headers))
+		for k, val := range v.Headers {
+			// MCP headers are credentials (Authorization, API keys).
+			out.Headers[k] = maskAPIKey(val)
+		}
+	}
+	if len(v.Env) > 0 {
+		out.Env = make(map[string]string, len(v.Env))
+		for k, val := range v.Env {
+			if looksLikeSecret(k) {
+				out.Env[k] = maskAPIKey(val)
+			} else {
+				out.Env[k] = val
+			}
+		}
+	}
+	return out
+}
+
+func mergeMCPServer(existing, in config.MCPServerConfig) config.MCPServerConfig {
+	out := in
+	if out.Headers != nil && existing.Headers != nil {
+		for k, v := range out.Headers {
+			if isMaskedSecret(v) {
+				out.Headers[k] = existing.Headers[k]
+			}
+		}
+	}
+	if out.Env != nil && existing.Env != nil {
+		for k, v := range out.Env {
+			if isMaskedSecret(v) {
+				out.Env[k] = existing.Env[k]
 			}
 		}
 	}

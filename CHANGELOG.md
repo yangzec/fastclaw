@@ -7,6 +7,18 @@ action on upgrade — read those notes before deploying.
 
 ### Added
 
+- **Global MCP servers, inherited by every agent.** The platform
+  sidebar has an MCP page (admin) that writes `mcpServers` through
+  `/api/config`. Runtime already merged that map into each agent;
+  it was never persisted or editable. Same-name agent overlays still
+  win. An agent can disable an inherited server (`disabled: true`)
+  without deleting the shared definition. Secrets in headers/env
+  are masked on GET and restored on a no-op save.
+- **Plugin inheritance matches skills / MCP.** Enabling a plugin on
+  the restored global Plugins page (master runtime switch + per-plugin
+  toggles) attaches its hooks to every agent. An agent overlay can
+  turn one off or on; Reset drops the overlay so the inherited value
+  comes back. Missing both a system entry and an overlay stays off.
 - **Zhipu / Kimi / Grok / latest GPT context defaults.** Models and
   onboard presets now include 智谱 (`glm-5.3`, `glm-5.3-flash`, 1M),
   Kimi (`kimi-k3`, 1,048,576), Grok (`grok-4.6` / `grok-4.5`, 500k —

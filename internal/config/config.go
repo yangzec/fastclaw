@@ -60,6 +60,10 @@ type MCPServerConfig struct {
 	Command string            `json:"command,omitempty"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
+	// Disabled lets an agent overlay hide an inherited (system/user)
+	// server without deleting the shared definition. The MCP manager
+	// skips disabled entries at connect time.
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // CronJob defines a scheduled job loaded into the gateway's runtime.

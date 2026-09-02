@@ -36,6 +36,8 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 		// Read plugin.json for metadata
 		pluginType := "unknown"
 		version := ""
+		name := id
+		description := ""
 		manifestPath := filepath.Join(pluginsDir, id, "plugin.json")
 		if data, readErr := os.ReadFile(manifestPath); readErr == nil {
 			var manifest map[string]any
@@ -45,6 +47,12 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 				}
 				if v, ok := manifest["version"].(string); ok {
 					version = v
+				}
+				if n, ok := manifest["name"].(string); ok && n != "" {
+					name = n
+				}
+				if d, ok := manifest["description"].(string); ok {
+					description = d
 				}
 			}
 		}
@@ -62,11 +70,13 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 		}
 
 		plugins = append(plugins, map[string]any{
-			"id":      id,
-			"type":    pluginType,
-			"version": version,
-			"status":  status,
-			"enabled": enabled,
+			"id":          id,
+			"name":        name,
+			"description": description,
+			"type":        pluginType,
+			"version":     version,
+			"status":      status,
+			"enabled":     enabled,
 		})
 	}
 	if plugins == nil {
@@ -94,6 +104,7 @@ func (s *Server) handleListHookPlugins(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusOK, []any{})
 		return
 	}
+	cfg, _ := s.loadUserConfig(r)
 	var out []map[string]any
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -127,11 +138,18 @@ func (s *Server) handleListHookPlugins(w http.ResponseWriter, r *http.Request) {
 		if !isHook {
 			continue
 		}
+		enabled := false
+		if cfg != nil && cfg.Plugins.Entries != nil {
+			if pe, ok := cfg.Plugins.Entries[id]; ok {
+				enabled = pe.Enabled
+			}
+		}
 		out = append(out, map[string]any{
 			"id":          id,
 			"name":        manifest["name"],
 			"description": manifest["description"],
 			"version":     manifest["version"],
+			"enabled":     enabled,
 		})
 	}
 	if out == nil {

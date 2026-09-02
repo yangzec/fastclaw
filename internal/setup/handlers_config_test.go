@@ -189,6 +189,73 @@ func TestMergeSkillEntry(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigMaskedMCPServerKeepsStoredSecret(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, adminUser, _ := newAuthTestServer(t, ctx)
+
+	post := func(body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		s.authMiddleware(s.handleUpdateConfig)(rr, configTestRequest(t, ctx, resolver, http.MethodPost, "/api/config", adminUser.ID, body))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("POST /api/config status = %d, body = %s", rr.Code, rr.Body.String())
+		}
+		return rr
+	}
+	stored := func() config.MCPServerConfig {
+		t.Helper()
+		rec, err := s.dataStore.GetConfigByName(ctx, store.KindSetting, "", "", "mcpServers")
+		if err != nil || rec == nil {
+			t.Fatalf("GetConfigByName: rec=%v err=%v", rec, err)
+		}
+		blob, _ := json.Marshal(rec.Data)
+		var servers map[string]config.MCPServerConfig
+		if err := json.Unmarshal(blob, &servers); err != nil {
+			t.Fatalf("decode mcpServers: %v", err)
+		}
+		return servers["postgres"]
+	}
+
+	post(map[string]any{"mcpServers": map[string]any{
+		"postgres": map[string]any{
+			"type":    "http",
+			"url":     "https://mcp.example.com",
+			"headers": map[string]any{"Authorization": "Bearer real-mcp-token-123456"},
+			"env":     map[string]any{"API_KEY": "real-mcp-key-abcdef", "REGION": "us"},
+		},
+	}})
+	if got := stored(); got.Headers["Authorization"] != "Bearer real-mcp-token-123456" || got.Env["API_KEY"] != "real-mcp-key-abcdef" {
+		t.Fatalf("initial save lost secrets: %+v", got)
+	}
+
+	get := httptest.NewRecorder()
+	s.authMiddleware(s.handleGetConfig)(get, configTestRequest(t, ctx, resolver, http.MethodGet, "/api/config", adminUser.ID, nil))
+	if get.Code != http.StatusOK {
+		t.Fatalf("GET /api/config status = %d", get.Code)
+	}
+	var view struct {
+		MCPServers map[string]config.MCPServerConfig `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(get.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode GET: %v", err)
+	}
+	masked := view.MCPServers["postgres"]
+	if masked.Headers["Authorization"] == "Bearer real-mcp-token-123456" || masked.Env["API_KEY"] == "real-mcp-key-abcdef" {
+		t.Fatalf("GET leaked plaintext MCP secrets: %+v", masked)
+	}
+	if masked.Env["REGION"] != "us" {
+		t.Fatalf("non-secret env should stay plaintext, got %q", masked.Env["REGION"])
+	}
+
+	post(map[string]any{"mcpServers": map[string]any{"postgres": masked}})
+	if got := stored(); got.Headers["Authorization"] != "Bearer real-mcp-token-123456" {
+		t.Fatalf("masked write-back clobbered header: got %q", got.Headers["Authorization"])
+	}
+	if got := stored(); got.Env["API_KEY"] != "real-mcp-key-abcdef" {
+		t.Fatalf("masked write-back clobbered env API_KEY: got %q", got.Env["API_KEY"])
+	}
+}
+
 func configTestRequest(t *testing.T, ctx context.Context, resolver *auth.Resolver, method, path, userID string, body map[string]any) *http.Request {
 	t.Helper()
 

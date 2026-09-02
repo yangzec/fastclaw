@@ -119,8 +119,8 @@ export interface AgentDetail {
   // with the web channel (owner's identity). Default false.
   sharedIdentity?: boolean;
   // plugins is the per-agent hook-plugin enable overlay: pluginID →
-  // enabled. Missing keys fall back to the system-wide enable state
-  // (visible via /api/plugins). null/undefined means "no per-agent
+  // enabled. Missing keys inherit plugins.entries[id].enabled from
+  // the global Plugins page. null/undefined means "no per-agent
   // override at all".
   plugins?: Record<string, boolean> | null;
   soul?: string;
@@ -173,6 +173,8 @@ export async function updateSkillEntries(
 
 export interface PluginInfo {
   id: string;
+  name?: string;
+  description?: string;
   type: string;
   version: string;
   status: string;
@@ -262,6 +264,14 @@ export interface ConfigResponse {
     // SkillsLoader.SkillEnvVars resolves agentEntries[<agent>][<skill>]
     // first, falling back to the global entries map.
     agentEntries?: Record<string, Record<string, SkillEntryCfg>>;
+  };
+  // Global MCP servers (system/user scope). Agents inherit these and
+  // may overlay the same name in agents.config.mcpServers.
+  mcpServers?: Record<string, MCPServerConfig>;
+  plugins?: {
+    enabled?: boolean;
+    paths?: string[];
+    entries?: Record<string, { enabled: boolean; config?: Record<string, unknown> }>;
   };
   // Presentation hints the dashboard needs to render inheritance state
   // without re-resolving the scope chain client-side. systemDefaultModel
@@ -1442,6 +1452,9 @@ export interface HookPlugin {
   name?: string;
   description?: string;
   version?: string;
+  // System-wide plugins.entries[id].enabled. Agent overlays sit on
+  // top of this — missing overlay key inherits this value.
+  enabled?: boolean;
 }
 
 export async function listHookPlugins(): Promise<HookPlugin[]> {
@@ -1461,6 +1474,9 @@ export interface MCPServerConfig {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  // Agent overlay that hides an inherited global server without
+  // deleting the shared definition.
+  disabled?: boolean;
 }
 
 export interface AgentFileConfig {

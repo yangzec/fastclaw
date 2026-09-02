@@ -27,6 +27,8 @@ import {
   LayoutDashboardIcon,
   MessagesSquareIcon,
   PlusIcon,
+  Plug,
+  ServerIcon,
   SettingsIcon,
   SparklesIcon,
   UsersIcon,
@@ -87,6 +89,8 @@ const ADMIN_AGENT_GROUP: NavItem[] = [
   { title: "Agents", url: "/agents/", icon: BotIcon },
   { title: "Models", url: "/models/", icon: BrainIcon },
   { title: "Skills", url: "/skills/", icon: SparklesIcon },
+  { title: "MCP", url: "/mcp/", icon: ServerIcon },
+  { title: "Plugins", url: "/plugins/", icon: Plug },
   { title: "Tools", url: "/tools/", icon: WrenchIcon },
 ];
 
