@@ -329,8 +329,9 @@ type ModelEntry struct {
 	Cost      ModelCost `json:"cost"`
 	// ContextWindow is the model's input context size in tokens. The
 	// agent loop uses it (minus output/prompt reserves) as the history
-	// compaction threshold. 0 means "unset" — compaction then falls
-	// back to the Models UI default of 200000.
+	// compaction threshold. Operators can set any value from the Models
+	// UI; official preset sizes are defaults only. 0 means "unset" —
+	// compaction then falls back to KnownContextWindow, then 200000.
 	ContextWindow int `json:"contextWindow"`
 	MaxTokens     int `json:"maxTokens"`
 }

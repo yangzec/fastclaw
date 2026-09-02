@@ -569,3 +569,38 @@ func TestSettingKeyRouting(t *testing.T) {
 		t.Error("bindings.* must not be exposed through generic config set")
 	}
 }
+
+func TestProviderPresetOfficialBases(t *testing.T) {
+	cases := []struct {
+		name, apiBase, apiKeyEnv string
+	}{
+		{"zhipu", "https://open.bigmodel.cn/api/paas/v4", "ZHIPUAI_API_KEY"},
+		{"zai", "https://open.bigmodel.cn/api/paas/v4", "ZHIPUAI_API_KEY"},
+		{"kimi", "https://api.moonshot.cn/v1", "MOONSHOT_API_KEY"},
+		{"moonshot", "https://api.moonshot.cn/v1", "MOONSHOT_API_KEY"},
+		{"grok", "https://api.x.ai/v1", "XAI_API_KEY"},
+		{"xai", "https://api.x.ai/v1", "XAI_API_KEY"},
+		{"openai", "https://api.openai.com/v1", "OPENAI_API_KEY"},
+	}
+	for _, tc := range cases {
+		got := providerPreset(tc.name)
+		if got.apiBase != tc.apiBase || got.apiKeyEnv != tc.apiKeyEnv || got.apiType != "openai-chat" {
+			t.Errorf("providerPreset(%q) = %+v, want base %s env %s", tc.name, got, tc.apiBase, tc.apiKeyEnv)
+		}
+	}
+}
+
+func TestAppendModelFillsKnownContextWindow(t *testing.T) {
+	got := appendModel(nil, "glm-5.3")
+	if len(got) != 1 || got[0].ContextWindow != 1_000_000 {
+		t.Fatalf("glm-5.3 window = %+v, want 1000000", got)
+	}
+	got = appendModel(got, "grok-4.6")
+	if got[1].ContextWindow != 500_000 {
+		t.Fatalf("grok-4.6 window = %d, want 500000", got[1].ContextWindow)
+	}
+	got = appendModel(got, "kimi-k3")
+	if got[2].ContextWindow != 1_048_576 {
+		t.Fatalf("kimi-k3 window = %d, want 1048576", got[2].ContextWindow)
+	}
+}

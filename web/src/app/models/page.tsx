@@ -45,35 +45,9 @@ import {
   type ProviderRow,
 } from "@/lib/api";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
-import { DEFAULT_CONTEXT_WINDOW, knownContextWindow, presetContextWindow } from "@/lib/model-defaults";
-
-// Keep these maps in sync with onboard's ProviderStep so the two flows
-// look and behave identically — same preset set, same labels, same
-// SelectValue render-children pattern.
-// `models` are common model IDs pre-filled into the form when the
-// preset is selected. The user can keep, edit, or remove them. Empty
-// list means "no sensible default" (custom / openrouter / ollama all
-// vary too much to ship a baked-in suggestion).
-const PROVIDER_PRESETS: Record<
-  string,
-  { apiBase: string; apiType: string; authType: string; models: string[] }
-> = {
-  openai: { apiBase: "https://api.openai.com/v1", apiType: "openai-chat", authType: "bearer-token", models: ["gpt-5.5"] },
-  openrouter: { apiBase: "https://openrouter.ai/api/v1", apiType: "openai-chat", authType: "bearer-token", models: [] },
-  anthropic: { apiBase: "https://api.anthropic.com", apiType: "anthropic-messages", authType: "api-key", models: ["claude-opus-4-7", "claude-sonnet-4-7", "claude-haiku-4-5"] },
-  deepseek: { apiBase: "https://api.deepseek.com", apiType: "openai-chat", authType: "bearer-token", models: ["deepseek-v4-pro", "deepseek-v4-flash"] },
-  ollama: { apiBase: "http://localhost:11434/v1", apiType: "openai-chat", authType: "bearer-token", models: [] },
-  custom: { apiBase: "", apiType: "openai-chat", authType: "bearer-token", models: [] },
-};
-
-const PROVIDER_LABELS: Record<string, string> = {
-  openai: "OpenAI",
-  openrouter: "OpenRouter",
-  anthropic: "Anthropic",
-  deepseek: "DeepSeek",
-  ollama: "Ollama",
-  custom: "Custom",
-};
+import { DEFAULT_CONTEXT_WINDOW, nextContextWindowOnIdChange, presetContextWindow } from "@/lib/model-defaults";
+import { PROVIDER_PRESETS, PROVIDER_LABELS } from "@/lib/provider-presets";
+import { ContextWindowField } from "@/components/context-window-field";
 
 const API_TYPE_LABELS: Record<string, string> = {
   "openai-chat": "OpenAI Chat Completions",
@@ -334,6 +308,8 @@ export default function ModelsPage() {
           ...m,
           cost: { ...base.cost, ...(m.cost || {}) },
           input: m.input && m.input.length > 0 ? [...m.input] : base.input,
+          contextWindow:
+            m.contextWindow > 0 ? m.contextWindow : presetContextWindow(m.id || ""),
         };
       }),
     );
@@ -441,18 +417,7 @@ export default function ModelsPage() {
       if (field === "id") {
         const prevID = m.id;
         m.id = value as string;
-        const known = knownContextWindow(m.id);
-        const prevKnown = knownContextWindow(prevID);
-        // Only overwrite when the window is still the old default / old
-        // preset. A number the user typed must survive an id tweak.
-        if (
-          known > 0 &&
-          (m.contextWindow === 0 ||
-            m.contextWindow === DEFAULT_CONTEXT_WINDOW ||
-            m.contextWindow === prevKnown)
-        ) {
-          m.contextWindow = known;
-        }
+        m.contextWindow = nextContextWindowOnIdChange(m.id, prevID, m.contextWindow);
       }
       else if (field === "name") m.name = value as string;
       else if (field === "reasoning") m.reasoning = value as boolean;
@@ -1050,20 +1015,11 @@ export default function ModelsPage() {
                       />
                     </div>
                   </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">Context window (tokens)</Label>
-                    <Input
-                      type="number"
-                      min={0}
-                      value={m.contextWindow || ""}
-                      onChange={(e) => handleUpdateModel(idx, "contextWindow", e.target.value)}
-                      placeholder={String(DEFAULT_CONTEXT_WINDOW)}
-                      className="font-mono text-xs h-8"
-                    />
-                    <p className="text-[11px] text-muted-foreground/70">
-                      Official window for this model id when we know it; edit if your provider differs. History is compacted as the session approaches this, minus room for the reply.
-                    </p>
-                  </div>
+                  <ContextWindowField
+                    modelId={m.id}
+                    value={m.contextWindow}
+                    onChange={(next) => handleUpdateModel(idx, "contextWindow", next)}
+                  />
                 </div>
                 );
               })}

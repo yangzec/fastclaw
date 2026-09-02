@@ -241,8 +241,9 @@ type onboardRequest struct {
 	APIBase  string `json:"apiBase"`
 	APIKey   string `json:"apiKey"`
 	APIType  string `json:"apiType,omitempty"`
-	AuthType string `json:"authType,omitempty"`
-	Model    string `json:"model"`
+	AuthType       string `json:"authType,omitempty"`
+	Model          string `json:"model"`
+	ContextWindow  int    `json:"contextWindow,omitempty"`
 
 	AgentName string `json:"agentName,omitempty"`
 
@@ -310,10 +311,11 @@ func (s *Server) handleOnboard(w http.ResponseWriter, r *http.Request) {
 		// and an inactive Test connection button, even though
 		// agents.defaults already names this model.
 		if req.Model != "" {
+			cw := config.ContextWindowOrDefault(req.Model, req.ContextWindow)
 			pcfg.Models = []config.ModelEntry{{
 				ID:            req.Model,
 				Name:          req.Model,
-				ContextWindow: config.KnownContextWindow(req.Model),
+				ContextWindow: cw,
 			}}
 		}
 		if err := scope.SaveProviderByScope(r.Context(), s.dataStore, scope.System, "", req.Provider, pcfg); err != nil {
