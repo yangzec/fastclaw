@@ -48,6 +48,15 @@ func TestIsTransientLLMError(t *testing.T) {
 	}
 }
 
+func TestIsContextOverflowErrorFromLLM(t *testing.T) {
+	if !isContextOverflowError(fmt.Errorf("API error 400: This model's maximum context length is 128000 tokens")) {
+		t.Fatal("expected overflow match")
+	}
+	if isContextOverflowError(fmt.Errorf("API error 400: invalid_request_error: missing tool_call_id")) {
+		t.Fatal("generic 400 is not overflow")
+	}
+}
+
 func TestLLMRetryDoesNotRetryInvalidRequest(t *testing.T) {
 	calls := 0
 	_, err := llmRetry(context.Background(), "test", func(context.Context) (*provider.Response, error) {
