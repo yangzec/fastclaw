@@ -85,6 +85,12 @@ func (w *WeCom) heartbeat(ctx context.Context) {
 }
 
 func (w *WeCom) request(ctx context.Context, cmd, reqID string, body any) error {
+	_, err := w.requestFrame(ctx, cmd, reqID, body)
+	return err
+}
+
+func (w *WeCom) requestFrame(ctx context.Context, cmd, reqID string, body any) (wecomFrame, error) {
+	var zero wecomFrame
 	if reqID == "" {
 		reqID = wecomNewReqID()
 	}
@@ -98,16 +104,16 @@ func (w *WeCom) request(ctx context.Context, cmd, reqID string, body any) error 
 		w.mu.Unlock()
 	}()
 	if err := w.writeFrame(cmd, reqID, body); err != nil {
-		return err
+		return zero, err
 	}
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return zero, ctx.Err()
 	case fr := <-ch:
 		if fr.ErrCode != 0 {
-			return fmt.Errorf("wecom %s: %d %s", cmd, fr.ErrCode, fr.ErrMsg)
+			return fr, fmt.Errorf("wecom %s: %d %s", cmd, fr.ErrCode, fr.ErrMsg)
 		}
-		return nil
+		return fr, nil
 	}
 }
 

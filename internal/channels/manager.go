@@ -3,6 +3,9 @@ package channels
 import (
 	"context"
 	"log/slog"
+	"mime"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -241,6 +244,7 @@ func (m *Manager) routeOutbound(ctx context.Context) {
 // Sequential dispatch is guaranteed by routeOutbound's single-goroutine
 // design — chunks arrive in order at the adapter.
 func (m *Manager) dispatchOutbound(ch Channel, msg bus.OutboundMessage, key string) {
+	hydrateMediaPaths(&msg)
 	hasMarker := strings.Contains(msg.Text, SplitMessageMarker)
 	if !hasMarker {
 		if err := ch.SendMessage(msg); err != nil {
@@ -290,6 +294,34 @@ func (m *Manager) BotUsername(channel, accountID string) string {
 		return ""
 	}
 	return ch.BotUsername()
+}
+
+// hydrateMediaPaths turns host-path MEDIA: attachments into MediaItems
+// so every adapter (including those that never read MediaPaths, and
+// R2 deploys where the only durable copy is already in workspace.Store)
+// uploads bytes the same way. Unreadable paths are dropped.
+func hydrateMediaPaths(msg *bus.OutboundMessage) {
+	if msg == nil || len(msg.MediaPaths) == 0 {
+		return
+	}
+	for _, p := range msg.MediaPaths {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		data, err := os.ReadFile(p)
+		if err != nil || len(data) == 0 {
+			slog.Warn("outbound media path unreadable", "path", p, "error", err)
+			continue
+		}
+		base := filepath.Base(p)
+		msg.MediaItems = append(msg.MediaItems, bus.MediaItem{
+			Filename:    base,
+			ContentType: mime.TypeByExtension(filepath.Ext(base)),
+			Bytes:       data,
+		})
+	}
+	msg.MediaPaths = nil
 }
 
 // SendTyping sends a typing indicator for the given channel and chat.
