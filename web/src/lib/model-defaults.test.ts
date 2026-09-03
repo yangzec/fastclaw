@@ -87,6 +87,11 @@ test("modelLimitsTip names both defaults", () => {
   assert.match(modelLimitsTip("gpt-5.6").headline, /1\.05M/);
   assert.match(modelLimitsTip("gpt-5.6").headline, /64k/);
   assert.match(modelLimitsTip("gpt-5.5").headline, /32k/);
+  assert.match(modelLimitsTip("claude-sonnet-4-7").headline, /1M/);
+  assert.match(modelLimitsTip("claude-sonnet-4-7").body, /1M/);
+  assert.doesNotMatch(modelLimitsTip("claude-sonnet-4-7").body, /没认到/);
+  assert.match(modelLimitsTip("claude-haiku-4-5").body, /200k/);
+  assert.match(modelLimitsTip("kimi-k3").headline, /131k/);
 });
 
 test("suggestedMaxTokens differs for GPT-5.5 vs 5.6", () => {

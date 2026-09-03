@@ -195,7 +195,17 @@ export function knownMaxTokens(modelId: string): number {
   return 0;
 }
 
-export type ModelLimitFamily = "gpt-5.6" | "gpt-5.5" | "glm" | "kimi" | "grok" | "other";
+export type ModelLimitFamily =
+  | "gpt-5.6"
+  | "gpt-5.5"
+  | "glm"
+  | "kimi"
+  | "grok"
+  | "claude"
+  | "deepseek"
+  | "gemini"
+  | "qwen"
+  | "other";
 
 export function bareModelId(modelId: string): string {
   const id = modelId.trim().toLowerCase();
@@ -210,6 +220,10 @@ export function modelLimitFamily(modelId: string): ModelLimitFamily {
   if (id.startsWith("glm-")) return "glm";
   if (id === "k3" || id.startsWith("kimi")) return "kimi";
   if (id.startsWith("grok-")) return "grok";
+  if (id.startsWith("claude-")) return "claude";
+  if (id.startsWith("deepseek-")) return "deepseek";
+  if (id.includes("gemini-")) return "gemini";
+  if (id.startsWith("qwen")) return "qwen";
   return "other";
 }
 
@@ -326,10 +340,37 @@ export function modelLimitsTip(modelId: string): ModelLimitTip {
         headline: `Grok 推荐 · 上下文 ${ctx} · 输出 ${out}`,
         body: "4.6 / 4.5 官方窗口 500k，不是 1M。输出官方没写上限，32k 够用。",
       };
+    case "claude":
+      return {
+        headline: `Claude 推荐 · 上下文 ${ctx} · 输出 ${out}`,
+        body:
+          rec.contextWindow === 200_000
+            ? "Haiku 官方窗口 200k。输出目录没写上限，先 8k，长回复再往上加。"
+            : "Opus / Sonnet 官方窗口 1M。输出先 8k，写代码或长回复再加到 32k / 64k。",
+      };
+    case "deepseek":
+      return {
+        headline: `DeepSeek 推荐 · 上下文 ${ctx} · 输出 ${out}`,
+        body: "V4 官方窗口 1M。输出没写进目录，先 8k，截断再往上加。",
+      };
+    case "gemini":
+      return {
+        headline: `Gemini 推荐 · 上下文 ${ctx} · 输出 ${out}`,
+        body: "3 Flash 官方窗口 1,048,576。输出先 8k，长回复再往上加。",
+      };
+    case "qwen":
+      return {
+        headline: `Qwen 推荐 · 上下文 ${ctx} · 输出 ${out}`,
+        body: "这档 Qwen3.5 本地默认按 256k 套。输出先 8k，截断再加。",
+      };
     default:
       return {
-        headline: `通用推荐 · 上下文 ${ctx} · 输出 ${out}`,
-        body: "没认到官方数字就用 200k / 8k。知道窗口再改；输出被截断再往上加。",
+        headline: knownContextWindow(modelId)
+          ? `已识别窗口 ${ctx} · 输出先 ${out}`
+          : `通用推荐 · 上下文 ${ctx} · 输出 ${out}`,
+        body: knownContextWindow(modelId)
+          ? `上下文按官方窗口套了 ${ctx}。输出上限没写进目录，先 ${out}，被截断再往上加。`
+          : "没认到官方数字就用 200k / 8k。知道窗口再改；输出被截断再往上加。",
       };
   }
 }
