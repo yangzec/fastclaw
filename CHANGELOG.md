@@ -107,6 +107,12 @@ action on upgrade — read those notes before deploying.
 
 ### Fixed
 
+- **Insert interrupts the current stream.** 插入 no longer waits for a
+  tool-round or completion boundary. The in-flight provider stream is
+  canceled; already-shown text stays as a partial bubble, and the same
+  turn continues with the inserted instruction so the model turns
+  around. Stop still cancels the whole turn and leaves the follow-up
+  queue intact.
 - **Mobile follow-up can insert.** Phones treat Enter as newline and
   have no ⌘/Ctrl+Enter, so a streaming turn used to leave only Stop
   and the 排队/插入 mode switch. The composer now shows both **排队**

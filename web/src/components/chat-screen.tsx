@@ -603,8 +603,8 @@ export function ChatScreen() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   // Codex-style follow-up: default is queue (run after this turn).
-  // "steer" injects into the in-flight turn at the next tool/model
-  // boundary. Persisted so the composer matches last session's choice.
+  // "steer" cancels the in-flight completion and redirects the same
+  // turn. Persisted so the composer matches last session's choice.
   const [followupBehavior, setFollowupBehavior] = useState<FollowupBehavior>(loadFollowupBehavior);
   const [queuedFollowups, setQueuedFollowups] = useState<QueuedFollowup[]>([]);
   // todo.md state for the current session — agent maintains the file,
@@ -1136,6 +1136,9 @@ export function ChatScreen() {
           case "steer": {
             claim();
             applySteerEvent(data.data?.content || "");
+            // Next tokens are a redirected reply — don't append them
+            // onto the interrupted bubble.
+            streamingMsgIdRef.current = null;
             break;
           }
           case "done": {
@@ -1999,6 +2002,7 @@ export function ChatScreen() {
             // running turn server-side. Render it as a user bubble
             // (reconciled against the optimistic pendingSteer bubble).
             applySteerEvent(evt.data?.content || "", turnAgent, turnSessionId);
+            startNewGroup();
             break;
           }
           case "error": {
