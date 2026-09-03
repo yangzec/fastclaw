@@ -26,6 +26,7 @@ export interface SkillEntryView {
   enabled?: boolean;
   apiKey?: string;
   env?: Record<string, string>;
+  inherit?: string;
 }
 
 export function looksLikeSecret(name: string): boolean {
@@ -105,7 +106,13 @@ export function ConfigureSkillDialog({
     }
     try {
       const resp = await updateSkillEntries(
-        { [skill.name]: { enabled: true, env: merged } },
+        {
+          [skill.name]: {
+            enabled: true,
+            env: merged,
+            inherit: existing?.inherit,
+          },
+        },
         agentId,
       );
       if (resp && resp.ok === false) {

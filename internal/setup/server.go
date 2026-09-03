@@ -111,14 +111,14 @@ func (s *Server) SetRuntimeManager(m *runtime.Manager) { s.runtimeMgr = m }
 
 // NewServer creates a setup wizard server on the given port.
 func NewServer(port int) *Server {
-	return &Server{port: port, bind: "loopback", startedAt: time.Now()}
+	return &Server{port: port, bind: config.DefaultBind(), startedAt: time.Now()}
 }
 
 // SetGatewayConfig sets the gateway configuration for bind address and HTTP endpoints.
 func (s *Server) SetGatewayConfig(cfg *config.GatewayCfg) {
 	s.gatewayCfg = cfg
 	if cfg.Bind != "" {
-		s.bind = cfg.Bind
+		s.bind = config.NormalizeBind(cfg.Bind)
 	}
 	if cfg.Port > 0 {
 		s.port = cfg.Port
@@ -429,6 +429,13 @@ func (s *Server) Run(ctx context.Context) error {
 	// Tasks
 	mux.HandleFunc("GET /api/tasks", admin(s.handleListTasks))
 
+	// Saved SSH hosts (per-user address book for ssh_exec).
+	mux.HandleFunc("GET /api/ssh-hosts", auth(s.handleListSSHHosts))
+	mux.HandleFunc("POST /api/ssh-hosts", auth(s.handleCreateSSHHost))
+	mux.HandleFunc("PUT /api/ssh-hosts/{id}", auth(s.handleUpdateSSHHost))
+	mux.HandleFunc("DELETE /api/ssh-hosts/{id}", auth(s.handleDeleteSSHHost))
+	mux.HandleFunc("POST /api/ssh-hosts/{id}/test", auth(s.handleTestSSHHost))
+
 	// Apikeys (per-user, with agent multi-select).
 	mux.HandleFunc("GET /api/apikeys", auth(s.handleListAPIKeys))
 	mux.HandleFunc("POST /api/apikeys", auth(s.handleCreateAPIKey))
@@ -466,12 +473,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	mux.Handle("/", spaHandler{fs: webRoot})
 
-	var addr string
-	if s.bind == "all" {
-		addr = fmt.Sprintf("0.0.0.0:%d", s.port)
-	} else {
-		addr = fmt.Sprintf("127.0.0.1:%d", s.port)
-	}
+	addr := config.ListenAddr(s.bind, s.port)
 	srv := &http.Server{Addr: addr, Handler: mux}
 
 	go func() {
@@ -485,7 +487,12 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("setup: listen %s: %w", addr, err)
 	}
-	slog.Info("web UI running", "url", fmt.Sprintf("http://localhost:%d", s.port))
+	slog.Info("web UI running", "addr", addr, "url", fmt.Sprintf("http://localhost:%d", s.port))
+	if config.NormalizeBind(s.bind) == config.BindAll {
+		for _, u := range config.LANHTTPURLs(s.port) {
+			slog.Info("web UI LAN", "url", u)
+		}
+	}
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return err
 	}

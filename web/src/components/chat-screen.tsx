@@ -1290,6 +1290,33 @@ export function ChatScreen() {
     }
   }, [urlSessionId, urlProjectId, sessionId, selectedAgent]);
 
+  // ChatScreen stays mounted across sidebar nav (agent layout-client),
+  // so the composer textarea does not remount when the user opens a new
+  // chat or switches sessions. Put the caret in the input on those
+  // transitions and on first mount. `messages.length === 0` is in the
+  // dep list because a cache-miss switch briefly renders the empty
+  // composer, then history lands and swaps in the compact textarea —
+  // without this, focus dies on that remount. rAF waits for the swap
+  // to commit so we focus the node that's actually on screen. A
+  // matching `fastclaw:focus-composer` event covers the "New chat"
+  // click when the URL is already the empty-chat route.
+  const composerIsEmpty = messages.length === 0;
+  useEffect(() => {
+    if (!selectedAgent) return;
+    const id = window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [urlSessionId, urlProjectId, selectedAgent, composerIsEmpty]);
+
+  useEffect(() => {
+    const onFocusComposer = () => {
+      window.requestAnimationFrame(() => textareaRef.current?.focus());
+    };
+    window.addEventListener("fastclaw:focus-composer", onFocusComposer);
+    return () => window.removeEventListener("fastclaw:focus-composer", onFocusComposer);
+  }, []);
+
   // Keep the local sessionTitle in sync with the session list. Unknown
   // sessions (brand-new, not saved yet) fall back to empty so the header
   // can render "New chat".
@@ -2411,6 +2438,9 @@ export function ChatScreen() {
     setSessionId(newId);
     setMessages([]);
     router.replace(`/agents/${selectedAgent}/chat/`);
+    // Same-URL New chat does not change pathname, so the conversation
+    // identity effect above will not re-run — focus explicitly.
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
   const handleSelectSession = (sid: string) => {

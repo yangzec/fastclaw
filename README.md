@@ -55,13 +55,15 @@ fastclaw
 
 ### 2. Dashboard
 
-Open `http://localhost:18953` and login with your admin token.
+Open `http://localhost:18953` on this machine, or `http://<lan-ip>:18953`
+from another device on the same network. The startup log prints the LAN
+URLs. Login with your admin token.
 
 - **Agents** — Create and manage agents, each with its own personality and model
 - **Skills** — Install shared skills from ClawHub or GitHub
 - **Models** — Configure LLM providers (OpenAI, Anthropic, Ollama, OpenRouter, etc.)
 - **API Keys** — Issue programmatic credentials (admin / user / agent tiers)
-- **Settings** — General (theme), Account (profile + password), Runtime (sandbox config; admin only)
+- **Settings** — General (theme), Account (profile + password), SSH Hosts (saved servers for `ssh_exec`), Runtime (sandbox config; admin only)
 
 > Non-admin users get scoped access to **Models**, **API Keys**, and
 > **Settings (General + Account)** out of the box. They see admin-shared
@@ -131,16 +133,17 @@ table and is edited through the dashboard or `fastclaw agents config`.
 - Sessions are isolated per channel + chatID, so a user's Telegram thread and Discord thread stay separate
 
 ### Tools & Sandbox
-- Built-in: exec, read_file, write_file, list_dir, web_fetch, web_search, memory_search
+- Built-in: exec, ssh_exec, read_file, write_file, list_dir, web_fetch, web_search, memory_search
+- Saved SSH hosts (Settings → SSH Hosts): store a public key or password once; the owner’s agent connects by alias so credentials never enter chat
 - E2B cloud sandbox or Docker sandbox — automatic skill + workspace hydrate, post-exec sync (sandbox-side files mirrored back to the durable store after every tool call)
 - Sandbox is a **boundary on hosted deploys, a tool on self-hosted installs**: with `FASTCLAW_DEPLOY=hosted` every exec/file call is locked inside the sandbox; on a self-hosted install the host shell stays the default and the model opts into the sandbox per call with `exec(sandbox:true)`. Set `FASTCLAW_SANDBOX_ENFORCE=1` to get the hosted-style lockdown on a self-hosted install (recommended when agents are exposed to untrusted IM chatters)
-- MCP server support
-- Plugin system (JSON-RPC subprocess)
+- MCP server support — paste Cursor / Claude Desktop `mcp.json` in the MCP catalog (or use the form). Share with agents is opt-in (`inherit=all`). Agents can overlay or disable a shared server by name. System catalog is isolated from other tenants
+- Plugin system (JSON-RPC subprocess) — enable to start the process, Share with agents to attach hooks, override per-agent
 
 ### Skills
 - Bundled skills: code-runner, image-gen, data-analysis, translation, web-search, skill-creator
 - Install from [ClawHub](https://clawhub.ai) or [skills.sh](https://skills.sh)
-- Agent-private or globally shared
+- Agent-private or globally shared (Share with agents / `inherit=all` is opt-in; catalog-only by default)
 
 ### Memory
 - MEMORY.md — long-term facts, auto-updated by heartbeat
@@ -178,7 +181,7 @@ database and is edited through the dashboard or `fastclaw agents config`.
 |---|---|---|
 | `FASTCLAW_HOME` | `~/.fastclaw` | Where the SQLite DB and skill folders live. |
 | `FASTCLAW_PORT` | `18953` | Gateway HTTP port. |
-| `FASTCLAW_BIND` | `loopback` | `loopback` (127.0.0.1) or `all` (0.0.0.0). |
+| `FASTCLAW_BIND` | `all` | `all` (0.0.0.0, LAN-reachable) or `loopback` (127.0.0.1 only). |
 | `FASTCLAW_STORAGE_TYPE` | `sqlite` | `sqlite` or `postgres`. |
 | `FASTCLAW_STORAGE_DSN` | empty | Postgres DSN, e.g. `postgres://u:p@host:5432/db?sslmode=disable`. Empty = sqlite at `$FASTCLAW_HOME/fastclaw.db`. |
 | `FASTCLAW_STORAGE_AUTO_MIGRATE` | `true` | Apply schema migrations on boot. |

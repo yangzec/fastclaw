@@ -111,6 +111,7 @@ var agentModules = []moduleEntry{
 	// ── Operational block (middle) ──
 	{"confidentiality", modConfidentiality},
 	{"sandbox", modSandbox},
+	{"ssh_hosts", modSSHHosts},
 	{"task_delegation", modTaskDelegation},
 	{"skills", modSkills},
 	{"group_chat", modGroupChat},
@@ -717,6 +718,18 @@ Then in your final reply, write: ![](/workspace/output.png)`
 		prompt += "\n- The sandbox is a Docker container."
 	}
 	return prompt
+}
+
+// modSSHHosts tells the owner they can reach saved hosts by alias.
+// Guests get nothing — ssh_exec already refuses them.
+func modSSHHosts(p *promptCtx) string {
+	if !p.trusted {
+		return ""
+	}
+	return `# Saved SSH hosts
+You can run commands on the owner's saved servers with ssh_exec(host, command).
+Use the alias from Settings → SSH Hosts (for example gpu-box), not an IP or hostname.
+FastClaw injects the saved public key or password. Never ask the user for a password or private key, and never put credentials in exec() or in your reply.`
 }
 
 // modSandboxOptional briefs the model for self-hosted installs where a

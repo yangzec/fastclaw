@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { Plug } from "lucide-react";
+import { Plug, Undo2 } from "lucide-react";
 import {
   getAgent,
+  inheritsToAgents,
   listHookPlugins,
   updateAgent,
   type HookPlugin,
@@ -14,11 +16,9 @@ import {
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { useAgentName } from "@/hooks/use-agent-name";
 
-// Per-agent plugin enable tab. Mirrors the Skills page layout (cards
-// grid with header). Off by default — plugins listed here come from
-// the system install; flipping a toggle attaches the plugin's hooks
-// to THIS agent only. See registerHookPluginsForAgent in
-// internal/gateway/userspace.go for the opt-in semantics.
+// Per-agent plugin enable tab. A catalog item is inherited only when
+// it is enabled AND inherit=all. Otherwise it stays Available until
+// this agent opts in. Reset drops the overlay.
 export default function AgentPluginsPage() {
   const agentId = useAgentIdFromURL();
   const agentName = useAgentName(agentId);
@@ -50,14 +50,51 @@ export default function AgentPluginsPage() {
     fetchAll();
   }, [fetchAll]);
 
-  // Per-plugin toggle. Patch-semantic so flipping one doesn't clobber
-  // overrides for sibling plugins. Optimistic update with rollback.
   const handleToggle = async (pluginID: string, next: boolean) => {
-    const prev = pluginEnabled[pluginID] === true;
+    const prevOverlay = pluginEnabled[pluginID];
+    const hadOverlay = Object.prototype.hasOwnProperty.call(pluginEnabled, pluginID);
     setPluginEnabled((m) => ({ ...m, [pluginID]: next }));
     setPluginSaving((m) => ({ ...m, [pluginID]: true }));
     try {
       await updateAgent(agentId, { plugins: { [pluginID]: next } });
+    } catch {
+      setPluginEnabled((m) => {
+        const copy = { ...m };
+        if (hadOverlay) copy[pluginID] = prevOverlay;
+        else delete copy[pluginID];
+        return copy;
+      });
+    } finally {
+      setPluginSaving((m) => {
+        const copy = { ...m };
+        delete copy[pluginID];
+        return copy;
+      });
+    }
+  };
+
+  const handleReset = async (pluginID: string) => {
+    const prev = pluginEnabled[pluginID];
+    setPluginEnabled((m) => {
+      const copy = { ...m };
+      delete copy[pluginID];
+      return copy;
+    });
+    setPluginSaving((m) => ({ ...m, [pluginID]: true }));
+    try {
+      // Clearing a single key: rewrite the overlay without it.
+      const next: Record<string, boolean> = {};
+      for (const [k, v] of Object.entries(pluginEnabled)) {
+        if (k !== pluginID) next[k] = v;
+      }
+      if (Object.keys(next).length === 0) {
+        await updateAgent(agentId, { pluginsReset: true });
+      } else {
+        // Whole-map replace isn't available — patch only adds keys.
+        // Reset then re-apply remaining overrides.
+        await updateAgent(agentId, { pluginsReset: true });
+        await updateAgent(agentId, { plugins: next });
+      }
     } catch {
       setPluginEnabled((m) => ({ ...m, [pluginID]: prev }));
     } finally {
@@ -83,11 +120,9 @@ export default function AgentPluginsPage() {
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">Plugins</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Hook plugins discovered on this install — enable per-agent for{" "}
-          <strong>{agentName}</strong>. Off by default; plugins only
-          fire on agents you explicitly turn on. Follow-up messages flow
-          back through <code className="text-[10px]">chat.send</code> —
-          they don&apos;t trigger another agent turn.
+          Hook plugins for <strong>{agentName}</strong>. Inherited only
+          when the catalog item is shared with agents; otherwise opt in
+          here.
         </p>
       </div>
 
@@ -112,7 +147,9 @@ export default function AgentPluginsPage() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {hookPlugins.map((p) => {
-            const enabled = pluginEnabled[p.id] === true;
+            const hasOverlay = Object.prototype.hasOwnProperty.call(pluginEnabled, p.id);
+            const inherited = p.enabled === true && inheritsToAgents(p.inherit);
+            const enabled = hasOverlay ? pluginEnabled[p.id] === true : inherited;
             const saving = pluginSaving[p.id] === true;
             return (
               <div
@@ -128,11 +165,26 @@ export default function AgentPluginsPage() {
                       <p className="text-sm font-medium truncate">
                         {p.name || p.id}
                       </p>
-                      {p.version && (
-                        <Badge variant="outline" className="mt-1 text-[10px]">
-                          v{p.version}
-                        </Badge>
-                      )}
+                      <div className="mt-1 flex flex-wrap items-center gap-1">
+                        {p.version && (
+                          <Badge variant="outline" className="text-[10px]">
+                            v{p.version}
+                          </Badge>
+                        )}
+                        {hasOverlay ? (
+                          <Badge variant="outline" className="text-[10px]">
+                            Override
+                          </Badge>
+                        ) : inherited ? (
+                          <Badge variant="secondary" className="text-[10px]">
+                            Inherited
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-[10px]">
+                            Available
+                          </Badge>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <Switch
@@ -147,9 +199,23 @@ export default function AgentPluginsPage() {
                     {p.description}
                   </p>
                 )}
-                <code className="text-[10px] text-muted-foreground/70 mt-3 block truncate">
-                  {p.id}
-                </code>
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <code className="text-[10px] text-muted-foreground/70 truncate">
+                    {p.id}
+                  </code>
+                  {hasOverlay && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      disabled={saving}
+                      onClick={() => handleReset(p.id)}
+                    >
+                      <Undo2 className="h-3 w-3 mr-1" />
+                      Inherit
+                    </Button>
+                  )}
+                </div>
               </div>
             );
           })}

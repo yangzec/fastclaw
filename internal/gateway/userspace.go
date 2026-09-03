@@ -246,6 +246,9 @@ func assembleConfig(ctx context.Context, st store.Store, userID, agentID string)
 	if err := scope.SettingInto(ctx, st, NSPlugins, userID, agentID, &cfg.Plugins); err != nil {
 		return nil, err
 	}
+	if err := mergeInheritableMCP(ctx, st, userID, &cfg.MCPServers); err != nil {
+		return nil, err
+	}
 	if err := scope.SettingInto(ctx, st, NSTaskQueue, userID, agentID, &cfg.TaskQueue); err != nil {
 		return nil, err
 	}
@@ -313,6 +316,38 @@ func assembleConfig(ctx context.Context, st store.Store, userID, agentID string)
 	return cfg, nil
 }
 
+// mergeInheritableMCP copies system + user MCP servers that opted into
+// inherit=all. System inherit=none stays in the admin catalog and does
+// not leak into other tenants' agents. User inherit=all stays inside
+// that tenant. Agent overlays are applied later in MergedAgentConfig.
+func mergeInheritableMCP(ctx context.Context, st store.Store, userID string, dst *map[string]config.MCPServerConfig) error {
+	system := map[string]config.MCPServerConfig{}
+	if err := scope.SettingAt(ctx, st, NSMCPServers, "", "", &system); err != nil {
+		return err
+	}
+	user := map[string]config.MCPServerConfig{}
+	if userID != "" {
+		if err := scope.SettingAt(ctx, st, NSMCPServers, userID, "", &user); err != nil {
+			return err
+		}
+	}
+	out := map[string]config.MCPServerConfig{}
+	for k, v := range system {
+		if config.InheritsToAgents(v.Inherit) {
+			out[k] = v
+		}
+	}
+	for k, v := range user {
+		if config.InheritsToAgents(v.Inherit) {
+			out[k] = v
+		}
+	}
+	if len(out) > 0 {
+		*dst = out
+	}
+	return nil
+}
+
 // UserSpace holds the per-user runtime: their config snapshot, LLM
 // provider, agent manager, and a sandbox pool reference. Lazy-loaded
 // on first auth.
@@ -340,7 +375,7 @@ type UserSpace struct {
 	mu sync.Mutex
 }
 
-// readUserScopeAgentDefaults reads the (user=X, agent='') agents.defaults
+// readUserScopeAgentDefaults reads the (user=X, agent=”) agents.defaults
 // row raw — distinct from assembleConfig, which merges system + user and
 // can't tell apart "user explicitly chose the system value" from "no
 // user-scope row at all". EnsureAgent uses this to detect a chatter's
@@ -827,8 +862,10 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 
 	// Wire hook plugins onto each agent's HookRegistry. Per-agent
 	// enable comes from the configs row at (scope=agent, agent_id=X,
-	// name=plugins.enabled) — falling back to the plugin manifest's
-	// boot-time enabled state when there's no per-agent override.
+	// name=plugins.enabled). Missing keys inherit the system-wide
+	// plugins.entries[id].enabled flag (same row the global Plugins
+	// page writes). Explicit false on the agent overlay turns an
+	// inherited plugin off for that agent only.
 	if pluginMgr != nil {
 		for _, ag := range agentMgr.All() {
 			registerHookPluginsForAgent(ctx, pluginMgr, st, ag)
@@ -849,20 +886,14 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 }
 
 // registerHookPluginsForAgent walks every running hook-type plugin
-// and attaches it to ag.HookRegistry IF this agent has explicitly
-// opted in via the per-agent plugins.enabled row.
+// and attaches it to ag.HookRegistry when the effective enable
+// state is on. Effective = per-agent overlay if present, otherwise
+// Enabled AND inherit=all on the system/owner catalog. A plugin
+// that is merely enabled stays catalog-only (default-deny inherit).
 //
-// Default is OPT-IN: a plugin being enabled system-wide only means
-// its process runs and is available to attach. Each agent must
-// individually set `plugins.enabled[<id>] = true` (via the dashboard
-// Plugins card or directly in the configs table) for the plugin's
-// hooks to fire on its turns. System-wide enable without per-agent
-// opt-in = plugin idle for that agent.
-//
-// Rationale: hook plugins can change agent behavior in surprising
-// ways (extra messages, modified prompts, recorded conversation
-// data). Default-deny avoids accidentally affecting agents the
-// operator didn't intend.
+// Explicit false on the overlay hides an inherited plugin without
+// touching the shared definition. Explicit true opts the agent in
+// even when inherit is none.
 //
 // Idempotent at the manager level (Process is already running), but
 // the HookRegistry side accumulates — call sites must not double-
@@ -871,18 +902,18 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 // foreign attach), neither of which fires twice for the same agent.
 func registerHookPluginsForAgent(ctx context.Context, pluginMgr *plugin.Manager, st store.Store, ag *agent.Agent) {
 	overrides := readAgentScopePluginsEnabled(ctx, st, ag.Name())
-	if len(overrides) == 0 {
-		return // fast path: no opt-ins for this agent
+	ownerID := ""
+	if rec, err := st.GetAgent(ctx, ag.Name()); err == nil && rec != nil {
+		ownerID = rec.UserID
 	}
+	entries := inheritablePluginEntries(ctx, st, ownerID)
 	for _, inst := range pluginMgr.HookPlugins() {
 		id := inst.Manifest.ID
-		// Opt-in: only attach if this agent explicitly set true.
-		// Missing key or explicit false → skip.
-		if !overrides[id] {
+		if !pluginEnabledForAgent(overrides, entries, id) {
 			continue
 		}
 		if inst.Process == nil || !inst.Process.IsRunning() {
-			slog.Warn("plugin: agent opted in but plugin not running",
+			slog.Warn("plugin: enabled for agent but plugin not running",
 				"plugin", id, "agent", ag.Name())
 			continue
 		}
@@ -891,6 +922,44 @@ func registerHookPluginsForAgent(ctx context.Context, pluginMgr *plugin.Manager,
 				"plugin", id, "agent", ag.Name(), "error", err)
 		}
 	}
+}
+
+// inheritablePluginEntries merges system then owner-user plugin
+// entries. Used only for attach decisions — process start still
+// reads the system PluginsCfg at gateway boot.
+func inheritablePluginEntries(ctx context.Context, st store.Store, ownerUserID string) map[string]config.PluginEntryCfg {
+	system := readSystemPlugins(st)
+	out := map[string]config.PluginEntryCfg{}
+	for k, v := range system.Entries {
+		out[k] = v
+	}
+	if ownerUserID != "" && st != nil {
+		var user config.PluginsCfg
+		if err := scope.SettingAt(ctx, st, NSPlugins, ownerUserID, "", &user); err == nil {
+			for k, v := range user.Entries {
+				out[k] = v
+			}
+		}
+	}
+	return out
+}
+
+// pluginEnabledForAgent resolves hook-plugin enable for one agent.
+// Overlay wins when the key is present (true or false). Otherwise
+// the plugin attaches only when Enabled AND inherit=all. Missing
+// both → false (catalog / opt-in).
+func pluginEnabledForAgent(overrides map[string]bool, entries map[string]config.PluginEntryCfg, id string) bool {
+	if overrides != nil {
+		if v, ok := overrides[id]; ok {
+			return v
+		}
+	}
+	if entries != nil {
+		if e, ok := entries[id]; ok {
+			return e.Enabled && config.InheritsToAgents(e.Inherit)
+		}
+	}
+	return false
 }
 
 // readAgentScopePluginsEnabled reads the per-agent plugin enable
@@ -1121,7 +1190,7 @@ func (r *userSpaceRegistry) startEvictor(ctx context.Context) {
 // per Account.
 //
 // Pulls rows from three ownership corners this user can route:
-//   - (user_id='', agent_id=Y): the agent's "official" rows for any
+//   - (user_id=”, agent_id=Y): the agent's "official" rows for any
 //     agent Y the user owns (legacy / pre-refactor data)
 //   - (user_id=userID, agent_id=Y) where user owns Y: this user's
 //     bindings on their own agent (the normal post-refactor pattern)

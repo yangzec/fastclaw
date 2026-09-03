@@ -13,6 +13,7 @@ import (
 	"github.com/fastclaw-ai/fastclaw/internal/config"
 	"github.com/fastclaw-ai/fastclaw/internal/provider"
 	"github.com/fastclaw-ai/fastclaw/internal/session"
+	"github.com/fastclaw-ai/fastclaw/internal/sshhosts"
 	"github.com/fastclaw-ai/fastclaw/internal/store"
 	"github.com/fastclaw-ai/fastclaw/internal/usage"
 	"github.com/fastclaw-ai/fastclaw/internal/workspace"
@@ -278,6 +279,9 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 		// rides the same guard as cron.
 		tools.RegisterTimezoneTool(ag.registry, m.opts.dataStore)
 		tools.RegisterPreferenceTool(ag.registry, m.opts.dataStore)
+		if box, err := sshhosts.OpenBox(); err == nil && m.uid != "" {
+			tools.RegisterSSHExec(ag.registry, m.opts.dataStore, box, m.uid)
+		}
 		// /goal feature: token-accounting hook + update_goal tool, all
 		// keyed on the agent's owner (set above by SetOwnerUserID).
 		// Same dataStore guard as cron because both features need the

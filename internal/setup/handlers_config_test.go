@@ -157,11 +157,21 @@ func TestUpdateConfigMaskedAgentSkillEntryKeepsStoredSecret(t *testing.T) {
 	}
 }
 
+func TestMaskAPIKeyLeavesEmptyUnset(t *testing.T) {
+	if got := maskAPIKey(""); got != "" {
+		t.Fatalf("empty apiKey should stay empty, got %q", got)
+	}
+	if got := maskSkillEntry(config.SkillEntryCfg{Inherit: config.InheritAll}).APIKey; got != "" {
+		t.Fatalf("inherit-only entry must not look configured, apiKey=%q", got)
+	}
+}
+
 func TestMergeSkillEntry(t *testing.T) {
 	existing := config.SkillEntryCfg{
 		Enabled: true,
 		APIKey:  "real-secret-key-123456",
 		Env:     map[string]string{"API_TOKEN": "real-env-secret-987654", "NORMAL_VAR": "old"},
+		Inherit: config.InheritAll,
 	}
 	in := config.SkillEntryCfg{
 		Enabled: false,
@@ -181,11 +191,161 @@ func TestMergeSkillEntry(t *testing.T) {
 	if out.Enabled != in.Enabled {
 		t.Errorf("enabled should follow the request, got %v", out.Enabled)
 	}
+	if out.Inherit != existing.Inherit {
+		t.Errorf("omitted inherit should keep stored value, got %q", out.Inherit)
+	}
 
 	// A genuinely new value (no mask) must replace the stored one.
 	out = mergeSkillEntry(existing, config.SkillEntryCfg{APIKey: "brand-new-key-000000"})
 	if out.APIKey != "brand-new-key-000000" {
 		t.Errorf("unmasked apiKey should replace the stored one, got %q", out.APIKey)
+	}
+}
+
+func TestGetConfigIsolatesSystemSkillsAndPluginsFromOtherTenants(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, adminUser, regularUser := newAuthTestServer(t, ctx)
+
+	rr := httptest.NewRecorder()
+	s.authMiddleware(s.handleUpdateConfig)(rr, configTestRequest(t, ctx, resolver, http.MethodPost, "/api/config", adminUser.ID, map[string]any{
+		"skills": map[string]any{
+			"entries": map[string]any{
+				"image-gen": map[string]any{"apiKey": "sk-system-skill-secret-9999", "inherit": "all"},
+			},
+		},
+		"plugins": map[string]any{
+			"enabled": true,
+			"entries": map[string]any{
+				"mem0": map[string]any{"enabled": true, "inherit": "all", "config": map[string]any{"token": "plugin-secret"}},
+			},
+		},
+	}))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin POST status = %d body = %s", rr.Code, rr.Body.String())
+	}
+
+	get := httptest.NewRecorder()
+	s.authMiddleware(s.handleGetConfig)(get, configTestRequest(t, ctx, resolver, http.MethodGet, "/api/config", regularUser.ID, nil))
+	if get.Code != http.StatusOK {
+		t.Fatalf("user GET status = %d", get.Code)
+	}
+	var view struct {
+		Skills struct {
+			Entries map[string]config.SkillEntryCfg `json:"entries"`
+		} `json:"skills"`
+		Plugins struct {
+			Entries map[string]config.PluginEntryCfg `json:"entries"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(get.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := view.Skills.Entries["image-gen"]; ok {
+		t.Fatalf("tenant B must not see system skill catalog: %+v", view.Skills.Entries)
+	}
+	if _, ok := view.Plugins.Entries["mem0"]; ok {
+		t.Fatalf("tenant B must not see system plugin catalog: %+v", view.Plugins.Entries)
+	}
+}
+
+func TestGetConfigIsolatesSystemMCPFromOtherTenants(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, adminUser, regularUser := newAuthTestServer(t, ctx)
+
+	rr := httptest.NewRecorder()
+	s.authMiddleware(s.handleUpdateConfig)(rr, configTestRequest(t, ctx, resolver, http.MethodPost, "/api/config", adminUser.ID, map[string]any{
+		"mcpServers": map[string]any{
+			"platform-secret": map[string]any{
+				"type":    "http",
+				"url":     "https://mcp.example/private",
+				"headers": map[string]any{"Authorization": "Bearer tenant-a-secret-9999"},
+			},
+		},
+	}))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin POST status = %d body = %s", rr.Code, rr.Body.String())
+	}
+
+	get := httptest.NewRecorder()
+	s.authMiddleware(s.handleGetConfig)(get, configTestRequest(t, ctx, resolver, http.MethodGet, "/api/config", regularUser.ID, nil))
+	if get.Code != http.StatusOK {
+		t.Fatalf("user GET status = %d", get.Code)
+	}
+	var view struct {
+		MCPServers map[string]config.MCPServerConfig `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(get.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := view.MCPServers["platform-secret"]; ok {
+		t.Fatalf("tenant B must not see tenant-A/system MCP catalog: %+v", view.MCPServers)
+	}
+}
+
+func TestUpdateConfigMaskedMCPServerKeepsStoredSecret(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, adminUser, _ := newAuthTestServer(t, ctx)
+
+	post := func(body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		s.authMiddleware(s.handleUpdateConfig)(rr, configTestRequest(t, ctx, resolver, http.MethodPost, "/api/config", adminUser.ID, body))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("POST /api/config status = %d, body = %s", rr.Code, rr.Body.String())
+		}
+		return rr
+	}
+	stored := func() config.MCPServerConfig {
+		t.Helper()
+		rec, err := s.dataStore.GetConfigByName(ctx, store.KindSetting, "", "", "mcpServers")
+		if err != nil || rec == nil {
+			t.Fatalf("GetConfigByName: rec=%v err=%v", rec, err)
+		}
+		blob, _ := json.Marshal(rec.Data)
+		var servers map[string]config.MCPServerConfig
+		if err := json.Unmarshal(blob, &servers); err != nil {
+			t.Fatalf("decode mcpServers: %v", err)
+		}
+		return servers["postgres"]
+	}
+
+	post(map[string]any{"mcpServers": map[string]any{
+		"postgres": map[string]any{
+			"type":    "http",
+			"url":     "https://mcp.example.com",
+			"headers": map[string]any{"Authorization": "Bearer real-mcp-token-123456"},
+			"env":     map[string]any{"API_KEY": "real-mcp-key-abcdef", "REGION": "us"},
+		},
+	}})
+	if got := stored(); got.Headers["Authorization"] != "Bearer real-mcp-token-123456" || got.Env["API_KEY"] != "real-mcp-key-abcdef" {
+		t.Fatalf("initial save lost secrets: %+v", got)
+	}
+
+	get := httptest.NewRecorder()
+	s.authMiddleware(s.handleGetConfig)(get, configTestRequest(t, ctx, resolver, http.MethodGet, "/api/config", adminUser.ID, nil))
+	if get.Code != http.StatusOK {
+		t.Fatalf("GET /api/config status = %d", get.Code)
+	}
+	var view struct {
+		MCPServers map[string]config.MCPServerConfig `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(get.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode GET: %v", err)
+	}
+	masked := view.MCPServers["postgres"]
+	if masked.Headers["Authorization"] == "Bearer real-mcp-token-123456" || masked.Env["API_KEY"] == "real-mcp-key-abcdef" {
+		t.Fatalf("GET leaked plaintext MCP secrets: %+v", masked)
+	}
+	if masked.Env["REGION"] != "us" {
+		t.Fatalf("non-secret env should stay plaintext, got %q", masked.Env["REGION"])
+	}
+
+	post(map[string]any{"mcpServers": map[string]any{"postgres": masked}})
+	if got := stored(); got.Headers["Authorization"] != "Bearer real-mcp-token-123456" {
+		t.Fatalf("masked write-back clobbered header: got %q", got.Headers["Authorization"])
+	}
+	if got := stored(); got.Env["API_KEY"] != "real-mcp-key-abcdef" {
+		t.Fatalf("masked write-back clobbered env API_KEY: got %q", got.Env["API_KEY"])
 	}
 }
 

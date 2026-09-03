@@ -11,11 +11,16 @@
 //	      per-(user, agent) (user=X, agent=Y)
 //
 // kind="provider": name is the provider key ("openai"). Inner rows
-//   replace outer entries entirely (no field-level merge).
+//
+//	replace outer entries entirely (no field-level merge).
+//
 // kind="channel":  name is the channel type ("telegram"). A disabled inner
-//   row erases the outer entry — lets a user opt out of a system-wide bot.
+//
+//	row erases the outer entry — lets a user opt out of a system-wide bot.
+//
 // kind="setting":  name is the namespace ("agents.defaults", "sandbox", …).
-//   Top-level keys merge field-wise; inner-scope keys win.
+//
+//	Top-level keys merge field-wise; inner-scope keys win.
 package scope
 
 import (
@@ -116,7 +121,7 @@ func Providers(ctx context.Context, st store.Store, userID, agentID string) (map
 	return out, nil
 }
 
-// AgentScopeProviders returns providers stored at (user='', agent=Y)
+// AgentScopeProviders returns providers stored at (user=”, agent=Y)
 // only — the agent's "official" rows, without system or user layers
 // merged in. Use this to overlay an agent's own rows on top of an
 // already system+user-merged view: re-running the full Providers walk
@@ -140,7 +145,7 @@ func AgentScopeProviders(ctx context.Context, st store.Store, agentID string) (m
 	return out, nil
 }
 
-// UserScopeProviders returns providers stored at (user=X, agent='')
+// UserScopeProviders returns providers stored at (user=X, agent=”)
 // only — the user's personal rows, without the system layer. Used by
 // the foreign-agent path so a viewer can fall back to the owner's
 // provider credentials without dragging the owner's full merged view
@@ -256,6 +261,30 @@ func Setting(ctx context.Context, st store.Store, namespace, userID, agentID str
 		}
 	}
 	return out, nil
+}
+
+// SettingAt unmarshals one ownership layer (no merge) into dst.
+// Missing row is a no-op. Use this when a caller must not let a
+// system catalog leak into another tenant.
+func SettingAt(ctx context.Context, st store.Store, namespace, userID, agentID string, dst interface{}) error {
+	if st == nil {
+		return errors.New("scope.SettingAt: store is required")
+	}
+	rec, err := st.GetConfigByName(ctx, store.KindSetting, userID, agentID, namespace)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if rec == nil || len(rec.Data) == 0 {
+		return nil
+	}
+	blob, err := json.Marshal(rec.Data)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(blob, dst)
 }
 
 // SettingInto resolves Setting and unmarshals the merged JSON into dst.

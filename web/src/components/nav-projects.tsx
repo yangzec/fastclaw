@@ -77,7 +77,10 @@ export function NavSessions({
       // the target, otherwise tapping the current chat leaves the
       // drawer covering the conversation.
       setOpenMobile(false);
-      if (here) return;
+      if (here) {
+        window.dispatchEvent(new Event("fastclaw:focus-composer"));
+        return;
+      }
       if (inFlightTargetRef.current === target) return;
       inFlightTargetRef.current = target;
       router.push(target);

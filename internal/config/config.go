@@ -60,6 +60,55 @@ type MCPServerConfig struct {
 	Command string            `json:"command,omitempty"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
+	// Disabled lets an agent overlay hide an inherited (system/user)
+	// server without deleting the shared definition. The MCP manager
+	// skips disabled entries at connect time.
+	Disabled bool `json:"disabled,omitempty"`
+	// Inherit controls whether agents automatically receive this
+	// server. Empty / "none" = catalog only (default). "all" = every
+	// agent that can see this config row. System-scope "all" is the
+	// explicit platform-wide share; user-scope "all" stays inside
+	// that tenant.
+	Inherit string `json:"inherit,omitempty"`
+}
+
+// ResolvedTransport maps a stored MCP entry onto the two transports
+// the manager understands. Cursor / Claude Desktop snippets often omit
+// `type` or use sse / streamable-http — url means http, command means
+// stdio.
+func (c MCPServerConfig) ResolvedTransport() string {
+	switch strings.ToLower(strings.TrimSpace(c.Type)) {
+	case "http", "sse", "streamable-http", "streamable_http":
+		return "http"
+	case "stdio", "command":
+		return "stdio"
+	}
+	if strings.TrimSpace(c.URL) != "" {
+		return "http"
+	}
+	if strings.TrimSpace(c.Command) != "" {
+		return "stdio"
+	}
+	return c.Type
+}
+
+// InheritNone / InheritAll are the persistable inherit values.
+const (
+	InheritNone = "none"
+	InheritAll  = "all"
+)
+
+// InheritsToAgents reports whether a newly saved catalog item should
+// be attached to agents. Empty means none — operators must opt in.
+func InheritsToAgents(inherit string) bool {
+	return inherit == InheritAll
+}
+
+// SkillInheritsToAgents is the skill-catalog rule. Same as MCP and
+// plugins: only inherit=all attaches. Empty / missing / none stays
+// catalog-only until an operator turns on Share with agents.
+func SkillInheritsToAgents(entry SkillEntryCfg) bool {
+	return InheritsToAgents(entry.Inherit)
 }
 
 // CronJob defines a scheduled job loaded into the gateway's runtime.
@@ -160,7 +209,11 @@ type PluginsCfg struct {
 }
 
 type PluginEntryCfg struct {
-	Enabled bool                   `json:"enabled"`
+	Enabled bool `json:"enabled"`
+	// Inherit mirrors MCPServerConfig.Inherit. Enabled starts the
+	// process; inherit=all attaches hooks to agents that can see
+	// this row. Empty / none = available, agent opt-in only.
+	Inherit string                 `json:"inherit,omitempty"`
 	Config  map[string]interface{} `json:"config,omitempty"`
 }
 
@@ -643,6 +696,9 @@ type SkillEntryCfg struct {
 	Enabled bool              `json:"enabled"`
 	APIKey  string            `json:"apiKey,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
+	// Inherit: empty / none = catalog only (default). "all" attaches
+	// this skill to agents that can see the row.
+	Inherit string `json:"inherit,omitempty"`
 }
 
 type SkillsLoadCfg struct {
@@ -840,6 +896,9 @@ func (cfg *Config) MergedAgentConfig(entry AgentEntry) ResolvedAgent {
 	if len(cfg.MCPServers) > 0 {
 		resolved.MCPServers = make(map[string]MCPServerConfig, len(cfg.MCPServers))
 		for k, v := range cfg.MCPServers {
+			if !InheritsToAgents(v.Inherit) {
+				continue
+			}
 			resolved.MCPServers[k] = v
 		}
 	}

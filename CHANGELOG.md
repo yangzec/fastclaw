@@ -13,6 +13,41 @@ action on upgrade — read those notes before deploying.
   composer to **插入** (or press ⌘/Ctrl+Enter / TUI Ctrl+S) to steer
   the in-flight turn. Per-item **插入** promotes a queued line; Stop
   still aborts and leaves the queue intact.
+- **MCP JSON configuration.** Add or edit catalog / agent MCP
+  servers by pasting Cursor or Claude Desktop `mcp.json` (or a
+  name→config map). `type` is optional — `url` means http, `command`
+  means stdio. The form editor is still available as a second tab.
+- **Composer autofocus on new and switched chats.** Opening a new
+  conversation or switching sessions (including project chats) puts
+  the caret in the message box. A second click on New chat does the
+  same even when the URL is already the empty-chat route.
+- **Configurable inherit scope for MCP, plugins, and skills.**
+  Catalog items are no longer attached to every agent by default.
+  MCP, plugins, and skills all use `inherit: "all" | "none"`
+  (empty = none): Share with agents is an explicit opt-in in the
+  admin catalog. **BREAKING:** global / bundled skills no longer
+  attach until an operator turns that switch on. Agent-local,
+  personal, and team copies still load without the flag. System
+  `inherit=all` is the only platform-wide share; a user-scope
+  `inherit=all` stays inside that tenant.
+- **Multi-tenant isolation for global catalogs.** GET `/api/config`
+  no longer merges system MCP / plugin entries / skill entries into
+  another tenant's editor view, so platform secrets are not leaked
+  or written back into a user row. Runtime attach still applies
+  system `inherit=all` items. Plugin binaries and the
+  `~/.fastclaw/skills` tree remain install-wide.
+- **Global MCP servers.** The sidebar has an MCP page (platform
+  admin edits the system catalog; other users edit their own) that
+  writes `mcpServers` through `/api/config`. Same-name agent
+  overlays still win. An agent can disable an inherited server
+  (`disabled: true`) without deleting the shared definition.
+  Secrets in headers/env are masked on GET and restored on a
+  no-op save. The agent MCP page lists `inheritedMcpServers`
+  so Inherited badges match runtime attach.
+- **Plugin process vs inherit.** Enabling a plugin starts the
+  process. Share with agents attaches its hooks. An agent overlay
+  can still turn one off or on; Reset drops the overlay. Missing
+  both a shared catalog entry and an overlay stays off.
 - **Zhipu / Kimi / Grok / latest GPT context defaults.** Models and
   onboard presets now include 智谱 (`glm-5.3`, `glm-5.3-flash`, 1M),
   Kimi (`kimi-k3`, 1,048,576), Grok (`grok-4.6` / `grok-4.5`, 500k —

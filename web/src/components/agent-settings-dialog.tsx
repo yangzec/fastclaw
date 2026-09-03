@@ -14,6 +14,7 @@ import {
   RadioIcon,
   ServerIcon,
   SparklesIcon,
+  TerminalIcon,
   UserCog,
   Wand2Icon,
 } from "lucide-react";
@@ -36,6 +37,7 @@ import AccountSettingsPage from "@/app/settings/account/page";
 import GeneralSettingsPage from "@/app/settings/general/page";
 import UserModelsPage from "@/app/models/page";
 import AboutSettingsPage from "@/app/settings/about/page";
+import SSHHostsPage from "@/app/settings/ssh/page";
 
 export type AgentSettingsTab =
   | "profile"
@@ -51,6 +53,7 @@ export type AgentSettingsTab =
   | "usage"
   | "account"
   | "general"
+  | "ssh"
   | "about";
 
 type TabIcon = React.ComponentType<{ className?: string }>;
@@ -75,6 +78,7 @@ const AGENT_TABS: Array<{ id: AgentSettingsTab; label: string; icon: TabIcon }> 
 const USER_TABS: Array<{ id: AgentSettingsTab; label: string; icon: TabIcon }> = [
   { id: "account", label: "Account", icon: UserCog },
   { id: "general", label: "General", icon: Palette },
+  { id: "ssh", label: "SSH Hosts", icon: TerminalIcon },
   // About surfaces the gateway version + upgrade hint — only useful
   // to operators (super_admin), filtered out below for regular users.
   { id: "about", label: "About", icon: InfoIcon },
@@ -192,6 +196,11 @@ export function AgentSettingsDialog({
           {tab === "general" && (
             <div className="p-6 max-w-3xl">
               <GeneralSettingsPage />
+            </div>
+          )}
+          {tab === "ssh" && (
+            <div className="p-6 max-w-3xl">
+              <SSHHostsPage />
             </div>
           )}
           {tab === "about" && (
