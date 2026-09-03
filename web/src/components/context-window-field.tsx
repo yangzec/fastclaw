@@ -3,7 +3,12 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { presetContextWindow } from "@/lib/model-defaults";
+import { LimitOptionChips } from "@/components/limit-option-chips";
+import {
+  contextWindowOptionsFor,
+  contextWindowTip,
+  presetContextWindow,
+} from "@/lib/model-defaults";
 
 export function ContextWindowField({
   modelId,
@@ -19,7 +24,11 @@ export function ContextWindowField({
   className?: string;
 }) {
   const fallback = presetContextWindow(modelId);
+  const options = contextWindowOptionsFor(modelId);
+  const selected = value > 0 ? value : fallback;
+  const inList = options.some((o) => o.value === selected);
   const customized = value > 0 && value !== fallback;
+  const tip = contextWindowTip(modelId);
 
   return (
     <div className={className ?? "space-y-1.5"}>
@@ -35,28 +44,29 @@ export function ContextWindowField({
             className="h-6 px-1.5 text-[11px] text-muted-foreground"
             onClick={() => onChange(fallback)}
           >
-            Reset to default ({fallback.toLocaleString()})
+            Reset to suggested ({fallback.toLocaleString()})
           </Button>
         )}
       </div>
-      <Input
-        id={id}
-        type="number"
-        min={1}
-        step={1}
-        value={value > 0 ? value : ""}
-        onChange={(e) => {
-          const raw = e.target.value.trim();
-          onChange(raw === "" ? 0 : Number(raw) || 0);
-        }}
-        placeholder={String(fallback)}
-        className="font-mono text-xs h-8"
-      />
-      <p className="text-[11px] text-muted-foreground/70">
-        Default for this model is {fallback.toLocaleString()} tokens.
-        Change it if your gateway or plan uses a different limit. Compaction
-        uses the saved number, not the official default.
-      </p>
+      <LimitOptionChips options={options} selected={selected} onChange={onChange} />
+      {!inList && value > 0 ? (
+        <Input
+          id={id}
+          type="number"
+          min={1}
+          step={1}
+          value={value}
+          onChange={(e) => {
+            const raw = e.target.value.trim();
+            onChange(raw === "" ? 0 : Number(raw) || 0);
+          }}
+          className="font-mono text-xs h-8 max-w-40"
+        />
+      ) : null}
+      <div className="rounded-md bg-muted/50 px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground">
+        <p className="font-medium text-foreground/80">{tip.headline}</p>
+        <p className="mt-0.5">{tip.body}</p>
+      </div>
     </div>
   );
 }

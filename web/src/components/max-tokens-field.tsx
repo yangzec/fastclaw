@@ -3,6 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { LimitOptionChips } from "@/components/limit-option-chips";
 import {
   maxOutputTip,
   maxTokenOptionsFor,
@@ -47,30 +48,7 @@ export function MaxTokensField({
           </Button>
         )}
       </div>
-      <div className="flex flex-wrap gap-1.5">
-        {options.map((opt) => {
-          const active = selected === opt.value;
-          return (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => onChange(opt.value)}
-              className={`h-8 rounded-md border px-2.5 text-xs tabular-nums transition-colors ${
-                active
-                  ? "border-foreground bg-foreground text-background"
-                  : "border-border text-muted-foreground hover:bg-muted hover:text-foreground"
-              }`}
-            >
-              {opt.label}
-              {opt.tag === "suggested" ? (
-                <span className={`ml-1 ${active ? "opacity-80" : "text-foreground/70"}`}>建议</span>
-              ) : opt.tag === "official" ? (
-                <span className={`ml-1 ${active ? "opacity-70" : "opacity-60"}`}>上限</span>
-              ) : null}
-            </button>
-          );
-        })}
-      </div>
+      <LimitOptionChips options={options} selected={selected} onChange={onChange} />
       {!inList && value > 0 ? (
         <Input
           id={id}

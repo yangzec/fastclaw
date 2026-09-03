@@ -3,6 +3,8 @@ import { test } from "node:test";
 import {
   knownContextWindow,
   knownMaxTokens,
+  contextWindowOptionsFor,
+  contextWindowTip,
   maxOutputTip,
   maxTokenOptionsFor,
   modelLimitFamily,
@@ -31,6 +33,23 @@ test("knownContextWindow covers latest GPT / Zhipu / Kimi / Grok ids", () => {
 test("presetContextWindow falls back to the Models UI default", () => {
   assert.equal(presetContextWindow("totally-unknown"), DEFAULT_CONTEXT_WINDOW);
   assert.equal(presetContextWindow("kimi-k3"), 1_048_576);
+});
+
+test("contextWindowOptionsFor marks suggested and 5.5 legacy 400k", () => {
+  const gpt56 = contextWindowOptionsFor("gpt-5.6");
+  assert.equal(gpt56.find((o) => o.value === 1_050_000)?.tag, "suggested");
+  const gpt55 = contextWindowOptionsFor("gpt-5.5");
+  assert.equal(gpt55.find((o) => o.value === 1_050_000)?.tag, "suggested");
+  assert.equal(gpt55.find((o) => o.value === 400_000)?.tag, "legacy");
+  const kimi = contextWindowOptionsFor("kimi-k3");
+  assert.ok(kimi.some((o) => o.value === 1_048_576 && o.tag === "suggested"));
+  assert.equal(kimi.some((o) => o.value === 1_050_000), false);
+});
+
+test("contextWindowTip calls out 5.5 vs 5.6", () => {
+  assert.match(contextWindowTip("gpt-5.6").body, /不在窗口/);
+  assert.match(contextWindowTip("gpt-5.5").body, /400k/);
+  assert.match(contextWindowTip("grok-4.6").headline, /500k/);
 });
 
 test("nextContextWindowOnIdChange keeps a manual override", () => {

@@ -57,6 +57,96 @@ export function presetContextWindow(modelId: string): number {
   return knownContextWindow(modelId) || DEFAULT_CONTEXT_WINDOW;
 }
 
+export const CONTEXT_WINDOW_OPTIONS: { value: number; label: string }[] = [
+  { value: 128_000, label: "128k" },
+  { value: 200_000, label: "200k" },
+  { value: 256_000, label: "256k" },
+  { value: 400_000, label: "400k" },
+  { value: 500_000, label: "500k" },
+  { value: 1_000_000, label: "1M" },
+  { value: 1_050_000, label: "1.05M" },
+];
+
+export type LimitOptionTag = "suggested" | "official" | "legacy";
+
+export type LimitOption = {
+  value: number;
+  label: string;
+  tag?: LimitOptionTag;
+};
+
+export function compactLimitLabel(n: number): string {
+  const named = [...CONTEXT_WINDOW_OPTIONS, ...MAX_TOKEN_OPTIONS].find((o) => o.value === n);
+  if (named) return named.label;
+  if (n === 1_048_576) return "1.05M";
+  if (n === 131_072) return "131k";
+  if (n === 262_144) return "256k";
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    return (Number.isInteger(m) ? String(m) : m.toFixed(2).replace(/\.?0+$/, "")) + "M";
+  }
+  if (n >= 10_000) return Math.round(n / 1000) + "k";
+  if (n >= 1000) {
+    const k = n / 1000;
+    return (Number.isInteger(k) ? String(k) : k.toFixed(1).replace(/\.0$/, "")) + "k";
+  }
+  return String(n);
+}
+
+export function contextWindowOptionsFor(modelId: string): LimitOption[] {
+  const official = presetContextWindow(modelId);
+  const values = new Set<number>(CONTEXT_WINDOW_OPTIONS.map((o) => o.value));
+  if (official > 0) values.add(official);
+  // Kimi's 1,048,576 and GPT's 1,050,000 both read as 1.05M — keep one chip.
+  if (values.has(1_048_576)) values.delete(1_050_000);
+  const family = modelLimitFamily(modelId);
+  return [...values]
+    .sort((a, b) => a - b)
+    .map((value) => {
+      let tag: LimitOptionTag | undefined;
+      if (value === official) tag = "suggested";
+      else if (family === "gpt-5.5" && value === 400_000) tag = "legacy";
+      return { value, label: compactLimitLabel(value), tag };
+    });
+}
+
+export type ModelLimitTip = { headline: string; body: string };
+
+export function contextWindowTip(modelId: string): ModelLimitTip {
+  switch (modelLimitFamily(modelId)) {
+    case "gpt-5.6":
+      return {
+        headline: "GPT-5.6 · 建议 1.05M",
+        body: "官方 API 窗口是 1.05M，Sol / Terra / Luna 一样。和 5.5 的 API 窗口相同——5.6 的差别在输出/推理，不在窗口。超过 272k 输入会加价。压缩按这个数留空。",
+      };
+    case "gpt-5.5":
+      return {
+        headline: "GPT-5.5 · 建议 1.05M（和 5.6 的差别不在这里）",
+        body: "官方 API 已是 1.05M，和 5.6 一样。你记得的 400k 多半是 ChatGPT 产品档（约 272k 输入 + 128k 输出）。走官方 API 选 1.05M；网关/套餐还是 400k 就选 400k。超过 272k 输入两边都加价。",
+      };
+    case "glm":
+      return {
+        headline: "GLM-5.3 · 建议 1M",
+        body: "官方 1M 上下文。Flash 同口径。压缩按保存的数字触发，不是官方默认。",
+      };
+    case "kimi":
+      return {
+        headline: "Kimi K3 · 建议 1.05M",
+        body: "官方 1,048,576，输入和输出共用这一窗。窗口选满即可；真正要收的是下面的最大输出，别把输出也拉到 1M。",
+      };
+    case "grok":
+      return {
+        headline: "Grok · 建议 500k",
+        body: "4.6 / 4.5 官方都是 500k，不是 1M。选 500k；更大的数压缩会算错、请求也容易 400。",
+      };
+    default:
+      return {
+        headline: "没认到就先 200k",
+        body: "通用默认 200k。知道官方窗口再改。压缩用保存的数字，不认官方默认。",
+      };
+  }
+}
+
 const KNOWN_MAX_TOKENS: Record<string, number> = {
   "gpt-5.6": 128_000,
   "gpt-5.6-sol": 128_000,
@@ -132,22 +222,7 @@ export const MAX_TOKEN_OPTIONS: { value: number; label: string }[] = [
   { value: 128_000, label: "128k" },
 ];
 
-export type MaxTokenOption = {
-  value: number;
-  label: string;
-  tag?: "suggested" | "official";
-};
-
-function optionLabel(n: number): string {
-  const hit = MAX_TOKEN_OPTIONS.find((o) => o.value === n);
-  if (hit) return hit.label;
-  if (n === 131_072) return "131k";
-  if (n >= 1000 && n % 1024 === 0) return n / 1024 + "k";
-  if (n >= 1000) return Math.round(n / 1000) + "k";
-  return String(n);
-}
-
-export function maxTokenOptionsFor(modelId: string): MaxTokenOption[] {
+export function maxTokenOptionsFor(modelId: string): LimitOption[] {
   const suggested = suggestedMaxTokens(modelId);
   const official = knownMaxTokens(modelId);
   const values = new Set<number>(MAX_TOKEN_OPTIONS.map((o) => o.value));
@@ -156,16 +231,14 @@ export function maxTokenOptionsFor(modelId: string): MaxTokenOption[] {
   return [...values]
     .sort((a, b) => a - b)
     .map((value) => {
-      let tag: MaxTokenOption["tag"];
+      let tag: LimitOptionTag | undefined;
       if (value === suggested) tag = "suggested";
       else if (value === official) tag = "official";
-      return { value, label: optionLabel(value), tag };
+      return { value, label: compactLimitLabel(value), tag };
     });
 }
 
-export type MaxOutputTip = { headline: string; body: string };
-
-export function maxOutputTip(modelId: string): MaxOutputTip {
+export function maxOutputTip(modelId: string): ModelLimitTip {
   switch (modelLimitFamily(modelId)) {
     case "gpt-5.6":
       return {
