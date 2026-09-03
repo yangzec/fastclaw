@@ -921,6 +921,9 @@ func (r *Registry) DefinitionsForMode(builtinAllow []string) []provider.Tool {
 	}
 	defs := make([]provider.Tool, 0, len(r.tools))
 	for name, t := range r.tools {
+		if !r.toolVisibleToCaller(name) {
+			continue
+		}
 		if t.source != SourceBuiltin {
 			// Plugin / MCP / future sources — always pass through.
 			defs = append(defs, t.def)
@@ -942,6 +945,9 @@ func (r *Registry) Execute(ctx context.Context, name string, args string) (strin
 	tool, ok := r.tools[name]
 	if !ok {
 		return "", fmt.Errorf("unknown tool: %s", name)
+	}
+	if err := r.DenyIfHidden(name); err != nil {
+		return "", err
 	}
 
 	result, err := tool.fn(ctx, json.RawMessage(args))

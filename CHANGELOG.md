@@ -7,6 +7,12 @@ action on upgrade — read those notes before deploying.
 
 ### Changed
 
+- **Guests cannot inventory an agent's config.** Non-owner chatters
+  can no longer `exec` `cat` persona files or `SKILL.md`, see those
+  names in `list_dir`, or receive `create_agent` / `configure_agent` /
+  `install_skill` / `host_exec` in the tool catalog. The
+  confidentiality prompt also forbids dumping tool schemas.
+
 - **Host shell is super_admin-only.** On a shared/self-hosted gateway,
   owning an agent no longer grants host `exec`, `host_exec`, or
   absolute host-path file tools. Those require a resolved FastClaw

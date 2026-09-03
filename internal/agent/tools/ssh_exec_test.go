@@ -83,15 +83,12 @@ func TestSSHExecGuestRefused(t *testing.T) {
 	r.SetCallerIsAdmin(false)
 	RegisterSSHExec(r, st, box, "owner-1")
 
-	out, err := r.Execute(context.Background(), "ssh_exec", mustJSON(t, sshExecArgs{
+	_, err = r.Execute(context.Background(), "ssh_exec", mustJSON(t, sshExecArgs{
 		Host:    "gpu-box",
 		Command: "id",
 	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "refused") {
-		t.Fatalf("guest should be refused, got %q", out)
+	if err == nil || !strings.Contains(err.Error(), "not available") {
+		t.Fatalf("guest ssh_exec should be hidden, err = %v", err)
 	}
 }
 

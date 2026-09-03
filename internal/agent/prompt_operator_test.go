@@ -118,6 +118,14 @@ func TestFastclawBinaryFallsBackOutsideTheCLI(t *testing.T) {
 // The CLI enumeration is what the model reaches for when asked to do
 // platform work; `agents init` missing from it was the reason "create an
 // agent" never mapped onto a command.
+func TestAgentPrompt_ConfidentialityCoversToolsAndSkills(t *testing.T) {
+	cb := newOperatorBuilder(t)
+	prompt := cb.BuildSystemPromptAs(chatterUID, cb.memory.WithUserID(chatterUID), turnAccess{})
+	mustContain(t, prompt, "Tool parameter schemas")
+	mustContain(t, prompt, "full contents of any SKILL.md")
+	mustContain(t, prompt, "read_file/write_file/edit_file/exec")
+}
+
 func TestAgentPrompt_CLIListNamesAgentsInit(t *testing.T) {
 	cb := newOperatorBuilder(t)
 

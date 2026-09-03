@@ -125,6 +125,12 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 				return "", fmt.Errorf("dangerous command blocked: %s", args.Command)
 			}
 		}
+		// Guests cannot cat persona / SKILL.md via the sandbox shell —
+		// file tools already refuse those paths; this closes the exec
+		// bypass. Owners (callerIsAdmin) may still inspect their files.
+		if r != nil && !r.callerIsAdmin && guestExecReadsConfig(args.Command, args.Stdin) {
+			return "", fmt.Errorf("%s", errGuestConfigExec)
+		}
 
 		timeout := 120
 		if args.Timeout > 0 {
@@ -456,6 +462,9 @@ func registerSandboxedExec(r *Registry, ex sandbox.Executor) {
 		}
 		if args.Command == "" {
 			return "", fmt.Errorf("command is required")
+		}
+		if r != nil && !r.callerIsAdmin && guestExecReadsConfig(args.Command, args.Stdin) {
+			return "", fmt.Errorf("%s", errGuestConfigExec)
 		}
 		if args.RunInBackground {
 			return "", fmt.Errorf("run_in_background is not yet supported in sandbox mode — use tmux inside the sandbox instead: exec({command: \"tmux new-session -d -s job '<your command>'\"}) to start, exec({command: \"tmux capture-pane -t job -p\"}) to read, exec({command: \"tmux kill-session -t job\"}) to stop")
