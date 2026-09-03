@@ -55,7 +55,9 @@ fastclaw
 
 ### 2. Dashboard
 
-Open `http://localhost:18953` and login with your admin token.
+Open `http://localhost:18953` on this machine, or `http://<lan-ip>:18953`
+from another device on the same network. The startup log prints the LAN
+URLs. Login with your admin token.
 
 - **Agents** — Create and manage agents, each with its own personality and model
 - **Skills** — Install shared skills from ClawHub or GitHub
@@ -178,7 +180,7 @@ database and is edited through the dashboard or `fastclaw agents config`.
 |---|---|---|
 | `FASTCLAW_HOME` | `~/.fastclaw` | Where the SQLite DB and skill folders live. |
 | `FASTCLAW_PORT` | `18953` | Gateway HTTP port. |
-| `FASTCLAW_BIND` | `loopback` | `loopback` (127.0.0.1) or `all` (0.0.0.0). |
+| `FASTCLAW_BIND` | `all` | `all` (0.0.0.0, LAN-reachable) or `loopback` (127.0.0.1 only). |
 | `FASTCLAW_STORAGE_TYPE` | `sqlite` | `sqlite` or `postgres`. |
 | `FASTCLAW_STORAGE_DSN` | empty | Postgres DSN, e.g. `postgres://u:p@host:5432/db?sslmode=disable`. Empty = sqlite at `$FASTCLAW_HOME/fastclaw.db`. |
 | `FASTCLAW_STORAGE_AUTO_MIGRATE` | `true` | Apply schema migrations on boot. |

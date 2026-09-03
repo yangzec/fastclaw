@@ -23,7 +23,7 @@ type EnvConfig struct {
 
 type EnvGateway struct {
 	Port int    // FASTCLAW_PORT       — default 18953
-	Bind string // FASTCLAW_BIND       — "loopback" (default) or "all"
+	Bind string // FASTCLAW_BIND       — "all" (0.0.0.0, default) or "loopback"
 }
 
 type EnvStorage struct {
@@ -64,6 +64,8 @@ func LoadEnv() *EnvConfig {
 	cfg := &EnvConfig{
 		// Defaults — used when the env var isn't set. AutoMigrate=true
 		// makes a fresh sqlite install boot without manual schema steps.
+		// Bind=all so `fastclaw` is reachable from other devices on the LAN.
+		Gateway: EnvGateway{Bind: DefaultBind()},
 		Storage: EnvStorage{AutoMigrate: true},
 	}
 
@@ -73,7 +75,7 @@ func LoadEnv() *EnvConfig {
 		}
 	}
 	if v := os.Getenv("FASTCLAW_BIND"); v != "" {
-		cfg.Gateway.Bind = v
+		cfg.Gateway.Bind = NormalizeBind(v)
 	}
 
 	if v := os.Getenv("FASTCLAW_STORAGE_TYPE"); v != "" {
