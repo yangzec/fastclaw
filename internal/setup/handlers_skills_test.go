@@ -132,6 +132,56 @@ func TestListAgentSkillsIncludesInheritedGlobal(t *testing.T) {
 	}
 }
 
+func TestListSkillsIncludesInheritAfterSave(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, admin, _ := newAuthTestServer(t, ctx)
+	home := t.TempDir()
+	t.Setenv("FASTCLAW_HOME", home)
+	root := filepath.Join(home, "skills", "reviewer")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("---\nname: reviewer\ndescription: review\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	list := func() map[string]string {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		s.authMiddleware(s.handleListSkills)(rr, authTestRequest(t, ctx, resolver, http.MethodGet, "/api/skills", admin.ID))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("list status = %d body = %s", rr.Code, rr.Body.String())
+		}
+		var got []struct {
+			Name    string `json:"name"`
+			Inherit string `json:"inherit"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		out := map[string]string{}
+		for _, e := range got {
+			out[e.Name] = e.Inherit
+		}
+		return out
+	}
+
+	if got := list()["reviewer"]; got != "" {
+		t.Fatalf("default inherit = %q, want empty", got)
+	}
+
+	post := httptest.NewRecorder()
+	s.authMiddleware(s.handleUpdateConfig)(post, configTestRequest(t, ctx, resolver, http.MethodPost, "/api/config", admin.ID, map[string]any{
+		"skills": map[string]any{"entries": map[string]any{"reviewer": map[string]any{"enabled": true, "inherit": "all"}}},
+	}))
+	if post.Code != http.StatusOK {
+		t.Fatalf("POST status = %d body = %s", post.Code, post.Body.String())
+	}
+	if got := list()["reviewer"]; got != "all" {
+		t.Fatalf("after save inherit = %q, want all", got)
+	}
+}
+
 func TestListAgentSkillsStaysCatalogOnlyUntilInheritAll(t *testing.T) {
 	ctx := context.Background()
 	s, resolver, admin, _ := newAuthTestServer(t, ctx)

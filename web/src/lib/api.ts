@@ -144,6 +144,7 @@ export interface SkillInfo {
   // source is set on the agent Skills page: "agent" is installed in
   // this agent's home, "inherited" comes from the global skills dir.
   source?: "agent" | "inherited";
+  inherit?: "none" | "all" | string;
 }
 
 export interface SkillEntryCfg {

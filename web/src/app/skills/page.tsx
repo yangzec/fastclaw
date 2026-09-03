@@ -61,19 +61,26 @@ export default function SkillsPage() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
-  const fetchSkills = () => {
-    setLoading(true);
+  const fetchSkills = (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     Promise.all([
       getSkills().catch(() => [] as SkillInfo[]),
       getConfig().catch(() => null),
     ])
       .then(([list, cfg]) => {
         setSkills(list);
-        const entries =
-          (cfg?.skills as { entries?: Record<string, SkillEntryView> } | undefined)?.entries || {};
+        const entries: Record<string, SkillEntryView> = {
+          ...((cfg?.skills as { entries?: Record<string, SkillEntryView> } | undefined)?.entries || {}),
+        };
+        for (const s of list) {
+          if (!s.inherit) continue;
+          entries[s.name] = { ...entries[s.name], inherit: s.inherit };
+        }
         setSkillEntries(entries);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!opts?.silent) setLoading(false);
+      });
   };
 
   useEffect(() => {
@@ -91,15 +98,20 @@ export default function SkillsPage() {
     const prev = skillEntries[name];
     const inherit = next ? "all" : "none";
     setSkillEntries((m) => ({ ...m, [name]: { ...m[name], inherit } }));
+    setSkills((list) => list.map((s) => (s.name === name ? { ...s, inherit } : s)));
     setInheritSaving((m) => ({ ...m, [name]: true }));
     try {
-      await updateSkillEntries({
+      const resp = await updateSkillEntries({
         [name]: {
-          ...prev,
           enabled: prev?.enabled !== false,
+          env: prev?.env,
           inherit,
         },
       });
+      if (resp && typeof resp === "object" && "ok" in resp && resp.ok === false) {
+        throw new Error((resp as { error?: string }).error || "Save failed");
+      }
+      fetchSkills({ silent: true });
     } catch {
       setSkillEntries((m) => {
         const copy = { ...m };
@@ -107,6 +119,9 @@ export default function SkillsPage() {
         else delete copy[name];
         return copy;
       });
+      setSkills((list) =>
+        list.map((s) => (s.name === name ? { ...s, inherit: prev?.inherit } : s)),
+      );
     } finally {
       setInheritSaving((m) => {
         const copy = { ...m };
@@ -251,16 +266,18 @@ export default function SkillsPage() {
               </p>
               <div className="mt-3 flex items-center justify-between gap-2">
                 <span className="text-xs text-muted-foreground">
-                  Share with agents
+                  {inheritsToAgents(skillEntries[skill.name]?.inherit ?? skill.inherit)
+                    ? "Shared"
+                    : "Catalog only"}
                 </span>
                 <Switch
-                  checked={inheritsToAgents(skillEntries[skill.name]?.inherit)}
+                  checked={inheritsToAgents(skillEntries[skill.name]?.inherit ?? skill.inherit)}
                   onCheckedChange={(v) => handleSkillInherit(skill.name, v)}
                   disabled={inheritSaving[skill.name] === true}
                   aria-label={`Share skill ${skill.name} with agents`}
                 />
               </div>
-              {(skillEntries[skill.name]?.apiKey ||
+              {((skillEntries[skill.name]?.apiKey && skillEntries[skill.name]?.apiKey !== "****") ||
                 Object.keys(skillEntries[skill.name]?.env || {}).length > 0) && (
                 <div className="mt-2 inline-flex items-center gap-1 text-[10px] text-emerald-500">
                   <Check className="h-3 w-3" />

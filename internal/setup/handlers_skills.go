@@ -41,6 +41,21 @@ func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusOK, []any{})
 		return
 	}
+	// Attach the viewer's catalog inherit so the Skills page switch
+	// can bind from this list after save/reload, not only from a
+	// second GET /api/config that may still be in flight.
+	uid := config.UserIDFromContext(r.Context())
+	if entries, err := skillEntriesForViewer(r.Context(), s.dataStore, uid, isPlatformAdmin(r)); err == nil {
+		for _, e := range out {
+			name, _ := e["name"].(string)
+			if name == "" {
+				continue
+			}
+			if pe, ok := entries[name]; ok && pe.Inherit != "" {
+				e["inherit"] = pe.Inherit
+			}
+		}
+	}
 	jsonResponse(w, http.StatusOK, out)
 }
 

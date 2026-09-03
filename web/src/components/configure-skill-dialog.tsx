@@ -106,7 +106,13 @@ export function ConfigureSkillDialog({
     }
     try {
       const resp = await updateSkillEntries(
-        { [skill.name]: { enabled: true, env: merged } },
+        {
+          [skill.name]: {
+            enabled: true,
+            env: merged,
+            inherit: existing?.inherit,
+          },
+        },
         agentId,
       );
       if (resp && resp.ok === false) {

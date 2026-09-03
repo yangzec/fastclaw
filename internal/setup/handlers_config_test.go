@@ -157,6 +157,15 @@ func TestUpdateConfigMaskedAgentSkillEntryKeepsStoredSecret(t *testing.T) {
 	}
 }
 
+func TestMaskAPIKeyLeavesEmptyUnset(t *testing.T) {
+	if got := maskAPIKey(""); got != "" {
+		t.Fatalf("empty apiKey should stay empty, got %q", got)
+	}
+	if got := maskSkillEntry(config.SkillEntryCfg{Inherit: config.InheritAll}).APIKey; got != "" {
+		t.Fatalf("inherit-only entry must not look configured, apiKey=%q", got)
+	}
+}
+
 func TestMergeSkillEntry(t *testing.T) {
 	existing := config.SkillEntryCfg{
 		Enabled: true,

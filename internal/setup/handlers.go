@@ -172,6 +172,9 @@ func pluginEntriesForViewer(ctx context.Context, st store.Store, uid string, pla
 // other tenants' GET /api/config.
 func skillEntriesForViewer(ctx context.Context, st store.Store, uid string, platformAdmin bool) (map[string]config.SkillEntryCfg, error) {
 	out := map[string]config.SkillEntryCfg{}
+	if st == nil {
+		return out, nil
+	}
 	if platformAdmin {
 		if err := scope.SettingAt(ctx, st, "skills.entries", "", "", &out); err != nil {
 			return nil, err
@@ -2246,6 +2249,9 @@ func jsonResponse(w http.ResponseWriter, status int, data any) {
 }
 
 func maskAPIKey(key string) string {
+	if key == "" {
+		return ""
+	}
 	if len(key) <= 8 {
 		return "****"
 	}
