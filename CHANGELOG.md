@@ -107,6 +107,10 @@ action on upgrade — read those notes before deploying.
 
 ### Fixed
 
+- **Mobile follow-up can insert.** Phones treat Enter as newline and
+  have no ⌘/Ctrl+Enter, so a streaming turn used to leave only Stop
+  and the 排队/插入 mode switch. The composer now shows both **排队**
+  and **插入** next to Stop on mobile.
 - **Follow-up Stop is per conversation.** Stopping chat B no longer
   prevents chat A's queued follow-ups from sending when A's turn
   finishes. Coming back to an idle chat whose turn ended while you

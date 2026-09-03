@@ -66,3 +66,12 @@ export function resolveFollowupAction(
   }
   return behavior;
 }
+
+// Phones treat Enter as newline and have no ⌘/Ctrl+Enter, so the
+// composer hint points at the on-screen 排队 / 插入 buttons instead.
+export function followupComposerHint(behavior: FollowupBehavior, isMobile: boolean): string {
+  if (isMobile) return "输入后点排队或插入";
+  return behavior === "queue"
+    ? "Enter 排队 · ⌘/Ctrl+Enter 插入当前回合"
+    : "Enter 插入当前回合 · ⌘/Ctrl+Enter 排队";
+}

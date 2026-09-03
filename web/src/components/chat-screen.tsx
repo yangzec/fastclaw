@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { fileUrl, getAgent, getAgentKnowledgeFile, getChangedFiles, getChatHistoryWithCursor, getChatSessions, getChatTodo, getMe, getScopePreview, getScopePreviewLogs, getSessionHistory, listAgentFiles, listProjects, renameChatSession, restoreSessionHistory, revealAgentWorkspace, sendChatStream, steerChat, stopChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type KnowledgeSource, type ScopePreview, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile, type WorkspaceHistoryEntry } from "@/lib/api";
 import {
+  followupComposerHint,
   loadFollowupBehavior,
   loadSessionQueue,
   newFollowupId,
@@ -2244,13 +2245,19 @@ export function ChatScreen() {
     await handleSend(item.text, true);
   }, [replaceQueue, sending, steerFollowup, handleSend]);
 
-  // submitFollowup is Enter (or the Queue/Steer button) while a turn is
+  // submitFollowup is Enter (or the Queue/Steer buttons) while a turn is
   // streaming. Default comes from followupBehavior; Ctrl/Cmd flips it.
-  const submitFollowup = useCallback(async (flip = false) => {
+  // Phones have no modifier key, so the buttons pass "queue" / "steer"
+  // explicitly.
+  const submitFollowup = useCallback(async (
+    flipOrAction: boolean | FollowupBehavior = false,
+  ) => {
     const text = input.trim();
     if (!text || !selectedAgent || !sending) return;
     setInput("");
-    const action = resolveFollowupAction(followupBehavior, flip);
+    const action = typeof flipOrAction === "string"
+      ? flipOrAction
+      : resolveFollowupAction(followupBehavior, flipOrAction);
     if (action === "steer") {
       await steerFollowup(text);
       return;
@@ -2482,6 +2489,65 @@ export function ChatScreen() {
   // instead of taking over the headline, so users always know which
   // agent they're chatting with first.
   const heroTitle = "What can I do for you?";
+  const sendingPlaceholder = followupComposerHint(followupBehavior, isMobile);
+  const hasFollowupText = Boolean(input.trim());
+  // Phones have no ⌘/Ctrl+Enter. While a turn is running, always show
+  // both 排队 and 插入 next to Stop so steer is not trapped behind a
+  // modifier the software keyboard cannot send.
+  const renderSendingActions = (compact: boolean) => {
+    const actionClass = compact
+      ? "h-10 rounded-lg px-2.5 text-xs md:h-8"
+      : "h-9 rounded-full px-3 text-xs";
+    const stopClass = compact
+      ? "h-10 w-10 shrink-0 rounded-lg md:h-8 md:w-8"
+      : "h-9 w-9 shrink-0 rounded-full";
+    return (
+      <div className="flex items-center gap-1.5">
+        {isMobile ? (
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              className={actionClass}
+              disabled={!hasFollowupText}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => void submitFollowup("queue")}
+            >
+              排队
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className={actionClass}
+              disabled={!hasFollowupText}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => void submitFollowup("steer")}
+            >
+              插入
+            </Button>
+          </>
+        ) : hasFollowupText ? (
+          <Button
+            type="button"
+            variant="outline"
+            className={actionClass}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => void submitFollowup(false)}
+          >
+            {followupBehavior === "queue" ? "排队" : "插入"}
+          </Button>
+        ) : null}
+        <Button
+          onClick={handleStop}
+          size="icon"
+          className={stopClass}
+          aria-label="Stop generating"
+        >
+          <Square className="h-3.5 w-3.5 fill-current" />
+        </Button>
+      </div>
+    );
+  };
 
   return (
     <div className="flex h-[calc(100dvh-3rem-env(safe-area-inset-top,0px))] min-h-0 flex-row">
@@ -3064,9 +3130,7 @@ export function ChatScreen() {
                         : isReadOnlyChannel
                           ? `Slash commands only — reply from ${channelLabel(currentChannel)}`
                           : sending
-                            ? followupBehavior === "queue"
-                              ? "Enter 排队 · ⌘/Ctrl+Enter 插入当前回合"
-                              : "Enter 插入当前回合 · ⌘/Ctrl+Enter 排队"
+                            ? sendingPlaceholder
                           : selectedAgent
                             ? `Message ${agentName || selectedAgent}... ("/" to pick a skill)`
                             : "Select an agent first"
@@ -3109,27 +3173,7 @@ export function ChatScreen() {
                       )}
                     </div>
                     {sending ? (
-                      <div className="flex items-center gap-1.5">
-                        {input.trim() ? (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="h-9 rounded-full px-3 text-xs"
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => void submitFollowup(false)}
-                          >
-                            {followupBehavior === "queue" ? "排队" : "插入"}
-                          </Button>
-                        ) : null}
-                        <Button
-                          onClick={handleStop}
-                          size="icon"
-                          className="h-9 w-9 shrink-0 rounded-full"
-                          aria-label="Stop generating"
-                        >
-                          <Square className="h-3.5 w-3.5 fill-current" />
-                        </Button>
-                      </div>
+                      renderSendingActions(false)
                     ) : (
                       <Button
                         type="button"
@@ -3150,7 +3194,8 @@ export function ChatScreen() {
                   </div>
                 </>
               ) : (
-                <div className="flex items-center gap-2">
+                <div className={sending && isMobile ? "flex flex-col gap-2" : "flex items-center gap-2"}>
+                  <div className={sending && isMobile ? "flex items-center gap-2" : "contents"}>
                   <label
                     className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors md:h-8 md:w-8 ${
                       !canAttach
@@ -3182,9 +3227,7 @@ export function ChatScreen() {
                         : isReadOnlyChannel
                           ? `Slash commands only — reply from ${channelLabel(currentChannel)}`
                           : sending
-                            ? followupBehavior === "queue"
-                              ? "Enter 排队 · ⌘/Ctrl+Enter 插入当前回合"
-                              : "Enter 插入当前回合 · ⌘/Ctrl+Enter 排队"
+                            ? sendingPlaceholder
                           : selectedAgent
                             ? `Message ${agentName || selectedAgent}... ("/" to pick a skill)`
                             : "Select an agent first"
@@ -3194,27 +3237,10 @@ export function ChatScreen() {
                     className="flex-1 resize-none bg-transparent text-base leading-8 placeholder:text-muted-foreground/50 outline-none disabled:opacity-50 md:text-[15px]"
                     style={{ maxHeight: 200, minHeight: 32 }}
                   />
+                  </div>
                   {sending ? (
-                    <div className="flex items-center gap-1.5">
-                      {input.trim() ? (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="h-10 rounded-lg px-2.5 text-xs md:h-8"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => void submitFollowup(false)}
-                        >
-                          {followupBehavior === "queue" ? "排队" : "插入"}
-                        </Button>
-                      ) : null}
-                      <Button
-                        onClick={handleStop}
-                        size="icon"
-                        className="h-10 w-10 shrink-0 rounded-lg md:h-8 md:w-8"
-                        aria-label="Stop generating"
-                      >
-                        <Square className="h-3.5 w-3.5 fill-current" />
-                      </Button>
+                    <div className={isMobile ? "flex justify-end" : undefined}>
+                      {renderSendingActions(true)}
                     </div>
                   ) : (
                     <Button
@@ -3234,22 +3260,28 @@ export function ChatScreen() {
             </div>
             {canUseComposer && (
               <div className="mt-1.5 flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
-                <span>回复时</span>
-                <button
-                  type="button"
-                  className={followupBehavior === "queue" ? "font-medium text-foreground" : "hover:text-foreground"}
-                  onClick={() => setFollowupMode("queue")}
-                >
-                  排队
-                </button>
-                <span>·</span>
-                <button
-                  type="button"
-                  className={followupBehavior === "steer" ? "font-medium text-foreground" : "hover:text-foreground"}
-                  onClick={() => setFollowupMode("steer")}
-                >
-                  插入
-                </button>
+                {isMobile && sending ? (
+                  <span>回复时点上方「排队」或「插入」</span>
+                ) : (
+                  <>
+                    <span>回复时</span>
+                    <button
+                      type="button"
+                      className={followupBehavior === "queue" ? "font-medium text-foreground" : "hover:text-foreground"}
+                      onClick={() => setFollowupMode("queue")}
+                    >
+                      排队
+                    </button>
+                    <span>·</span>
+                    <button
+                      type="button"
+                      className={followupBehavior === "steer" ? "font-medium text-foreground" : "hover:text-foreground"}
+                      onClick={() => setFollowupMode("steer")}
+                    >
+                      插入
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
