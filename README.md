@@ -140,7 +140,7 @@ table and is edited through the dashboard or `fastclaw agents config`.
 ### Skills
 - Bundled skills: code-runner, image-gen, data-analysis, translation, web-search, skill-creator
 - Install from [ClawHub](https://clawhub.ai) or [skills.sh](https://skills.sh)
-- Agent-private or globally shared
+- Agent-private or globally shared (Share with agents / `inherit=all` is opt-in; catalog-only by default)
 
 ### Memory
 - MEMORY.md — long-term facts, auto-updated by heartbeat

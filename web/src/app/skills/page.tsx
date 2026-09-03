@@ -31,7 +31,7 @@ import {
   installSkill,
   uploadSkill,
   getConfig,
-  skillInheritsToAgents,
+  inheritsToAgents,
   updateSkillEntries,
   type SkillInfo,
   type SkillSearchResult,
@@ -170,9 +170,8 @@ export default function SkillsPage() {
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Skills</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Installed skills. Share with agents is on by default so
-            existing bundles keep working. Turn it off to keep a skill
-            in this catalog only.
+            Installed skills stay catalog-only until you turn on Share
+            with agents. Agent-local copies do not need that flag.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -255,7 +254,7 @@ export default function SkillsPage() {
                   Share with agents
                 </span>
                 <Switch
-                  checked={skillInheritsToAgents(skillEntries[skill.name]?.inherit)}
+                  checked={inheritsToAgents(skillEntries[skill.name]?.inherit)}
                   onCheckedChange={(v) => handleSkillInherit(skill.name, v)}
                   disabled={inheritSaving[skill.name] === true}
                   aria-label={`Share skill ${skill.name} with agents`}

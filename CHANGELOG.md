@@ -9,12 +9,13 @@ action on upgrade — read those notes before deploying.
 
 - **Configurable inherit scope for MCP, plugins, and skills.**
   Catalog items are no longer attached to every agent by default.
-  MCP and plugins use `inherit: "all" | "none"` (empty = none):
-  Share with agents is an explicit opt-in. Skills keep the historical
-  default (empty / `"all"` still inherit; `"none"` hides the skill
-  from agents that do not have a local copy). System `inherit=all`
-  is the only platform-wide share; a user-scope `inherit=all` stays
-  inside that tenant.
+  MCP, plugins, and skills all use `inherit: "all" | "none"`
+  (empty = none): Share with agents is an explicit opt-in in the
+  admin catalog. **BREAKING:** global / bundled skills no longer
+  attach until an operator turns that switch on. Agent-local,
+  personal, and team copies still load without the flag. System
+  `inherit=all` is the only platform-wide share; a user-scope
+  `inherit=all` stays inside that tenant.
 - **Multi-tenant isolation for global catalogs.** GET `/api/config`
   no longer merges system MCP / plugin entries / skill entries into
   another tenant's editor view, so platform secrets are not leaked

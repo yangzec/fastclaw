@@ -12,7 +12,8 @@ import (
 func TestBuildSkillsSummaryUsesProgressiveDisclosureByDefault(t *testing.T) {
 	t.Setenv("FASTCLAW_HOME", t.TempDir())
 	home := t.TempDir()
-	skillDir := filepath.Join(home, "skills", "chart-maker")
+	agentDir := t.TempDir()
+	skillDir := filepath.Join(agentDir, "skills", "chart-maker")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +28,7 @@ Run scripts/render.py with JSON input.`
 		t.Fatal(err)
 	}
 
-	loader := NewSkillsLoaderWithGlobal(home, t.TempDir(), "", config.SkillsConfig{}, config.SkillsCfg{})
+	loader := NewSkillsLoaderWithGlobal(home, agentDir, "", config.SkillsConfig{}, config.SkillsCfg{})
 	summary := loader.BuildSkillsSummary(loader.LoadSkills())
 
 	if !strings.Contains(summary, "chart-maker") {
@@ -47,7 +48,8 @@ Run scripts/render.py with JSON input.`
 func TestLoadSkillsDoesNotKeepBodyContentByDefault(t *testing.T) {
 	t.Setenv("FASTCLAW_HOME", t.TempDir())
 	home := t.TempDir()
-	skillDir := filepath.Join(home, "skills", "chart-maker")
+	agentDir := t.TempDir()
+	skillDir := filepath.Join(agentDir, "skills", "chart-maker")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +63,7 @@ BODY_SHOULD_STAY_ON_DISK_UNTIL_LOAD_SKILL`
 		t.Fatal(err)
 	}
 
-	loader := NewSkillsLoaderWithGlobal(home, t.TempDir(), "", config.SkillsConfig{}, config.SkillsCfg{})
+	loader := NewSkillsLoaderWithGlobal(home, agentDir, "", config.SkillsConfig{}, config.SkillsCfg{})
 	skills := loader.LoadSkills()
 
 	if len(skills) != 1 {
@@ -75,7 +77,8 @@ BODY_SHOULD_STAY_ON_DISK_UNTIL_LOAD_SKILL`
 func TestBuildSkillsSummaryKeepsAlwaysLoadSkillsInline(t *testing.T) {
 	t.Setenv("FASTCLAW_HOME", t.TempDir())
 	home := t.TempDir()
-	skillDir := filepath.Join(home, "skills", "always-inline")
+	agentDir := t.TempDir()
+	skillDir := filepath.Join(agentDir, "skills", "always-inline")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +94,7 @@ ALWAYS_LOAD_BODY_SHOULD_APPEAR`
 
 	loader := NewSkillsLoaderWithGlobal(
 		home,
-		t.TempDir(),
+		agentDir,
 		"",
 		config.SkillsConfig{AlwaysLoad: []string{"always-inline"}},
 		config.SkillsCfg{},
@@ -106,7 +109,8 @@ ALWAYS_LOAD_BODY_SHOULD_APPEAR`
 func TestGatedSkillsStayInCatalogWithUnavailableReason(t *testing.T) {
 	t.Setenv("FASTCLAW_HOME", t.TempDir())
 	home := t.TempDir()
-	skillDir := filepath.Join(home, "skills", "deepcoin-trade")
+	agentDir := t.TempDir()
+	skillDir := filepath.Join(agentDir, "skills", "deepcoin-trade")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +128,7 @@ BODY_SHOULD_NOT_INLINE_WHEN_GATED`
 		t.Fatal(err)
 	}
 
-	loader := NewSkillsLoaderWithGlobal(home, t.TempDir(), "", config.SkillsConfig{}, config.SkillsCfg{})
+	loader := NewSkillsLoaderWithGlobal(home, agentDir, "", config.SkillsConfig{}, config.SkillsCfg{})
 	skills := loader.LoadSkills()
 	if len(skills) != 1 {
 		t.Fatalf("skills len = %d, want 1", len(skills))
@@ -142,5 +146,33 @@ BODY_SHOULD_NOT_INLINE_WHEN_GATED`
 	}
 	if strings.Contains(summary, "BODY_SHOULD_NOT_INLINE_WHEN_GATED") {
 		t.Fatalf("summary should not inline gated skill body:\n%s", summary)
+	}
+}
+
+func TestLoadSkillsRequiresInheritAllForGlobal(t *testing.T) {
+	t.Setenv("FASTCLAW_HOME", t.TempDir())
+	home := t.TempDir()
+	write := func(name, desc string) {
+		t.Helper()
+		dir := filepath.Join(home, "skills", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "---\nname: " + name + "\ndescription: " + desc + "\n---\n# " + name + "\n"
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("shared", "inherited")
+	write("catalog", "catalog only")
+
+	loader := NewSkillsLoaderWithGlobal(home, t.TempDir(), "", config.SkillsConfig{}, config.SkillsCfg{
+		Entries: map[string]config.SkillEntryCfg{
+			"shared": {Enabled: true, Inherit: config.InheritAll},
+		},
+	})
+	got := loader.LoadSkills()
+	if len(got) != 1 || got[0].Name != "shared" {
+		t.Fatalf("want only inherit=all global skill, got %+v", got)
 	}
 }

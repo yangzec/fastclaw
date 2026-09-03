@@ -47,16 +47,13 @@ func TestMergedAgentConfigInheritsAndOverridesMCP(t *testing.T) {
 }
 
 func TestSkillInheritsToAgents(t *testing.T) {
-	if !SkillInheritsToAgents(SkillEntryCfg{}, false) {
-		t.Fatal("missing catalog row must stay inherited")
+	if SkillInheritsToAgents(SkillEntryCfg{}) {
+		t.Fatal("missing / empty inherit must stay catalog-only")
 	}
-	if !SkillInheritsToAgents(SkillEntryCfg{}, true) {
-		t.Fatal("empty inherit on a configured row must stay inherited")
-	}
-	if !SkillInheritsToAgents(SkillEntryCfg{Inherit: InheritAll}, true) {
+	if !SkillInheritsToAgents(SkillEntryCfg{Inherit: InheritAll}) {
 		t.Fatal("inherit=all must attach")
 	}
-	if SkillInheritsToAgents(SkillEntryCfg{Inherit: InheritNone}, true) {
+	if SkillInheritsToAgents(SkillEntryCfg{Inherit: InheritNone}) {
 		t.Fatal("inherit=none must stay catalog-only")
 	}
 }

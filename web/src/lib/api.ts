@@ -150,16 +150,12 @@ export interface SkillEntryCfg {
   enabled?: boolean;
   apiKey?: string;
   env?: Record<string, string>;
-  // inherit: omit / "all" = agents receive this skill; "none" = catalog only.
+  // inherit=all attaches this skill to agents. Empty / none = catalog only.
   inherit?: "none" | "all" | string;
 }
 
 export function inheritsToAgents(inherit?: string): boolean {
   return inherit === "all";
-}
-
-export function skillInheritsToAgents(inherit?: string): boolean {
-  return inherit !== "none";
 }
 
 // updateSkillEntries persists skill env / apiKey patches. When agentId

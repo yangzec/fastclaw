@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/fastclaw-ai/fastclaw/internal/auth"
+	"github.com/fastclaw-ai/fastclaw/internal/scope"
 	"github.com/fastclaw-ai/fastclaw/internal/store"
 	"github.com/fastclaw-ai/fastclaw/internal/users"
 )
@@ -79,8 +80,15 @@ func TestListAgentSkillsIncludesInheritedGlobal(t *testing.T) {
 	}
 	writeSkill(filepath.Join(home, "skills"), "global-only", "from global")
 	writeSkill(filepath.Join(home, "skills"), "shared", "global copy")
+	writeSkill(filepath.Join(home, "skills"), "catalog-only", "not shared")
 	writeSkill(filepath.Join(home, "agents", agentID, "agent", "skills"), "shared", "agent copy")
 	writeSkill(filepath.Join(home, "agents", agentID, "agent", "skills"), "agent-only", "from agent")
+	if err := scope.SaveSetting(ctx, s.dataStore, "", "", "skills.entries", map[string]interface{}{
+		"global-only": map[string]interface{}{"enabled": true, "inherit": "all"},
+		"shared":      map[string]interface{}{"enabled": true, "inherit": "all"},
+	}); err != nil {
+		t.Fatalf("save skills.entries: %v", err)
+	}
 
 	req := authTestRequest(t, ctx, resolver, http.MethodGet, "/api/agents/"+agentID+"/skills", admin.ID)
 	req.SetPathValue("id", agentID)
@@ -116,8 +124,11 @@ func TestListAgentSkillsIncludesInheritedGlobal(t *testing.T) {
 	if byName["shared"].Source != "agent" || byName["shared"].Desc != "agent copy" {
 		t.Fatalf("shared should be agent shadow, got %+v", byName["shared"])
 	}
+	if _, ok := byName["catalog-only"]; ok {
+		t.Fatalf("catalog-only without inherit=all must not appear: %+v", got)
+	}
 	if _, ok := byName["shared"]; !ok || len(got) != 3 {
-		t.Fatalf("want 3 skills (shadowed global omitted), got %+v", got)
+		t.Fatalf("want 3 skills (shadowed global omitted, catalog-only hidden), got %+v", got)
 	}
 }
 
@@ -128,7 +139,7 @@ func TestMergeAgentSkillList(t *testing.T) {
 			{"name": "local", "description": "global-hidden"},
 			{"name": "shared", "description": "g"},
 		},
-		nil,
+		map[string]bool{"shared": true},
 	)
 	if len(out) != 2 {
 		t.Fatalf("len = %d", len(out))
@@ -143,13 +154,22 @@ func TestMergeAgentSkillList(t *testing.T) {
 	hidden := mergeAgentSkillList(
 		[]map[string]any{{"name": "local"}},
 		[]map[string]any{{"name": "catalog-only"}, {"name": "shared"}},
-		map[string]bool{"catalog-only": true},
+		map[string]bool{"shared": true},
 	)
 	if len(hidden) != 2 {
-		t.Fatalf("inherit=none should drop catalog-only, got %+v", hidden)
+		t.Fatalf("catalog-only without inherit=all should drop, got %+v", hidden)
 	}
 	if hidden[1]["name"] != "shared" {
 		t.Fatalf("shared should remain, got %+v", hidden)
+	}
+
+	none := mergeAgentSkillList(
+		[]map[string]any{{"name": "local"}},
+		[]map[string]any{{"name": "shared"}},
+		nil,
+	)
+	if len(none) != 1 || none[0]["name"] != "local" {
+		t.Fatalf("empty allowlist must hide all global skills, got %+v", none)
 	}
 }
 

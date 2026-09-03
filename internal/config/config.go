@@ -84,18 +84,11 @@ func InheritsToAgents(inherit string) bool {
 	return inherit == InheritAll
 }
 
-// SkillInheritsToAgents is the skill-catalog rule. A missing entry
-// (bundled / never configured) stays inherited so existing installs
-// keep their global skills. An explicit "none" hides the skill from
-// agents that do not have a local copy.
-func SkillInheritsToAgents(entry SkillEntryCfg, configured bool) bool {
-	if !configured {
-		return true
-	}
-	if entry.Inherit == InheritNone {
-		return false
-	}
-	return entry.Inherit == InheritAll || entry.Inherit == ""
+// SkillInheritsToAgents is the skill-catalog rule. Same as MCP and
+// plugins: only inherit=all attaches. Empty / missing / none stays
+// catalog-only until an operator turns on Share with agents.
+func SkillInheritsToAgents(entry SkillEntryCfg) bool {
+	return InheritsToAgents(entry.Inherit)
 }
 
 // CronJob defines a scheduled job loaded into the gateway's runtime.
@@ -683,8 +676,8 @@ type SkillEntryCfg struct {
 	Enabled bool              `json:"enabled"`
 	APIKey  string            `json:"apiKey,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
-	// Inherit: empty keeps the historical "global skills are inherited"
-	// behavior; "none" keeps the skill in the admin catalog only.
+	// Inherit: empty / none = catalog only (default). "all" attaches
+	// this skill to agents that can see the row.
 	Inherit string `json:"inherit,omitempty"`
 }
 
