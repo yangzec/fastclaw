@@ -1,3 +1,13 @@
+# pnpm 11 no longer reads package.json#pnpm. Overrides must live here
+# so `pnpm install --frozen-lockfile` matches pnpm-lock.yaml.
+# The same pins stay under package.json#pnpm.overrides for pnpm 9/10.
+overrides:
+  "ip-address@<10.1.1": ">=10.1.1"
+  "postcss@<8.5.10": ">=8.5.10"
+
+# make build is non-interactive; do not prompt to delete node_modules.
+confirmModulesPurge: false
+
 allowBuilds:
   msw: true
   sharp: true
