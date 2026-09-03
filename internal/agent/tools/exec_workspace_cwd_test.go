@@ -18,6 +18,7 @@ func TestHostExecRelativeWriteLandsInSessionWorkspace(t *testing.T) {
 	r.SetWorkspaceStore(ws, "agt_exec_cwd")
 	r.SetSessionID("chat-exec")
 	r.SetCallerIsAdmin(true)
+	r.SetCallerCanHost(true)
 	registerExecFull(r, nil, nil, nil)
 
 	out, err := r.Execute(context.Background(), "exec", `{"command":"printf 'from-exec\\n' > report.md && pwd"}`)
@@ -43,6 +44,7 @@ func TestHostExecRelativeWriteLandsInProjectChatWorkspace(t *testing.T) {
 	r.SetProjectID("proj_a")
 	r.SetSessionID("chat-a")
 	r.SetCallerIsAdmin(true)
+	r.SetCallerCanHost(true)
 	registerExecFull(r, nil, nil, nil)
 
 	if _, err := r.Execute(context.Background(), "exec", `{"command":"printf 'proj\\n' > note.txt"}`); err != nil {

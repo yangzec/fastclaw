@@ -250,16 +250,25 @@ Use it.`)
 // answer false — a wrong "host" makes us assert things about an
 // environment we never inspected.
 func TestExecRunsOnHostIsConservative(t *testing.T) {
-	t.Run("admin with no sandbox wiring runs on host", func(t *testing.T) {
+	t.Run("super_admin with no sandbox wiring runs on host", func(t *testing.T) {
 		r := NewRegistry(t.TempDir(), t.TempDir())
 		r.SetCallerIsAdmin(true)
+		r.SetCallerCanHost(true)
 		if !r.ExecRunsOnHost() {
-			t.Error("plain self-hosted admin turn should be host execution")
+			t.Error("plain self-hosted super_admin turn should be host execution")
+		}
+	})
+	t.Run("agent owner without host is not host", func(t *testing.T) {
+		r := NewRegistry(t.TempDir(), t.TempDir())
+		r.SetCallerIsAdmin(true)
+		if r.ExecRunsOnHost() {
+			t.Error("owning the agent is not a host-shell grant")
 		}
 	})
 	t.Run("sandbox required is not host", func(t *testing.T) {
 		r := NewRegistry(t.TempDir(), t.TempDir())
 		r.SetCallerIsAdmin(true)
+		r.SetCallerCanHost(true)
 		r.SetSandboxRequired(true)
 		if r.ExecRunsOnHost() {
 			t.Error("enforced sandbox must not report host execution")
@@ -268,6 +277,7 @@ func TestExecRunsOnHostIsConservative(t *testing.T) {
 	t.Run("optional sandbox provider is not host", func(t *testing.T) {
 		r := NewRegistry(t.TempDir(), t.TempDir())
 		r.SetCallerIsAdmin(true)
+		r.SetCallerCanHost(true)
 		r.SetSandboxProvider(func(context.Context) (sandbox.Executor, error) { return nil, nil })
 		if r.ExecRunsOnHost() {
 			t.Error("optional-sandbox mode may route to a container; must not claim host")

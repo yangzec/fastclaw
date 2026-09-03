@@ -29,6 +29,7 @@ func TestOptionalSandboxExecRouting(t *testing.T) {
 	r := NewRegistry(t.TempDir(), t.TempDir())
 	registerExecFull(r, nil, nil, nil)
 	r.SetCallerIsAdmin(true)
+	r.SetCallerCanHost(true)
 
 	ex := &recordingExecutor{}
 	r.SetSandboxProvider(func(context.Context) (sandbox.Executor, error) { return ex, nil })
@@ -62,6 +63,7 @@ func TestForcedSandboxWithoutProviderRefuses(t *testing.T) {
 	r := NewRegistry(t.TempDir(), t.TempDir())
 	registerExecFull(r, nil, nil, nil)
 	r.SetCallerIsAdmin(true)
+	r.SetCallerCanHost(true)
 
 	_, err := r.Execute(context.Background(), "exec", `{"command":"echo x","sandbox":true}`)
 	if err == nil || !strings.Contains(err.Error(), "sandbox required but no executor available") {
@@ -90,8 +92,22 @@ func TestGuestChatterExecIsSandboxedOrRefused(t *testing.T) {
 
 	r.SetSandboxProvider(nil)
 	_, err = r.Execute(context.Background(), "exec", `{"command":"echo guest"}`)
-	if err == nil || !strings.Contains(err.Error(), "restricted to the agent operator") {
-		t.Fatalf("err = %v, want operator-only refusal", err)
+	if err == nil || !strings.Contains(err.Error(), "restricted to super_admin") {
+		t.Fatalf("err = %v, want super_admin-only refusal", err)
+	}
+}
+
+// An agent owner (callerIsAdmin) without host rights must not reach the
+// host shell — owning the bot is not a gateway grant.
+func TestAgentOwnerWithoutHostIsSandboxedOrRefused(t *testing.T) {
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	registerExecFull(r, nil, nil, nil)
+	r.SetCallerIsAdmin(true)
+	r.SetCallerCanHost(false)
+
+	_, err := r.Execute(context.Background(), "exec", `{"command":"echo owner"}`)
+	if err == nil || !strings.Contains(err.Error(), "restricted to super_admin") {
+		t.Fatalf("err = %v, want super_admin-only refusal", err)
 	}
 }
 
@@ -114,10 +130,15 @@ func TestGuestChatterFileToolsConfinedToWorkspace(t *testing.T) {
 	}
 
 	r.SetCallerIsAdmin(true)
+	if _, err := r.Execute(context.Background(), "write_file", `{"path":"`+secret+`","content":"x"}`); err == nil || !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("owner without host write: err = %v, want outside-sandbox rejection", err)
+	}
+
+	r.SetCallerCanHost(true)
 	if _, err := r.Execute(context.Background(), "write_file", `{"path":"`+secret+`","content":"x"}`); err != nil {
-		t.Fatalf("admin write to host path: %v", err)
+		t.Fatalf("super_admin write to host path: %v", err)
 	}
 	if _, err := r.Execute(context.Background(), "read_file", `{"path":"`+secret+`"}`); err != nil {
-		t.Fatalf("admin read of host path: %v", err)
+		t.Fatalf("super_admin read of host path: %v", err)
 	}
 }

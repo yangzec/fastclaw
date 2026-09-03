@@ -482,15 +482,14 @@ func (r *Registry) effectiveSandboxRoot(root string) string {
 	if root == r.systemRoot && r.systemRoot != "" {
 		return r.systemRoot
 	}
-	if r.sandboxRoot == "" && !r.callerIsAdmin {
+	if r.sandboxRoot == "" && !r.callerCanHost {
 		// Guest confinement on self-hosted installs (no hosted path
-		// sandbox configured): non-admin chatters must not roam the
-		// host filesystem. Relative paths stay bounded to the root
+		// sandbox configured): non-super_admin chatters must not roam
+		// the host filesystem. Relative paths stay bounded to the root
 		// they resolve against; absolute paths (root == "") are
 		// bounded to the user workspace — so "<workspace>/report.md"
 		// still works while "/Users/<op>/.ssh/id_rsa" is rejected.
-		// Admin chatters keep unrestricted host access: on a
-		// self-hosted install the operator's machine is theirs.
+		// Super_admin chatters keep unrestricted host access.
 		if root == "" {
 			return r.userRoot
 		}

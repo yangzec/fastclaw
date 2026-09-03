@@ -5,6 +5,18 @@ action on upgrade — read those notes before deploying.
 
 ## [Unreleased]
 
+### Changed
+
+- **Host shell is super_admin-only.** On a shared/self-hosted gateway,
+  owning an agent no longer grants host `exec`, `host_exec`, or
+  absolute host-path file tools. Those require a resolved FastClaw
+  account with role `super_admin`. Agent owners can still edit persona
+  files, provision sibling agents, and use write-mode slash commands.
+  Cron / subagent / shared-identity group turns never get a host
+  shell. `/whoami` now prints `Agent admin` and `Host access`
+  separately. **BREAKING** for multi-tenant installs where a regular
+  `user` previously ran host commands from web chat.
+
 ### Added
 
 - **Codex-style follow-up queue.** Sending while a turn is running now

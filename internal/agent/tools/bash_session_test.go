@@ -439,7 +439,8 @@ func TestKillShellTool_TerminatesRunning(t *testing.T) {
 func TestExecTool_BackgroundReturnsBashID(t *testing.T) {
 	r := NewRegistry(t.TempDir(), t.TempDir())
 	defer r.Close()
-	r.SetCallerIsAdmin(true) // host background shells are operator-only
+	r.SetCallerIsAdmin(true)
+	r.SetCallerCanHost(true) // host background shells are super_admin-only
 	args, _ := json.Marshal(map[string]any{
 		"command":           "sleep 0.05; echo done",
 		"run_in_background": true,
