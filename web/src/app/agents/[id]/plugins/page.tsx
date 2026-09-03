@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Plug, Undo2 } from "lucide-react";
 import {
   getAgent,
+  inheritsToAgents,
   listHookPlugins,
   updateAgent,
   type HookPlugin,
@@ -15,9 +16,9 @@ import {
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { useAgentName } from "@/hooks/use-agent-name";
 
-// Per-agent plugin enable tab. System-wide enable (global Plugins page)
-// is inherited when this agent has no overlay key. A toggle writes an
-// override; Reset drops it so the inherited value comes back.
+// Per-agent plugin enable tab. A catalog item is inherited only when
+// it is enabled AND inherit=all. Otherwise it stays Available until
+// this agent opts in. Reset drops the overlay.
 export default function AgentPluginsPage() {
   const agentId = useAgentIdFromURL();
   const agentName = useAgentName(agentId);
@@ -119,8 +120,9 @@ export default function AgentPluginsPage() {
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">Plugins</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Hook plugins for <strong>{agentName}</strong> — inherited from
-          the global Plugins page unless you override them here.
+          Hook plugins for <strong>{agentName}</strong>. Inherited only
+          when the catalog item is shared with agents; otherwise opt in
+          here.
         </p>
       </div>
 
@@ -146,8 +148,8 @@ export default function AgentPluginsPage() {
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {hookPlugins.map((p) => {
             const hasOverlay = Object.prototype.hasOwnProperty.call(pluginEnabled, p.id);
-            const systemOn = p.enabled === true;
-            const enabled = hasOverlay ? pluginEnabled[p.id] === true : systemOn;
+            const inherited = p.enabled === true && inheritsToAgents(p.inherit);
+            const enabled = hasOverlay ? pluginEnabled[p.id] === true : inherited;
             const saving = pluginSaving[p.id] === true;
             return (
               <div
@@ -173,9 +175,13 @@ export default function AgentPluginsPage() {
                           <Badge variant="outline" className="text-[10px]">
                             Override
                           </Badge>
-                        ) : (
+                        ) : inherited ? (
                           <Badge variant="secondary" className="text-[10px]">
                             Inherited
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-[10px]">
+                            Available
                           </Badge>
                         )}
                       </div>

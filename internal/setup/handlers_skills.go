@@ -9,6 +9,7 @@ import (
 
 	"github.com/fastclaw-ai/fastclaw/internal/agent"
 	"github.com/fastclaw-ai/fastclaw/internal/config"
+	"github.com/fastclaw-ai/fastclaw/internal/scope"
 	"github.com/fastclaw-ai/fastclaw/internal/skills"
 )
 
@@ -77,7 +78,8 @@ func (s *Server) handleListAgentSkills(w http.ResponseWriter, r *http.Request) {
 	// owner has set). Owner-only — Identity.CanAccessAgent is a
 	// deferred-true for session callers and would let any signed-in
 	// user enumerate any agent's skills.
-	if s.requireAgentOwner(w, r, id) == nil {
+	rec := s.requireAgentOwner(w, r, id)
+	if rec == nil {
 		return
 	}
 	homePath, err := config.AgentHomeDir(id)
@@ -110,7 +112,30 @@ func (s *Server) handleListAgentSkills(w http.ResponseWriter, r *http.Request) {
 		globalSkills = scanSkillsDir(globalDir)
 	}
 
-	out := mergeAgentSkillList(agentSkills, globalSkills)
+	inheritNone := map[string]bool{}
+	if s.dataStore != nil {
+		var entries map[string]config.SkillEntryCfg
+		if err := scope.SettingAt(r.Context(), s.dataStore, "skills.entries", "", "", &entries); err == nil {
+			for name, e := range entries {
+				if !config.SkillInheritsToAgents(e, true) {
+					inheritNone[name] = true
+				}
+			}
+		}
+		if rec.UserID != "" {
+			var userEntries map[string]config.SkillEntryCfg
+			if err := scope.SettingAt(r.Context(), s.dataStore, "skills.entries", rec.UserID, "", &userEntries); err == nil {
+				for name, e := range userEntries {
+					if !config.SkillInheritsToAgents(e, true) {
+						inheritNone[name] = true
+					} else {
+						delete(inheritNone, name)
+					}
+				}
+			}
+		}
+	}
+	out := mergeAgentSkillList(agentSkills, globalSkills, inheritNone)
 	if out == nil {
 		jsonResponse(w, http.StatusOK, []any{})
 		return
@@ -121,7 +146,7 @@ func (s *Server) handleListAgentSkills(w http.ResponseWriter, r *http.Request) {
 // mergeAgentSkillList tags agent-local skills as source=agent and
 // appends global skills that the agent did not override as
 // source=inherited. Nil inputs become empty.
-func mergeAgentSkillList(agentSkills, globalSkills []map[string]any) []map[string]any {
+func mergeAgentSkillList(agentSkills, globalSkills []map[string]any, inheritNone map[string]bool) []map[string]any {
 	seen := make(map[string]bool, len(agentSkills))
 	out := make([]map[string]any, 0, len(agentSkills)+len(globalSkills))
 	for _, e := range agentSkills {
@@ -140,6 +165,9 @@ func mergeAgentSkillList(agentSkills, globalSkills []map[string]any) []map[strin
 		}
 		name, _ := e["name"].(string)
 		if name == "" || seen[name] {
+			continue
+		}
+		if inheritNone[name] {
 			continue
 		}
 		e["source"] = "inherited"

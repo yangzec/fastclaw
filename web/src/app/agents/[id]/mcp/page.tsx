@@ -17,7 +17,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Server, Plus, Trash2, Pencil, AlertTriangle, Undo2 } from "lucide-react";
 import {
   getAgentConfig,
-  getConfig,
   getMe,
   updateAgent,
   type MCPServerConfig,
@@ -38,7 +37,7 @@ type Row = MCPEntry & {
 export default function AgentMCPPage() {
   const agentId = useAgentIdFromURL();
   const agentName = useAgentName(agentId);
-  const [globalServers, setGlobalServers] = useState<Record<string, MCPServerConfig>>({});
+  const [inheritedServers, setInheritedServers] = useState<Record<string, MCPServerConfig>>({});
   const [localServers, setLocalServers] = useState<Record<string, MCPServerConfig>>({});
   const [loading, setLoading] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
@@ -50,13 +49,12 @@ export default function AgentMCPPage() {
     if (!agentId) return;
     setLoading(true);
     try {
-      const [agentCfg, globalCfg, me] = await Promise.all([
+      const [agentCfg, me] = await Promise.all([
         getAgentConfig(agentId),
-        getConfig().catch(() => null),
         getMe().catch(() => null),
       ]);
       setLocalServers(agentCfg.mcpServers ?? {});
-      setGlobalServers(globalCfg?.mcpServers ?? {});
+      setInheritedServers(agentCfg.inheritedMcpServers ?? {});
       if (me?.deployMode === "hosted") setIsHosted(true);
     } finally {
       setLoading(false);
@@ -69,13 +67,13 @@ export default function AgentMCPPage() {
 
   const rows = useMemo<Row[]>(() => {
     const names = new Set([
-      ...Object.keys(globalServers),
+      ...Object.keys(inheritedServers),
       ...Object.keys(localServers),
     ]);
     const out: Row[] = [];
     for (const name of names) {
       const local = localServers[name];
-      const inherited = globalServers[name];
+      const inherited = inheritedServers[name];
       if (local) {
         out.push({
           name,
@@ -88,7 +86,7 @@ export default function AgentMCPPage() {
       }
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
-  }, [globalServers, localServers]);
+  }, [inheritedServers, localServers]);
 
   const saveLocal = async (next: Record<string, MCPServerConfig>) => {
     await updateAgent(agentId, { mcpServers: next });
@@ -154,8 +152,9 @@ export default function AgentMCPPage() {
         <div>
           <h2 className="text-xl font-semibold">MCP Servers</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Servers for <strong>{agentName || "this agent"}</strong> — inherited
-            global servers plus this agent&apos;s overlays.
+            Servers for <strong>{agentName || "this agent"}</strong> — only
+            catalog items marked Share with agents show as inherited, plus
+            this agent&apos;s overlays.
           </p>
         </div>
         <Button
@@ -174,8 +173,8 @@ export default function AgentMCPPage() {
           <Server className="w-10 h-10 mx-auto mb-3 opacity-40" />
           <p>No MCP servers configured.</p>
           <p className="text-xs mt-1">
-            Add a server for this agent, or add one under global MCP —
-            those show up here as inherited.
+            Add a server for this agent, or share one from the MCP
+            catalog — those show up here as inherited.
           </p>
         </div>
       ) : (
@@ -299,8 +298,8 @@ export default function AgentMCPPage() {
             <AlertDialogTitle>Remove MCP overlay</AlertDialogTitle>
             <AlertDialogDescription>
               Remove the agent overlay for <strong>{deleteTarget}</strong>?
-              {deleteTarget && globalServers[deleteTarget]
-                ? " The inherited global server will come back."
+              {deleteTarget && inheritedServers[deleteTarget]
+                ? " The inherited server will come back."
                 : " The server's tools will no longer be available."}
             </AlertDialogDescription>
           </AlertDialogHeader>

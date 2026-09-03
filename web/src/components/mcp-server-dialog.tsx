@@ -17,7 +17,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import type { MCPServerConfig } from "@/lib/api";
+import { inheritsToAgents } from "@/lib/api";
 
 export type MCPEntry = { name: string } & MCPServerConfig;
 
@@ -26,12 +28,14 @@ export function MCPEditDialog({
   onOpenChange,
   initial,
   existingNames,
+  showInherit,
   onSave,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initial: MCPEntry | null;
   existingNames: string[];
+  showInherit?: boolean;
   onSave: (entry: MCPEntry) => Promise<void>;
 }) {
   const [name, setName] = useState("");
@@ -41,6 +45,7 @@ export function MCPEditDialog({
   const [args, setArgs] = useState("");
   const [envText, setEnvText] = useState("");
   const [headersText, setHeadersText] = useState("");
+  const [inheritAll, setInheritAll] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -54,6 +59,7 @@ export function MCPEditDialog({
       setArgs((initial.args ?? []).join(" "));
       setEnvText(kvToText(initial.env));
       setHeadersText(kvToText(initial.headers));
+      setInheritAll(inheritsToAgents(initial.inherit));
     } else {
       setName("");
       setType("stdio");
@@ -62,6 +68,7 @@ export function MCPEditDialog({
       setArgs("");
       setEnvText("");
       setHeadersText("");
+      setInheritAll(false);
     }
     setError("");
   }, [open, initial]);
@@ -82,6 +89,9 @@ export function MCPEditDialog({
     }
 
     const entry: MCPEntry = { name: trimName, type, disabled: initial?.disabled };
+    if (showInherit) {
+      entry.inherit = inheritAll ? "all" : "none";
+    }
     if (type === "http") {
       if (!url.trim()) {
         setError("URL is required for HTTP type");
@@ -204,6 +214,23 @@ export function MCPEditDialog({
                 />
               </div>
             </>
+          )}
+
+          {showInherit && (
+            <div className="flex items-center justify-between gap-3 rounded-md border p-3">
+              <div className="min-w-0">
+                <Label>Share with agents</Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Off keeps this server in the catalog. On attaches it
+                  automatically to agents that can see this row.
+                </p>
+              </div>
+              <Switch
+                checked={inheritAll}
+                onCheckedChange={setInheritAll}
+                aria-label="Share MCP server with agents"
+              />
+            </div>
           )}
 
           {error && <p className="text-sm text-destructive">{error}</p>}

@@ -26,6 +26,7 @@ export interface SkillEntryView {
   enabled?: boolean;
   apiKey?: string;
   env?: Record<string, string>;
+  inherit?: string;
 }
 
 export function looksLikeSecret(name: string): boolean {

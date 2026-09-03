@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { Sparkles, Trash2, Download, Search, Loader2, Check, ExternalLink, Settings, Upload, Files, Info } from "lucide-react";
 import {
   getSkills,
@@ -30,6 +31,8 @@ import {
   installSkill,
   uploadSkill,
   getConfig,
+  skillInheritsToAgents,
+  updateSkillEntries,
   type SkillInfo,
   type SkillSearchResult,
 } from "@/lib/api";
@@ -46,6 +49,7 @@ export default function SkillsPage() {
   // user can tell something is configured, and POST preserves any field
   // that's still masked on save).
   const [skillEntries, setSkillEntries] = useState<Record<string, SkillEntryView>>({});
+  const [inheritSaving, setInheritSaving] = useState<Record<string, boolean>>({});
   // Upload-zip state. Backend route is the same as the agent-scoped
   // upload but without the ?agent= query param — it lands in the global
   // ~/.fastclaw/skills dir, which the resolveInstallTarget handler
@@ -81,6 +85,35 @@ export default function SkillsPage() {
     await deleteSkill(deleteTarget);
     setDeleteTarget(null);
     fetchSkills();
+  };
+
+  const handleSkillInherit = async (name: string, next: boolean) => {
+    const prev = skillEntries[name];
+    const inherit = next ? "all" : "none";
+    setSkillEntries((m) => ({ ...m, [name]: { ...m[name], inherit } }));
+    setInheritSaving((m) => ({ ...m, [name]: true }));
+    try {
+      await updateSkillEntries({
+        [name]: {
+          ...prev,
+          enabled: prev?.enabled !== false,
+          inherit,
+        },
+      });
+    } catch {
+      setSkillEntries((m) => {
+        const copy = { ...m };
+        if (prev) copy[name] = prev;
+        else delete copy[name];
+        return copy;
+      });
+    } finally {
+      setInheritSaving((m) => {
+        const copy = { ...m };
+        delete copy[name];
+        return copy;
+      });
+    }
   };
 
   const handleUploadOpenChange = (open: boolean) => {
@@ -137,7 +170,9 @@ export default function SkillsPage() {
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Skills</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Installed skills that agents can use
+            Installed skills. Share with agents is on by default so
+            existing bundles keep working. Turn it off to keep a skill
+            in this catalog only.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -215,6 +250,17 @@ export default function SkillsPage() {
               <p className="text-sm text-muted-foreground line-clamp-2">
                 {skill.description || "No description"}
               </p>
+              <div className="mt-3 flex items-center justify-between gap-2">
+                <span className="text-xs text-muted-foreground">
+                  Share with agents
+                </span>
+                <Switch
+                  checked={skillInheritsToAgents(skillEntries[skill.name]?.inherit)}
+                  onCheckedChange={(v) => handleSkillInherit(skill.name, v)}
+                  disabled={inheritSaving[skill.name] === true}
+                  aria-label={`Share skill ${skill.name} with agents`}
+                />
+              </div>
               {(skillEntries[skill.name]?.apiKey ||
                 Object.keys(skillEntries[skill.name]?.env || {}).length > 0) && (
                 <div className="mt-2 inline-flex items-center gap-1 text-[10px] text-emerald-500">

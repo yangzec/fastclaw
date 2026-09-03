@@ -150,6 +150,16 @@ export interface SkillEntryCfg {
   enabled?: boolean;
   apiKey?: string;
   env?: Record<string, string>;
+  // inherit: omit / "all" = agents receive this skill; "none" = catalog only.
+  inherit?: "none" | "all" | string;
+}
+
+export function inheritsToAgents(inherit?: string): boolean {
+  return inherit === "all";
+}
+
+export function skillInheritsToAgents(inherit?: string): boolean {
+  return inherit !== "none";
 }
 
 // updateSkillEntries persists skill env / apiKey patches. When agentId
@@ -179,6 +189,7 @@ export interface PluginInfo {
   version: string;
   status: string;
   enabled: boolean;
+  inherit?: string;
   config?: Record<string, unknown>;
 }
 
@@ -265,13 +276,13 @@ export interface ConfigResponse {
     // first, falling back to the global entries map.
     agentEntries?: Record<string, Record<string, SkillEntryCfg>>;
   };
-  // Global MCP servers (system/user scope). Agents inherit these and
-  // may overlay the same name in agents.config.mcpServers.
+  // MCP catalog for this viewer (system row for platform admin,
+  // the caller's user row otherwise). inherit=all attaches at runtime.
   mcpServers?: Record<string, MCPServerConfig>;
   plugins?: {
     enabled?: boolean;
     paths?: string[];
-    entries?: Record<string, { enabled: boolean; config?: Record<string, unknown> }>;
+    entries?: Record<string, { enabled: boolean; inherit?: string; config?: Record<string, unknown> }>;
   };
   // Presentation hints the dashboard needs to render inheritance state
   // without re-resolving the scope chain client-side. systemDefaultModel
@@ -1455,6 +1466,7 @@ export interface HookPlugin {
   // System-wide plugins.entries[id].enabled. Agent overlays sit on
   // top of this — missing overlay key inherits this value.
   enabled?: boolean;
+  inherit?: string;
 }
 
 export async function listHookPlugins(): Promise<HookPlugin[]> {
@@ -1477,6 +1489,9 @@ export interface MCPServerConfig {
   // Agent overlay that hides an inherited global server without
   // deleting the shared definition.
   disabled?: boolean;
+  // inherit=all attaches this server to agents that can see the row.
+  // Empty / none = catalog only (default).
+  inherit?: "none" | "all" | string;
 }
 
 export interface AgentFileConfig {
@@ -1488,6 +1503,7 @@ export interface AgentFileConfig {
   skills?: AgentSkillsConfig;
   providers?: Record<string, ProviderData>;
   mcpServers?: Record<string, MCPServerConfig>;
+  inheritedMcpServers?: Record<string, MCPServerConfig>;
 }
 
 // Fetch the raw agent.json for one agent (per-agent overrides only — not

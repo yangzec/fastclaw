@@ -21,9 +21,10 @@ func TestMergedAgentConfigInheritsAndOverridesMCP(t *testing.T) {
 
 	cfg := &Config{
 		MCPServers: map[string]MCPServerConfig{
-			"shared":      {Type: "http", URL: "https://global.example/mcp"},
-			"off":         {Type: "http", URL: "https://global.example/off"},
-			"only-global": {Type: "http", URL: "https://global.example/only"},
+			"shared":      {Type: "http", URL: "https://global.example/mcp", Inherit: InheritAll},
+			"off":         {Type: "http", URL: "https://global.example/off", Inherit: InheritAll},
+			"only-global": {Type: "http", URL: "https://global.example/only", Inherit: InheritAll},
+			"catalog":     {Type: "http", URL: "https://global.example/hidden"},
 		},
 	}
 	got := cfg.MergedAgentConfig(AgentEntry{ID: "agt"})
@@ -39,5 +40,23 @@ func TestMergedAgentConfigInheritsAndOverridesMCP(t *testing.T) {
 	}
 	if !got.MCPServers["off"].Disabled {
 		t.Fatal("agent disabled overlay should hide inherited server")
+	}
+	if _, ok := got.MCPServers["catalog"]; ok {
+		t.Fatal("inherit=none catalog server must not attach to agents")
+	}
+}
+
+func TestSkillInheritsToAgents(t *testing.T) {
+	if !SkillInheritsToAgents(SkillEntryCfg{}, false) {
+		t.Fatal("missing catalog row must stay inherited")
+	}
+	if !SkillInheritsToAgents(SkillEntryCfg{}, true) {
+		t.Fatal("empty inherit on a configured row must stay inherited")
+	}
+	if !SkillInheritsToAgents(SkillEntryCfg{Inherit: InheritAll}, true) {
+		t.Fatal("inherit=all must attach")
+	}
+	if SkillInheritsToAgents(SkillEntryCfg{Inherit: InheritNone}, true) {
+		t.Fatal("inherit=none must stay catalog-only")
 	}
 }

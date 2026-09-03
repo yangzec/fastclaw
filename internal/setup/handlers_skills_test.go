@@ -128,6 +128,7 @@ func TestMergeAgentSkillList(t *testing.T) {
 			{"name": "local", "description": "global-hidden"},
 			{"name": "shared", "description": "g"},
 		},
+		nil,
 	)
 	if len(out) != 2 {
 		t.Fatalf("len = %d", len(out))
@@ -137,6 +138,18 @@ func TestMergeAgentSkillList(t *testing.T) {
 	}
 	if out[1]["source"] != "inherited" || out[1]["name"] != "shared" {
 		t.Fatalf("second = %+v", out[1])
+	}
+
+	hidden := mergeAgentSkillList(
+		[]map[string]any{{"name": "local"}},
+		[]map[string]any{{"name": "catalog-only"}, {"name": "shared"}},
+		map[string]bool{"catalog-only": true},
+	)
+	if len(hidden) != 2 {
+		t.Fatalf("inherit=none should drop catalog-only, got %+v", hidden)
+	}
+	if hidden[1]["name"] != "shared" {
+		t.Fatalf("shared should remain, got %+v", hidden)
 	}
 }
 

@@ -206,10 +206,15 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 	for _, name := range sl.skillsCfg.Disabled {
 		disabled[name] = true
 	}
-	// Also check global entries for enabled: false
+	// Also check global entries for enabled: false, and inherit=none
+	// (catalog-only — not attached unless the agent has a local copy).
+	inheritNone := map[string]bool{}
 	for name, entry := range sl.globalCfg.Entries {
 		if !entry.Enabled {
 			disabled[name] = true
+		}
+		if !config.SkillInheritsToAgents(entry, true) {
+			inheritNone[name] = true
 		}
 	}
 
@@ -217,7 +222,7 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 	for _, dir := range sl.globalCfg.Load.ExtraDirs {
 		dir = expandPath(dir)
 		for name, skill := range discoverSkillsEnhanced(dir, "extra") {
-			if !disabled[name] {
+			if !disabled[name] && !inheritNone[name] {
 				skillsMap[name] = skill
 			}
 		}
@@ -226,7 +231,7 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 	// Layer 3: managed skills (~/.fastclaw/skills/)
 	managedDir := fastclawManagedDir()
 	for name, skill := range discoverSkillsEnhanced(managedDir, "managed") {
-		if !disabled[name] {
+		if !disabled[name] && !inheritNone[name] {
 			skillsMap[name] = skill
 		}
 	}
@@ -234,7 +239,7 @@ func (sl *SkillsLoader) LoadSkills() []Skill {
 	// Layer 2: user installed (~/.fastclaw/skills/)
 	userDir := filepath.Join(sl.homeDir, "skills")
 	for name, skill := range discoverSkillsEnhanced(userDir, "user") {
-		if !disabled[name] {
+		if !disabled[name] && !inheritNone[name] {
 			skillsMap[name] = skill
 		}
 	}

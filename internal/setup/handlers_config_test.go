@@ -162,6 +162,7 @@ func TestMergeSkillEntry(t *testing.T) {
 		Enabled: true,
 		APIKey:  "real-secret-key-123456",
 		Env:     map[string]string{"API_TOKEN": "real-env-secret-987654", "NORMAL_VAR": "old"},
+		Inherit: config.InheritAll,
 	}
 	in := config.SkillEntryCfg{
 		Enabled: false,
@@ -181,11 +182,94 @@ func TestMergeSkillEntry(t *testing.T) {
 	if out.Enabled != in.Enabled {
 		t.Errorf("enabled should follow the request, got %v", out.Enabled)
 	}
+	if out.Inherit != existing.Inherit {
+		t.Errorf("omitted inherit should keep stored value, got %q", out.Inherit)
+	}
 
 	// A genuinely new value (no mask) must replace the stored one.
 	out = mergeSkillEntry(existing, config.SkillEntryCfg{APIKey: "brand-new-key-000000"})
 	if out.APIKey != "brand-new-key-000000" {
 		t.Errorf("unmasked apiKey should replace the stored one, got %q", out.APIKey)
+	}
+}
+
+func TestGetConfigIsolatesSystemSkillsAndPluginsFromOtherTenants(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, adminUser, regularUser := newAuthTestServer(t, ctx)
+
+	rr := httptest.NewRecorder()
+	s.authMiddleware(s.handleUpdateConfig)(rr, configTestRequest(t, ctx, resolver, http.MethodPost, "/api/config", adminUser.ID, map[string]any{
+		"skills": map[string]any{
+			"entries": map[string]any{
+				"image-gen": map[string]any{"apiKey": "sk-system-skill-secret-9999", "inherit": "all"},
+			},
+		},
+		"plugins": map[string]any{
+			"enabled": true,
+			"entries": map[string]any{
+				"mem0": map[string]any{"enabled": true, "inherit": "all", "config": map[string]any{"token": "plugin-secret"}},
+			},
+		},
+	}))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin POST status = %d body = %s", rr.Code, rr.Body.String())
+	}
+
+	get := httptest.NewRecorder()
+	s.authMiddleware(s.handleGetConfig)(get, configTestRequest(t, ctx, resolver, http.MethodGet, "/api/config", regularUser.ID, nil))
+	if get.Code != http.StatusOK {
+		t.Fatalf("user GET status = %d", get.Code)
+	}
+	var view struct {
+		Skills struct {
+			Entries map[string]config.SkillEntryCfg `json:"entries"`
+		} `json:"skills"`
+		Plugins struct {
+			Entries map[string]config.PluginEntryCfg `json:"entries"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(get.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := view.Skills.Entries["image-gen"]; ok {
+		t.Fatalf("tenant B must not see system skill catalog: %+v", view.Skills.Entries)
+	}
+	if _, ok := view.Plugins.Entries["mem0"]; ok {
+		t.Fatalf("tenant B must not see system plugin catalog: %+v", view.Plugins.Entries)
+	}
+}
+
+func TestGetConfigIsolatesSystemMCPFromOtherTenants(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, adminUser, regularUser := newAuthTestServer(t, ctx)
+
+	rr := httptest.NewRecorder()
+	s.authMiddleware(s.handleUpdateConfig)(rr, configTestRequest(t, ctx, resolver, http.MethodPost, "/api/config", adminUser.ID, map[string]any{
+		"mcpServers": map[string]any{
+			"platform-secret": map[string]any{
+				"type":    "http",
+				"url":     "https://mcp.example/private",
+				"headers": map[string]any{"Authorization": "Bearer tenant-a-secret-9999"},
+			},
+		},
+	}))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin POST status = %d body = %s", rr.Code, rr.Body.String())
+	}
+
+	get := httptest.NewRecorder()
+	s.authMiddleware(s.handleGetConfig)(get, configTestRequest(t, ctx, resolver, http.MethodGet, "/api/config", regularUser.ID, nil))
+	if get.Code != http.StatusOK {
+		t.Fatalf("user GET status = %d", get.Code)
+	}
+	var view struct {
+		MCPServers map[string]config.MCPServerConfig `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(get.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := view.MCPServers["platform-secret"]; ok {
+		t.Fatalf("tenant B must not see tenant-A/system MCP catalog: %+v", view.MCPServers)
 	}
 }
 

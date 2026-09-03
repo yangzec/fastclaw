@@ -24,7 +24,6 @@ const ADMIN_PATH_PREFIXES = [
   "/channels",
   "/channels-config",
   "/plugins",
-  "/mcp",
   "/tools",
   "/cron",
 ];

@@ -58,9 +58,11 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 		}
 
 		enabled := false
+		inherit := ""
 		if cfg != nil && cfg.Plugins.Entries != nil {
 			if pe, ok := cfg.Plugins.Entries[id]; ok {
 				enabled = pe.Enabled
+				inherit = pe.Inherit
 			}
 		}
 
@@ -77,6 +79,7 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 			"version":     version,
 			"status":      status,
 			"enabled":     enabled,
+			"inherit":     inherit,
 		})
 	}
 	if plugins == nil {
@@ -104,7 +107,8 @@ func (s *Server) handleListHookPlugins(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusOK, []any{})
 		return
 	}
-	cfg, _ := s.loadUserConfig(r)
+	uid := config.UserIDFromContext(r.Context())
+	catalog := pluginEntriesForAttach(r.Context(), s.dataStore, uid)
 	var out []map[string]any
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -139,10 +143,10 @@ func (s *Server) handleListHookPlugins(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		enabled := false
-		if cfg != nil && cfg.Plugins.Entries != nil {
-			if pe, ok := cfg.Plugins.Entries[id]; ok {
-				enabled = pe.Enabled
-			}
+		inherit := ""
+		if pe, ok := catalog[id]; ok {
+			enabled = pe.Enabled
+			inherit = pe.Inherit
 		}
 		out = append(out, map[string]any{
 			"id":          id,
@@ -150,6 +154,7 @@ func (s *Server) handleListHookPlugins(w http.ResponseWriter, r *http.Request) {
 			"description": manifest["description"],
 			"version":     manifest["version"],
 			"enabled":     enabled,
+			"inherit":     inherit,
 		})
 	}
 	if out == nil {
@@ -163,6 +168,7 @@ func (s *Server) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req struct {
 		Enabled *bool                  `json:"enabled,omitempty"`
+		Inherit *string                `json:"inherit,omitempty"`
 		Config  map[string]interface{} `json:"config,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -182,6 +188,9 @@ func (s *Server) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
 	entry := cfg.Plugins.Entries[id]
 	if req.Enabled != nil {
 		entry.Enabled = *req.Enabled
+	}
+	if req.Inherit != nil {
+		entry.Inherit = *req.Inherit
 	}
 	if req.Config != nil {
 		entry.Config = req.Config

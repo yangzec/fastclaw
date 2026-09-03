@@ -69,9 +69,9 @@ function extractAgentId(pathname: string): string | null {
 //   User        Users · Chats · Token Usage · API Keys — admin platform tools
 //   (no label)  Settings                              — opens the user dialog
 //
-// Skills / Tools and the Users/Chats/Token-Usage admin entries are
-// admin-only. Non-admin sees the Agent group with just Agents + Models,
-// and a slim User group with API Keys. Settings is a click-only item —
+// Skills / Tools / Plugins and the Users/Chats/Token-Usage admin
+// entries are admin-only. Non-admin sees Agents + Models + their
+// own MCP catalog, and a slim User group with API Keys. Settings is a click-only item —
 // its onClick is attached at render time so it can call into component
 // state.
 const OVERVIEW_ITEM: NavItem = {
@@ -83,6 +83,7 @@ const OVERVIEW_ITEM: NavItem = {
 const USER_AGENT_GROUP: NavItem[] = [
   { title: "Agents", url: "/agents/", icon: BotIcon },
   { title: "Models", url: "/models/", icon: BrainIcon },
+  { title: "MCP", url: "/mcp/", icon: ServerIcon },
 ];
 
 const ADMIN_AGENT_GROUP: NavItem[] = [

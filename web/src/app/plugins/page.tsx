@@ -8,6 +8,7 @@ import { Plug } from "lucide-react";
 import {
   getConfig,
   getPlugins,
+  inheritsToAgents,
   updateConfig,
   updatePlugin,
   type PluginInfo,
@@ -19,6 +20,7 @@ export default function GlobalPluginsPage() {
   const [loading, setLoading] = useState(true);
   const [masterSaving, setMasterSaving] = useState(false);
   const [saving, setSaving] = useState<Record<string, boolean>>({});
+  const [inheritSaving, setInheritSaving] = useState<Record<string, boolean>>({});
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -75,6 +77,27 @@ export default function GlobalPluginsPage() {
     }
   };
 
+  const handleInherit = async (id: string, next: boolean) => {
+    const prev = plugins.find((p) => p.id === id)?.inherit;
+    setPlugins((list) =>
+      list.map((p) => (p.id === id ? { ...p, inherit: next ? "all" : "none" } : p)),
+    );
+    setInheritSaving((m) => ({ ...m, [id]: true }));
+    try {
+      await updatePlugin(id, { inherit: next ? "all" : "none" });
+    } catch {
+      setPlugins((list) =>
+        list.map((p) => (p.id === id ? { ...p, inherit: prev } : p)),
+      );
+    } finally {
+      setInheritSaving((m) => {
+        const copy = { ...m };
+        delete copy[id];
+        return copy;
+      });
+    }
+  };
+
   if (loading) {
     return (
       <div className="p-6 space-y-6 max-w-5xl mx-auto">
@@ -89,8 +112,9 @@ export default function GlobalPluginsPage() {
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">Plugins</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Install-wide hook and tool plugins. Enabled plugins are inherited
-          by every agent; an agent can still turn one off for itself.
+          Install-wide hook and tool plugins. Enabled starts the process.
+          Share with agents attaches hooks automatically; otherwise agents
+          opt in from their Plugins tab.
         </p>
       </div>
 
@@ -99,7 +123,7 @@ export default function GlobalPluginsPage() {
           <p className="text-sm font-medium">Plugin runtime</p>
           <p className="text-xs text-muted-foreground mt-0.5">
             Master switch. Off means discovered plugins stay unloaded.
-            On, each plugin below can start and be inherited.
+            On, each plugin below can start. Inherit is a separate toggle.
           </p>
         </div>
         <Switch
@@ -131,7 +155,9 @@ export default function GlobalPluginsPage() {
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {plugins.map((p) => {
             const enabled = p.enabled === true;
+            const shared = inheritsToAgents(p.inherit);
             const busy = saving[p.id] === true;
+            const inheritBusy = inheritSaving[p.id] === true;
             return (
               <div
                 key={p.id}
@@ -160,6 +186,9 @@ export default function GlobalPluginsPage() {
                         <Badge variant="secondary" className="text-[10px]">
                           {enabled ? "Enabled" : "Off"}
                         </Badge>
+                        <Badge variant="outline" className="text-[10px]">
+                          {shared ? "Shared" : "Catalog only"}
+                        </Badge>
                       </div>
                     </div>
                   </div>
@@ -175,7 +204,18 @@ export default function GlobalPluginsPage() {
                     {p.description}
                   </p>
                 )}
-                <code className="text-[10px] text-muted-foreground/70 mt-3 block truncate">
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    Share with agents
+                  </span>
+                  <Switch
+                    checked={shared}
+                    onCheckedChange={(v) => handleInherit(p.id, v)}
+                    disabled={inheritBusy || !enabled}
+                    aria-label={`Share plugin ${p.id} with agents`}
+                  />
+                </div>
+                <code className="text-[10px] text-muted-foreground/70 mt-2 block truncate">
                   {p.id}
                 </code>
               </div>

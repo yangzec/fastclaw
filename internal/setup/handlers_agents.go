@@ -765,7 +765,13 @@ func (s *Server) handleGetAgentConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		cfg.MCPServers = masked
 	}
-	jsonResponse(w, http.StatusOK, cfg)
+	blob, _ := json.Marshal(cfg)
+	out := map[string]any{}
+	_ = json.Unmarshal(blob, &out)
+	if inherited := inheritedMCPForOwner(r.Context(), s.dataStore, rec.UserID); len(inherited) > 0 {
+		out["inheritedMcpServers"] = inherited
+	}
+	jsonResponse(w, http.StatusOK, out)
 }
 
 func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {

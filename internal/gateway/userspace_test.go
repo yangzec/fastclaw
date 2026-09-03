@@ -23,7 +23,8 @@ func TestAssembleConfigLoadsGlobalMCPServers(t *testing.T) {
 	}
 	ctx := context.Background()
 	if err := scope.SaveSetting(ctx, db, "", "", NSMCPServers, map[string]interface{}{
-		"shared": map[string]interface{}{"type": "http", "url": "https://mcp.example/sse"},
+		"shared": map[string]interface{}{"type": "http", "url": "https://mcp.example/sse", "inherit": "all"},
+		"secret": map[string]interface{}{"type": "http", "url": "https://mcp.example/private"},
 	}); err != nil {
 		t.Fatalf("save mcpServers: %v", err)
 	}
@@ -35,16 +36,23 @@ func TestAssembleConfigLoadsGlobalMCPServers(t *testing.T) {
 	if !ok || got.Type != "http" || got.URL != "https://mcp.example/sse" {
 		t.Fatalf("expected inherited MCP server, got %+v", cfg.MCPServers)
 	}
+	if _, ok := cfg.MCPServers["secret"]; ok {
+		t.Fatal("system inherit=none must not attach to a tenant agent")
+	}
 }
 
 func TestPluginEnabledForAgentInheritsSystem(t *testing.T) {
 	system := map[string]config.PluginEntryCfg{
-		"mem0": {Enabled: true},
+		"mem0": {Enabled: true, Inherit: config.InheritAll},
 		"echo": {Enabled: false},
+		"idle": {Enabled: true},
 	}
 
 	if !pluginEnabledForAgent(nil, system, "mem0") {
-		t.Fatal("missing overlay should inherit system enable")
+		t.Fatal("missing overlay should inherit enabled+inherit=all")
+	}
+	if pluginEnabledForAgent(nil, system, "idle") {
+		t.Fatal("enabled without inherit=all must stay catalog-only")
 	}
 	if pluginEnabledForAgent(nil, system, "echo") {
 		t.Fatal("system-disabled plugin should stay off")

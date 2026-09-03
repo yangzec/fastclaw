@@ -15,9 +15,11 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Server, Plus, Trash2, Pencil, AlertTriangle } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import {
   getConfig,
   getMe,
+  inheritsToAgents,
   updateConfig,
   type MCPServerConfig,
 } from "@/lib/api";
@@ -34,6 +36,8 @@ export default function GlobalMCPPage() {
   const [editEntry, setEditEntry] = useState<MCPEntry | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [isHosted, setIsHosted] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [inheritSaving, setInheritSaving] = useState<Record<string, boolean>>({});
 
   const fetchConfig = useCallback(async () => {
     setLoading(true);
@@ -44,6 +48,7 @@ export default function GlobalMCPPage() {
       ]);
       setServers(cfg.mcpServers ?? {});
       if (me?.deployMode === "hosted") setIsHosted(true);
+      setIsAdmin(me?.user?.role === "super_admin");
     } finally {
       setLoading(false);
     }
@@ -82,6 +87,25 @@ export default function GlobalMCPPage() {
     setDeleteTarget(null);
   };
 
+  const handleInherit = async (name: string, next: boolean) => {
+    const prev = servers[name];
+    if (!prev) return;
+    const updated = { ...prev, inherit: next ? "all" : "none" };
+    setServers((m) => ({ ...m, [name]: updated }));
+    setInheritSaving((m) => ({ ...m, [name]: true }));
+    try {
+      await saveServers({ ...servers, [name]: updated });
+    } catch {
+      setServers((m) => ({ ...m, [name]: prev }));
+    } finally {
+      setInheritSaving((m) => {
+        const copy = { ...m };
+        delete copy[name];
+        return copy;
+      });
+    }
+  };
+
   if (loading) {
     return (
       <div className="p-6 space-y-6 max-w-5xl mx-auto">
@@ -110,8 +134,9 @@ export default function GlobalMCPPage() {
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">MCP Servers</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Shared tool servers for every agent. Agents inherit these and
-            can add or override servers of the same name.
+            {isAdmin
+              ? "Platform catalog. Share with agents attaches a server to every tenant. Off keeps it catalog-only — other tenants never see the definition or its secrets."
+              : "Your catalog. Share with agents attaches a server to your agents only. Off keeps it here until an agent adds it itself."}
           </p>
         </div>
         <Button
@@ -130,7 +155,7 @@ export default function GlobalMCPPage() {
           <Server className="w-10 h-10 mx-auto mb-3 opacity-40" />
           <p>No global MCP servers configured.</p>
           <p className="text-xs mt-1">
-            Add a server here so every agent inherits its tools.
+            New servers stay catalog-only until you turn on Share with agents.
           </p>
         </div>
       ) : (
@@ -159,6 +184,19 @@ export default function GlobalMCPPage() {
                   headers: {Object.keys(cfg.headers).join(", ")}
                 </div>
               )}
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={inheritsToAgents(cfg.inherit)}
+                    onCheckedChange={(v) => handleInherit(name, v)}
+                    disabled={inheritSaving[name] === true}
+                    aria-label={`Share ${name} with agents`}
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    {inheritsToAgents(cfg.inherit) ? "Shared" : "Catalog only"}
+                  </span>
+                </div>
+              </div>
               <div className="flex gap-1 pt-1">
                 <Button
                   variant="ghost"
@@ -193,6 +231,7 @@ export default function GlobalMCPPage() {
         }}
         initial={editEntry}
         existingNames={Object.keys(servers)}
+        showInherit
         onSave={handleSaveEntry}
       />
 
@@ -204,8 +243,9 @@ export default function GlobalMCPPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove MCP server</AlertDialogTitle>
             <AlertDialogDescription>
-              Remove <strong>{deleteTarget}</strong> from the shared list?
-              Agents that do not override this name will lose its tools.
+              Remove <strong>{deleteTarget}</strong> from this catalog?
+              Agents that inherited it will lose its tools unless they
+              have their own overlay.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -70,7 +70,143 @@ func (s *Server) loadUserConfig(r *http.Request) (*config.Config, error) {
 	}
 	config.LoadEnv().ApplyToConfig(cfg)
 	config.ApplyDefaults(cfg)
+	// Catalogs are ownership-scoped: the editor sees only the row it
+	// will write back. SettingInto would merge system into every
+	// tenant and leak secrets (MCP headers, skill API keys). Runtime
+	// attach uses mergeInheritableMCP / inheritablePluginEntries.
+	admin := isPlatformAdmin(r)
+	if servers, err := mcpCatalogForViewer(r.Context(), s.dataStore, uid, admin); err == nil {
+		cfg.MCPServers = servers
+	}
+	if entries, err := pluginEntriesForViewer(r.Context(), s.dataStore, uid, admin); err == nil {
+		cfg.Plugins.Entries = entries
+	}
+	if entries, err := skillEntriesForViewer(r.Context(), s.dataStore, uid, admin); err == nil {
+		cfg.Skills.Entries = entries
+	}
 	return cfg, nil
+}
+
+func isPlatformAdmin(r *http.Request) bool {
+	ident, ok := auth.FromContext(r.Context())
+	return ok && ident.Role == "super_admin" && !ident.IsActingAs()
+}
+
+// mcpCatalogForViewer returns the MCP map the dashboard should edit.
+// Platform admin sees the system row. Everyone else sees their user
+// row only — system inherit=all servers are attached at runtime and
+// listed on the agent page, not copied into another tenant's catalog.
+func mcpCatalogForViewer(ctx context.Context, st store.Store, uid string, platformAdmin bool) (map[string]config.MCPServerConfig, error) {
+	out := map[string]config.MCPServerConfig{}
+	if platformAdmin {
+		if err := scope.SettingAt(ctx, st, "mcpServers", "", "", &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+	if uid == "" {
+		return out, nil
+	}
+	if err := scope.SettingAt(ctx, st, "mcpServers", uid, "", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// inheritedMCPForOwner is the runtime attach set: system inherit=all
+// plus the owner's user-scope inherit=all. Used by the agent MCP page
+// so Inherited badges match what the loop actually loads.
+func inheritedMCPForOwner(ctx context.Context, st store.Store, ownerUserID string) map[string]config.MCPServerConfig {
+	system := map[string]config.MCPServerConfig{}
+	_ = scope.SettingAt(ctx, st, "mcpServers", "", "", &system)
+	user := map[string]config.MCPServerConfig{}
+	if ownerUserID != "" {
+		_ = scope.SettingAt(ctx, st, "mcpServers", ownerUserID, "", &user)
+	}
+	out := map[string]config.MCPServerConfig{}
+	for k, v := range system {
+		if config.InheritsToAgents(v.Inherit) {
+			out[k] = maskMCPServer(v)
+		}
+	}
+	for k, v := range user {
+		if config.InheritsToAgents(v.Inherit) {
+			out[k] = maskMCPServer(v)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// pluginEntriesForViewer is the plugins.entries map the dashboard
+// edits. Platform admin sees the system row. Everyone else sees
+// their user row only — system inherit=all is applied at attach
+// time, not copied into another tenant's GET /api/config.
+func pluginEntriesForViewer(ctx context.Context, st store.Store, uid string, platformAdmin bool) (map[string]config.PluginEntryCfg, error) {
+	var cfg config.PluginsCfg
+	if platformAdmin {
+		if err := scope.SettingAt(ctx, st, "plugins", "", "", &cfg); err != nil {
+			return nil, err
+		}
+		if cfg.Entries == nil {
+			return map[string]config.PluginEntryCfg{}, nil
+		}
+		return cfg.Entries, nil
+	}
+	if uid == "" {
+		return map[string]config.PluginEntryCfg{}, nil
+	}
+	if err := scope.SettingAt(ctx, st, "plugins", uid, "", &cfg); err != nil {
+		return nil, err
+	}
+	if cfg.Entries == nil {
+		return map[string]config.PluginEntryCfg{}, nil
+	}
+	return cfg.Entries, nil
+}
+
+// skillEntriesForViewer is the skills.entries map the dashboard
+// edits. Same ownership split as MCP — system API keys stay out of
+// other tenants' GET /api/config.
+func skillEntriesForViewer(ctx context.Context, st store.Store, uid string, platformAdmin bool) (map[string]config.SkillEntryCfg, error) {
+	out := map[string]config.SkillEntryCfg{}
+	if platformAdmin {
+		if err := scope.SettingAt(ctx, st, "skills.entries", "", "", &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+	if uid == "" {
+		return out, nil
+	}
+	if err := scope.SettingAt(ctx, st, "skills.entries", uid, "", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// pluginEntriesForAttach merges system then owner-user plugin
+// entries for hook-list badges. Does not leak through GET /api/config.
+func pluginEntriesForAttach(ctx context.Context, st store.Store, ownerUserID string) map[string]config.PluginEntryCfg {
+	out := map[string]config.PluginEntryCfg{}
+	if st == nil {
+		return out
+	}
+	var system config.PluginsCfg
+	_ = scope.SettingAt(ctx, st, "plugins", "", "", &system)
+	for k, v := range system.Entries {
+		out[k] = v
+	}
+	if ownerUserID != "" {
+		var user config.PluginsCfg
+		_ = scope.SettingAt(ctx, st, "plugins", ownerUserID, "", &user)
+		for k, v := range user.Entries {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // loadAgentSkillEntriesForUser collects every agent-scope skills.entries
@@ -2151,7 +2287,7 @@ func isMaskedSecret(s string) bool {
 }
 
 func maskSkillEntry(v config.SkillEntryCfg) config.SkillEntryCfg {
-	out := config.SkillEntryCfg{Enabled: v.Enabled, APIKey: maskAPIKey(v.APIKey)}
+	out := config.SkillEntryCfg{Enabled: v.Enabled, APIKey: maskAPIKey(v.APIKey), Inherit: v.Inherit}
 	if len(v.Env) > 0 {
 		out.Env = make(map[string]string, len(v.Env))
 		for ek, ev := range v.Env {
@@ -2207,7 +2343,10 @@ func mergeMCPServer(existing, in config.MCPServerConfig) config.MCPServerConfig 
 }
 
 func mergeSkillEntry(existing, in config.SkillEntryCfg) config.SkillEntryCfg {
-	out := config.SkillEntryCfg{Enabled: in.Enabled, APIKey: in.APIKey, Env: in.Env}
+	out := config.SkillEntryCfg{Enabled: in.Enabled, APIKey: in.APIKey, Env: in.Env, Inherit: in.Inherit}
+	if out.Inherit == "" {
+		out.Inherit = existing.Inherit
+	}
 	if isMaskedSecret(out.APIKey) {
 		out.APIKey = existing.APIKey
 	}
