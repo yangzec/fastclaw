@@ -96,6 +96,47 @@ func TestFlattenMarkdownTables(t *testing.T) {
 	}
 }
 
+func TestStripMarkdownFences(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "no fences — passthrough",
+			in:   "hello **world**",
+			want: "hello **world**",
+		},
+		{
+			name: "drops balanced fence markers, keeps code",
+			in:   "before\n```js\nconst x = 1;\n```\nafter",
+			want: "before\nconst x = 1;\nafter",
+		},
+		{
+			name: "drops unclosed fence marker",
+			in:   "真正的报错是：\n```\nAPI error 400\n- `agt`: 当前",
+			want: "真正的报错是：\nAPI error 400\n- `agt`: 当前",
+		},
+		{
+			name: "mid-line fence becomes a newline",
+			in:   "err: {\"e\":\"x\"}```请求打模型",
+			want: "err: {\"e\":\"x\"}\n请求打模型",
+		},
+		{
+			name: "unwraps whole-message markdown fence",
+			in:   "```markdown\n# 结论\n\n**重点**\n```",
+			want: "# 结论\n\n**重点**",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := StripMarkdownFences(tc.in)
+			if got != tc.want {
+				t.Fatalf("got:\n%q\nwant:\n%q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSplitOutboundText(t *testing.T) {
 	for _, tc := range []struct {
 		name string
