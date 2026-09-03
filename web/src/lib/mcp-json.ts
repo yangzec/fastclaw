@@ -74,9 +74,15 @@ export function normalizeMCPServer(raw: unknown): MCPServerConfig | string {
   return cfg;
 }
 
-function parseServerMap(map: Record<string, unknown>): ParseMCPJsonResult {
+function parseServerMap(
+  map: Record<string, unknown>,
+  allowEmpty = false,
+): ParseMCPJsonResult {
   const keys = Object.keys(map);
-  if (keys.length === 0) return { ok: false, error: "No servers in JSON" };
+  if (keys.length === 0) {
+    if (allowEmpty) return { ok: true, servers: {} };
+    return { ok: false, error: "No servers in JSON" };
+  }
   const servers: Record<string, MCPServerConfig> = {};
   for (const name of keys) {
     const trimmed = name.trim();
@@ -92,7 +98,7 @@ function parseServerMap(map: Record<string, unknown>): ParseMCPJsonResult {
 // server object (with optional name), or { name, ...server }.
 export function parseMCPServersJSON(
   text: string,
-  opts?: { defaultName?: string },
+  opts?: { defaultName?: string; allowEmpty?: boolean },
 ): ParseMCPJsonResult {
   let parsed: unknown;
   try {
@@ -103,7 +109,7 @@ export function parseMCPServersJSON(
   if (!isRecord(parsed)) return { ok: false, error: "JSON must be an object" };
 
   if (isRecord(parsed.mcpServers)) {
-    return parseServerMap(parsed.mcpServers);
+    return parseServerMap(parsed.mcpServers, opts?.allowEmpty);
   }
 
   if (typeof parsed.name === "string" && looksLikeServerConfig(parsed)) {
@@ -127,7 +133,7 @@ export function parseMCPServersJSON(
     return { ok: true, servers: { [name]: cfg } };
   }
 
-  return parseServerMap(parsed);
+  return parseServerMap(parsed, opts?.allowEmpty);
 }
 
 export function formatMCPServersJSON(

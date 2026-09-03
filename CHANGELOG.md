@@ -13,10 +13,11 @@ action on upgrade — read those notes before deploying.
   composer to **插入** (or press ⌘/Ctrl+Enter / TUI Ctrl+S) to steer
   the in-flight turn. Per-item **插入** promotes a queued line; Stop
   still aborts and leaves the queue intact.
-- **MCP JSON configuration.** Add or edit catalog / agent MCP
-  servers by pasting Cursor or Claude Desktop `mcp.json` (or a
-  name→config map). `type` is optional — `url` means http, `command`
-  means stdio. The form editor is still available as a second tab.
+- **MCP JSON configuration.** The MCP page opens on a JSON tab
+  where you paste Cursor or Claude Desktop `mcp.json` (or a
+  name→config map) and save. `type` is optional — `url` means http,
+  `command` means stdio. Cards and the form editor remain as the
+  other tab.
 - **Composer autofocus on new and switched chats.** Opening a new
   conversation or switching sessions (including project chats) puts
   the caret in the message box. A second click on New chat does the

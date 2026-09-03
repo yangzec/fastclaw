@@ -16,6 +16,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Server, Plus, Trash2, Pencil, AlertTriangle } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   getConfig,
   getMe,
@@ -23,6 +24,7 @@ import {
   updateConfig,
   type MCPServerConfig,
 } from "@/lib/api";
+import { MCPJsonPanel } from "@/components/mcp-json-panel";
 import {
   MCPEditDialog,
   mcpEndpoint,
@@ -135,8 +137,8 @@ export default function GlobalMCPPage() {
           <h2 className="text-2xl font-semibold tracking-tight">MCP Servers</h2>
           <p className="text-sm text-muted-foreground mt-1">
             {isAdmin
-              ? "Platform catalog. Paste a Cursor mcp.json or fill the form. Share with agents attaches a server to every tenant. Off keeps it catalog-only — other tenants never see the definition or its secrets."
-              : "Your catalog. Paste a Cursor mcp.json or fill the form. Share with agents attaches a server to your agents only. Off keeps it here until an agent adds it itself."}
+              ? "Platform catalog. Paste mcp.json on the JSON tab. Share with agents attaches a server to every tenant. Off keeps it catalog-only — other tenants never see the definition or its secrets."
+              : "Your catalog. Paste mcp.json on the JSON tab. Share with agents attaches a server to your agents only. Off keeps it here until an agent adds it itself."}
           </p>
         </div>
         <Button
@@ -150,6 +152,19 @@ export default function GlobalMCPPage() {
         </Button>
       </div>
 
+      <Tabs defaultValue="json">
+        <TabsList>
+          <TabsTrigger value="json">JSON</TabsTrigger>
+          <TabsTrigger value="cards">Cards</TabsTrigger>
+        </TabsList>
+        <TabsContent value="json" className="pt-4">
+          <MCPJsonPanel
+            servers={servers}
+            hint="Paste a Cursor / Claude Desktop mcp.json and click Save JSON. Existing names are replaced; omit a name to remove it."
+            onSave={saveServers}
+          />
+        </TabsContent>
+        <TabsContent value="cards" className="pt-4">
       {entries.length === 0 ? (
         <div className="rounded-lg border border-dashed p-12 text-center text-muted-foreground">
           <Server className="w-10 h-10 mx-auto mb-3 opacity-40" />
@@ -223,6 +238,8 @@ export default function GlobalMCPPage() {
           ))}
         </div>
       )}
+        </TabsContent>
+      </Tabs>
 
       <MCPEditDialog
         open={editOpen}

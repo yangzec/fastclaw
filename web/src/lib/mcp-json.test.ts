@@ -110,6 +110,12 @@ test("parseMCPServersJSON rejects invalid JSON and empty maps", () => {
   assert.equal(looksLikeServerConfig({ foo: 1 }), false);
 });
 
+test("parseMCPServersJSON allowEmpty accepts an empty catalog", () => {
+  const parsed = parseMCPServersJSON('{ "mcpServers": {} }', { allowEmpty: true });
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) assert.deepEqual(parsed.servers, {});
+});
+
 test("formatMCPServersJSON wraps the Cursor-style envelope", () => {
   const text = formatMCPServersJSON({
     demo: { type: "stdio", command: "npx" },

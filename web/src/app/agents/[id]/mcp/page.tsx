@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Server, Plus, Trash2, Pencil, AlertTriangle, Undo2 } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   getAgentConfig,
   getMe,
@@ -23,6 +24,7 @@ import {
 } from "@/lib/api";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { useAgentName } from "@/hooks/use-agent-name";
+import { MCPJsonPanel } from "@/components/mcp-json-panel";
 import {
   MCPEditDialog,
   mcpEndpoint,
@@ -170,6 +172,20 @@ export default function AgentMCPPage() {
         </Button>
       </div>
 
+      <Tabs defaultValue="json">
+        <TabsList>
+          <TabsTrigger value="json">JSON</TabsTrigger>
+          <TabsTrigger value="cards">Cards</TabsTrigger>
+        </TabsList>
+        <TabsContent value="json" className="pt-4">
+          <MCPJsonPanel
+            servers={localServers}
+            stripInherit
+            hint="This agent's overlay mcp.json. Inherited catalog servers are not listed here — paste to add or replace overlays."
+            onSave={saveLocal}
+          />
+        </TabsContent>
+        <TabsContent value="cards" className="pt-4">
       {rows.length === 0 ? (
         <div className="rounded-lg border border-dashed p-12 text-center text-muted-foreground">
           <Server className="w-10 h-10 mx-auto mb-3 opacity-40" />
@@ -280,6 +296,8 @@ export default function AgentMCPPage() {
           ))}
         </div>
       )}
+        </TabsContent>
+      </Tabs>
 
       <MCPEditDialog
         open={editOpen}
