@@ -21,7 +21,7 @@ function stringMap(v: unknown): Record<string, string> | undefined {
   return Object.keys(out).length ? out : undefined;
 }
 
-export function looksLikeServerConfig(v: unknown): boolean {
+export function looksLikeServerConfig(v: unknown): v is Record<string, unknown> {
   if (!isRecord(v)) return false;
   return (
     typeof v.type === "string" ||
