@@ -109,6 +109,10 @@ action on upgrade — read those notes before deploying.
   limit. Tail tool payloads are capped at 8k runes; ingest clips any
   tool return over 64KiB. Logging no longer prints `elapsed=2562047h`
   when AfterToolCall has no start time.
+- **Overflow retry no longer trusts a 1M Models window.** A Zhipu /
+  Kimi / GPT default of 1,000,000 sets the compact threshold near
+  900k, so a 203k request that already 502'd never hard-trimmed.
+  Force-compact after overflow now aims at half the rejected size.
 
 
 - **Compaction follows Pi's working-set shrink.** Auto-compact and

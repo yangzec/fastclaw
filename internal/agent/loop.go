@@ -3005,7 +3005,11 @@ func (a *Agent) maybeCompactMidTurn(ctx context.Context, sess *session.Session, 
 }
 
 func (a *Agent) retryAfterOverflow(ctx context.Context, sess *session.Session, chatterUID, systemPrompt string, msg bus.InboundMessage, chatterMem *Memory) (messages []provider.Message, hint, notice string, ok bool) {
-	sessionMsgs, notice, hint, did := a.compactSession(ctx, sess, chatterUID, CompactOptions{Force: true})
+	rejected := EstimateTokens(sess.GetMessages())
+	sessionMsgs, notice, hint, did := a.compactSession(ctx, sess, chatterUID, CompactOptions{
+		Force:          true,
+		OverflowTokens: rejected,
+	})
 	if !did {
 		return nil, "", "", false
 	}

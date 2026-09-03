@@ -84,6 +84,29 @@ func CompactThreshold(contextWindow, maxTokens int) int {
 	return thresh
 }
 
+// overflowHardTrimBudget is the hard-trim target after a provider
+// rejected the request. The Models contextWindow (often a 1M vendor
+// default) can be far above what the gateway actually accepts; using
+// that threshold here is why 203k-token overflow retries did nothing.
+func overflowHardTrimBudget(configuredThreshold, overflowTokens, keep int) int {
+	budget := configuredThreshold
+	if overflowTokens > 0 {
+		// Half of what just failed, so the retry plus system prompt /
+		// tool schemas can still fit a smaller real window.
+		rejected := overflowTokens / 2
+		if rejected < compactMinThreshold {
+			rejected = compactMinThreshold
+		}
+		if budget <= 0 || rejected < budget {
+			budget = rejected
+		}
+	}
+	if keep > 0 && budget < keep/2 {
+		budget = keep / 2
+	}
+	return budget
+}
+
 // lookupContextWindow finds the current model's contextWindow in the
 // agent's provider catalog. "provider/modelId" prefers that provider;
 // a bare model id searches every provider. 0 means not configured.
@@ -192,6 +215,11 @@ type CompactOptions struct {
 	// Force compact even when the estimate is still under threshold
 	// (overflow recovery after a provider 400).
 	Force bool
+	// OverflowTokens is the estimated size of the request the provider
+	// just rejected. When set with Force, hard-trim aims under this
+	// size (not the configured-window threshold). A 1M Models default
+	// with a 128k/200k gateway would otherwise never hard-trim.
+	OverflowTokens int
 }
 
 // CompactMessages compresses the message history when it exceeds the
@@ -224,7 +252,12 @@ func CompactMessagesWith(ctx context.Context, messages []provider.Message, works
 		return &CompactResult{Messages: messages}, nil
 	}
 
-	slog.Info("context compaction triggered", "tokens", tokens, "threshold", threshold, "message_count", len(messages), "keep_recent", keep, "force", opts.Force)
+	trimAt := threshold
+	if opts.Force && opts.OverflowTokens > 0 {
+		trimAt = overflowHardTrimBudget(threshold, opts.OverflowTokens, keep)
+	}
+
+	slog.Info("context compaction triggered", "tokens", tokens, "threshold", threshold, "trim_at", trimAt, "overflow_tokens", opts.OverflowTokens, "message_count", len(messages), "keep_recent", keep, "force", opts.Force)
 
 	logFile, err := writeHistoryLog(messages, workspace)
 	if err != nil {
@@ -244,13 +277,12 @@ func CompactMessagesWith(ctx context.Context, messages []provider.Message, works
 			slog.Info("after compression", "tokens_before", tokens, "tokens_after", after)
 			method := compactMethodSummarize
 			// Force + a giant hot-tail tool can leave after still huge
-			// while under a 1M-class threshold (the overflow 502 that
-			// triggered Force is the real window). Hard-trim if we
-			// barely shrunk and are still over the keep-recent budget.
+			// while under a 1M-class threshold. Hard-trim if we barely
+			// shrunk or are still over the overflow budget.
 			barelyShrunk := after > tokens*9/10 && after > keep
-			if after >= threshold || (opts.Force && barelyShrunk) {
-				slog.Warn("compression still over threshold, hard-trimming", "tokens", after, "threshold", threshold, "force", opts.Force)
-				compressed = hardTrimMessages(compressed, threshold)
+			if after >= trimAt || (opts.Force && barelyShrunk) {
+				slog.Warn("compression still over threshold, hard-trimming", "tokens", after, "threshold", trimAt, "configured_threshold", threshold, "force", opts.Force)
+				compressed = hardTrimMessages(compressed, trimAt)
 				method = compactMethodHardTrim
 			}
 			return &CompactResult{
@@ -265,8 +297,8 @@ func CompactMessagesWith(ctx context.Context, messages []provider.Message, works
 
 	pruned := capOversizedToolResults(pruneToolResultsBefore(messages, keepRecentCutoff(messages, keep)), maxHotTailToolRunes)
 	prunedTokens := EstimateTokens(pruned)
-	slog.Info("after pruning", "tokens_before", tokens, "tokens_after", prunedTokens)
-	if prunedTokens < threshold {
+	slog.Info("after pruning", "tokens_before", tokens, "tokens_after", prunedTokens, "trim_at", trimAt)
+	if prunedTokens < trimAt {
 		if prunedTokens < tokens {
 			return &CompactResult{
 				Messages: pruned,
@@ -279,7 +311,7 @@ func CompactMessagesWith(ctx context.Context, messages []provider.Message, works
 	}
 
 	return &CompactResult{
-		Messages: hardTrimMessages(pruned, threshold),
+		Messages: hardTrimMessages(pruned, trimAt),
 		Pruned:   true,
 		Method:   compactMethodHardTrim,
 		LogFile:  logFile,
