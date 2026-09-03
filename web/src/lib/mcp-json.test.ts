@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   formatMCPServersJSON,
   looksLikeServerConfig,
+  mcpToolPrefix,
   normalizeMCPServer,
   normalizeMCPServerType,
   parseMCPServersJSON,
@@ -123,4 +124,9 @@ test("formatMCPServersJSON wraps the Cursor-style envelope", () => {
   assert.deepEqual(JSON.parse(text), {
     mcpServers: { demo: { type: "stdio", command: "npx" } },
   });
+});
+
+test("mcpToolPrefix matches the runtime mcp_<server>_ tool names", () => {
+  assert.equal(mcpToolPrefix("serper"), "mcp_serper_");
+  assert.equal(mcpToolPrefix("my-server"), "mcp_my_server_");
 });

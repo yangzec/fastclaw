@@ -16,7 +16,6 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Server, Plus, Trash2, Pencil, AlertTriangle } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   getConfig,
   getMe,
@@ -24,7 +23,6 @@ import {
   updateConfig,
   type MCPServerConfig,
 } from "@/lib/api";
-import { MCPJsonPanel } from "@/components/mcp-json-panel";
 import {
   MCPEditDialog,
   mcpEndpoint,
@@ -108,6 +106,11 @@ export default function GlobalMCPPage() {
     }
   };
 
+  const openAdd = () => {
+    setEditEntry(null);
+    setEditOpen(true);
+  };
+
   if (loading) {
     return (
       <div className="mx-auto max-w-5xl space-y-6 p-4 sm:p-6">
@@ -137,42 +140,27 @@ export default function GlobalMCPPage() {
           <h2 className="text-2xl font-semibold tracking-tight">MCP Servers</h2>
           <p className="text-sm text-muted-foreground mt-1">
             {isAdmin
-              ? "Platform catalog. Paste mcp.json on the JSON tab. Share with agents attaches a server to every tenant. Off keeps it catalog-only — other tenants never see the definition or its secrets."
-              : "Your catalog. Paste mcp.json on the JSON tab. Share with agents attaches a server to your agents only. Off keeps it here until an agent adds it itself."}
+              ? "Platform catalog. Add opens a dialog — paste mcp.json, save, and servers become cards. Share with agents attaches a card to every tenant. Off keeps it catalog-only."
+              : "Your catalog. Add opens a dialog — paste mcp.json, save, and servers become cards. Share with agents attaches a card to your agents. Off keeps it here until an agent adds it itself."}
           </p>
         </div>
-        <Button
-          size="sm"
-          onClick={() => {
-            setEditEntry(null);
-            setEditOpen(true);
-          }}
-        >
+        <Button size="sm" onClick={openAdd}>
           <Plus className="w-4 h-4 mr-1" /> Add Server
         </Button>
       </div>
 
-      <Tabs defaultValue="json">
-        <TabsList>
-          <TabsTrigger value="json">JSON</TabsTrigger>
-          <TabsTrigger value="cards">Cards</TabsTrigger>
-        </TabsList>
-        <TabsContent value="json" className="pt-4">
-          <MCPJsonPanel
-            servers={servers}
-            hint="Paste a Cursor / Claude Desktop mcp.json and click Save JSON. Existing names are replaced; omit a name to remove it."
-            onSave={saveServers}
-          />
-        </TabsContent>
-        <TabsContent value="cards" className="pt-4">
       {entries.length === 0 ? (
         <div className="rounded-lg border border-dashed p-12 text-center text-muted-foreground">
           <Server className="w-10 h-10 mx-auto mb-3 opacity-40" />
-          <p>No global MCP servers configured.</p>
+          <p>No MCP servers in this catalog.</p>
           <p className="text-xs mt-1">
-            Paste a Cursor-style mcp.json, or add a server. New ones stay
-            catalog-only until you turn on Share with agents.
+            Add a server and paste a Cursor-style mcp.json. After save
+            it shows as a card. New ones stay catalog-only until you
+            turn on Share with agents.
           </p>
+          <Button size="sm" className="mt-4" onClick={openAdd}>
+            <Plus className="w-4 h-4 mr-1" /> Add Server
+          </Button>
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -238,8 +226,6 @@ export default function GlobalMCPPage() {
           ))}
         </div>
       )}
-        </TabsContent>
-      </Tabs>
 
       <MCPEditDialog
         open={editOpen}
@@ -263,7 +249,7 @@ export default function GlobalMCPPage() {
             <AlertDialogDescription>
               Remove <strong>{deleteTarget}</strong> from this catalog?
               Agents that inherited it will lose its tools unless they
-              have their own overlay.
+              have their own copy.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -250,7 +250,9 @@ export function MCPEditDialog({
             <p className="text-xs text-muted-foreground">
               Paste a Cursor / Claude Desktop{" "}
               <code className="text-[11px]">mcp.json</code> snippet, a
-              name→config map, or a single server object.
+              name→config map, or a single server object. Save closes
+              this dialog and shows each server as a card. No process
+              restart.
             </p>
             <textarea
               className="min-h-[220px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-xs leading-5 ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"

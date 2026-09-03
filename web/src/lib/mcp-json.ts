@@ -142,6 +142,14 @@ export function formatMCPServersJSON(
   return JSON.stringify({ mcpServers: servers }, null, 2);
 }
 
+// Matches internal/mcp prefixToolName: the live registry names tools
+// mcp_<sanitized-server>_<original>. Used by the agent MCP cards to
+// show which tools actually attached after save (no process restart).
+export function mcpToolPrefix(serverName: string): string {
+  const safe = serverName.replace(/[^a-zA-Z0-9_]/g, "_");
+  return `mcp_${safe}_`;
+}
+
 export const MCP_JSON_PLACEHOLDER = `{
   "mcpServers": {
     "filesystem": {
