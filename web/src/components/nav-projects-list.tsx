@@ -189,7 +189,10 @@ export function NavProjectsList({
       const here =
         pathname === target || pathname === target.replace(/\/$/, "");
       setOpenMobile(false);
-      if (here) return;
+      if (here) {
+        window.dispatchEvent(new Event("fastclaw:focus-composer"));
+        return;
+      }
       if (inFlightTargetRef.current === target) return;
       inFlightTargetRef.current = target;
       router.push(target);

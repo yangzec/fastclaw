@@ -24,8 +24,10 @@ export interface NavItem {
   // (e.g. "New chat" vs an open session under /agents/<id>/chat/, where
   // the prefix rule would highlight both).
   active?: boolean;
-  // onClick replaces the default router.push when present. Used for
-  // items that open a dialog instead of navigating.
+  // onClick runs on click. When `url` is also set, navigation still
+  // happens — use this for side effects such as focusing the composer
+  // after "New chat" (including a second click on an already-empty chat).
+  // Items with only onClick (no url) stay click-only, e.g. a dialog.
   onClick?: () => void;
 }
 
@@ -70,15 +72,12 @@ export function NavMain({
         {items.map((item) => {
           const active =
             item.active ?? (item.url ? isActive(pathname, item.url) : false);
-          const handleClick = item.onClick
-            ? () => {
-                setOpenMobile(false);
-                item.onClick!();
-              }
-            : item.url
+          const handleClick =
+            item.onClick || item.url
               ? () => {
                   setOpenMobile(false);
-                  router.push(item.url!);
+                  item.onClick?.();
+                  if (item.url) router.push(item.url);
                 }
               : undefined;
           return (
