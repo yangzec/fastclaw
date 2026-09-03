@@ -72,6 +72,10 @@ action on upgrade — read those notes before deploying.
 
 ### Fixed
 
+- **Follow-up Stop is per conversation.** Stopping chat B no longer
+  prevents chat A's queued follow-ups from sending when A's turn
+  finishes. Coming back to an idle chat whose turn ended while you
+  were elsewhere now sends the next queued item.
 - **Compaction follows Pi's working-set shrink.** Auto-compact and
   `/compact [focus…]` now keep a ~20k-token verbatim hot tail (not
   the last 20 messages), ask the model for a structured Goal /

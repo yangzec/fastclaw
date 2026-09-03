@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -92,6 +93,28 @@ func TestCtrlSDuringTurnSteers(t *testing.T) {
 	}
 	if got := m.input.Value(); got != "" {
 		t.Fatalf("composer should clear after steer, got %q", got)
+	}
+}
+
+func TestEnterDuringTurnWithImageDoesNotQueue(t *testing.T) {
+	m := newTestModel()
+	m.querying = true
+	m.pendingImages = []string{"data:image/png;base64,eA=="}
+	for _, r := range "caption" {
+		m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("image+text during a turn should not start a command")
+	}
+	if len(m.queued) != 0 {
+		t.Fatalf("image follow-up must not queue, queued = %#v", m.queued)
+	}
+	if got := m.input.Value(); got != "caption" {
+		t.Fatalf("composer should keep the text after the image-queue reject, got %q", got)
+	}
+	if !strings.Contains(m.errMsg, "image") {
+		t.Fatalf("expected an image-queue error, got %q", m.errMsg)
 	}
 }
 

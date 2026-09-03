@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -340,6 +341,28 @@ func TestFinishTurnDrainsQueuedFollowupsOneAtATime(t *testing.T) {
 	}
 	if len(nm.queued) != 1 || nm.queued[0] != "second" {
 		t.Fatalf("remaining queue = %#v", nm.queued)
+	}
+}
+
+func TestFinishTurnLeavesQueueOnErrorOrCancel(t *testing.T) {
+	m := newTestModel()
+	m.querying = true
+	m.queued = []string{"keep me"}
+
+	_, cmd := m.finishTurn(errors.New("boom"))
+	if cmd != nil {
+		t.Fatal("error should not drain the follow-up queue")
+	}
+	if len(m.queued) != 1 || m.queued[0] != "keep me" {
+		t.Fatalf("queue after error = %#v", m.queued)
+	}
+
+	_, cmd = m.finishTurn(context.Canceled)
+	if cmd != nil {
+		t.Fatal("cancel/detach should not drain the follow-up queue")
+	}
+	if len(m.queued) != 1 || m.queued[0] != "keep me" {
+		t.Fatalf("queue after cancel = %#v", m.queued)
 	}
 }
 

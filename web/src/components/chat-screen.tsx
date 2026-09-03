@@ -744,7 +744,9 @@ export function ChatScreen() {
   const queuedFollowupsRef = useRef<QueuedFollowup[]>([]);
   queuedFollowupsRef.current = queuedFollowups;
   const handleSendRef = useRef<(overrideText?: string, force?: boolean) => Promise<void>>(async () => {});
-  const followupAbortRef = useRef(false);
+  // Stop is per chat. A single boolean used to leak across sessions:
+  // stopping B while A was still streaming would skip A's drain.
+  const followupAbortRef = useRef(new Set<string>());
   const messagesCacheRef = useRef(new Map<string, ChatMessage[]>());
   const inFlightSessionsRef = useRef(new Set<string>());
   const abortBySessionRef = useRef(new Map<string, AbortController>());
@@ -812,12 +814,34 @@ export function ChatScreen() {
     setQueuedFollowups([]);
   }, [selectedAgent]);
 
+  const lastFollowupScopeRef = useRef("");
   useEffect(() => {
     if (!selectedAgent || !sessionId) {
       setQueuedFollowups([]);
       return;
     }
-    setQueuedFollowups(loadSessionQueue(selectedAgent, sessionId));
+    const items = loadSessionQueue(selectedAgent, sessionId);
+    queuedFollowupsRef.current = items;
+    setQueuedFollowups(items);
+    // If the user left while this chat was still streaming, the turn
+    // may have finished in the background and skipped drain (we never
+    // send into a different session). Coming back to an idle,
+    // not-stopped chat should pick up the leftover tray.
+    const scope = chatScopeKey(selectedAgent, sessionId);
+    const switched = lastFollowupScopeRef.current !== "" && lastFollowupScopeRef.current !== scope;
+    lastFollowupScopeRef.current = scope;
+    if (!switched || inFlightSessionsRef.current.has(scope) || followupAbortRef.current.has(scope)) {
+      return;
+    }
+    const next = items[0];
+    if (!next) return;
+    const remaining = items.slice(1);
+    queuedFollowupsRef.current = remaining;
+    setQueuedFollowups(remaining);
+    saveSessionQueue(selectedAgent, sessionId, remaining);
+    queueMicrotask(() => {
+      void handleSendRef.current(next.text, true);
+    });
   }, [selectedAgent, sessionId]);
 
   const replaceQueue = useCallback((
@@ -1661,7 +1685,7 @@ export function ChatScreen() {
     // Sending always means "I want to see what happens next" — re-pin
     // to bottom even if the user had scrolled up to read earlier in the
     // conversation.
-    followupAbortRef.current = false;
+    followupAbortRef.current.delete(turnKey);
     stickToBottomRef.current = true;
     setTurnMessages((prev) => [
       ...prev,
@@ -2114,7 +2138,7 @@ export function ChatScreen() {
       // Codex follow-up drain: after a finished turn (not Stop), send
       // the next queued message as its own turn. Stop leaves the tray
       // intact so the user can delete or fire items themselves.
-      if (!followupAbortRef.current) {
+      if (!followupAbortRef.current.has(turnKey)) {
         const next = queuedFollowupsRef.current[0];
         if (next && sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
           replaceQueue((prev) => prev.filter((item) => item.id !== next.id));
@@ -2127,8 +2151,8 @@ export function ChatScreen() {
   handleSendRef.current = handleSend;
 
   const handleStop = useCallback(() => {
-    followupAbortRef.current = true;
     const key = chatScopeKey(selectedAgent, sessionId);
+    followupAbortRef.current.add(key);
     const ac = abortBySessionRef.current.get(key) ?? abortRef.current;
     if (selectedAgent && sessionId) {
       void stopChat(selectedAgent, sessionId).catch(() => {});
