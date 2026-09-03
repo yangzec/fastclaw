@@ -7,6 +7,10 @@ action on upgrade — read those notes before deploying.
 
 ### Added
 
+- **MCP JSON configuration.** Add or edit catalog / agent MCP
+  servers by pasting Cursor or Claude Desktop `mcp.json` (or a
+  name→config map). `type` is optional — `url` means http, `command`
+  means stdio. The form editor is still available as a second tab.
 - **Composer autofocus on new and switched chats.** Opening a new
   conversation or switching sessions (including project chats) puts
   the caret in the message box. A second click on New chat does the
