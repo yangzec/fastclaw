@@ -75,7 +75,8 @@ func helpText() string {
 		b.WriteString("  " + padRight(name, 24) + c.Description + "\n")
 	}
 	b.WriteString("\nKeys:\n")
-	b.WriteString("  Enter          send (during a reply: steer into the current turn)\n")
+	b.WriteString("  Enter          send (during a reply: queue until this turn finishes)\n")
+	b.WriteString("  Ctrl+S         during a reply: steer into the current turn\n")
 	b.WriteString("  Ctrl+J         newline (or Alt+Enter; Shift+Enter where supported)\n")
 	b.WriteString("  Ctrl+V         attach an image from the system clipboard\n")
 	b.WriteString("  ↑ / ↓          input history\n")

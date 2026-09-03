@@ -325,6 +325,34 @@ func TestPickerFilterAndSelect(t *testing.T) {
 	}
 }
 
+func TestFinishTurnDrainsQueuedFollowupsOneAtATime(t *testing.T) {
+	m := newTestModel()
+	m.querying = true
+	m.queued = []string{"first", "second"}
+
+	next, cmd := m.finishTurn(nil)
+	nm, ok := next.(*Model)
+	if !ok {
+		t.Fatalf("finishTurn returned %T", next)
+	}
+	if cmd == nil {
+		t.Fatal("expected the first queued follow-up to start a turn")
+	}
+	if len(nm.queued) != 1 || nm.queued[0] != "second" {
+		t.Fatalf("remaining queue = %#v", nm.queued)
+	}
+}
+
+func TestRenderQueueListsPendingFollowups(t *testing.T) {
+	m := newTestModel()
+	m.querying = true
+	m.queued = []string{"add tests"}
+	got := plain(m.renderQueue())
+	if !strings.Contains(got, "queued") || !strings.Contains(got, "add tests") {
+		t.Fatalf("queue render = %q", got)
+	}
+}
+
 func TestHelpTextListsCommands(t *testing.T) {
 	help := helpText()
 	for _, want := range []string{"/new", "/sessions", "/agents", "Shift+Enter"} {

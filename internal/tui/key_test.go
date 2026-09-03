@@ -56,6 +56,45 @@ func TestClipboardImageCanSubmitWithoutText(t *testing.T) {
 	}
 }
 
+func TestEnterDuringTurnQueuesInsteadOfSteering(t *testing.T) {
+	m := newTestModel()
+	m.querying = true
+	for _, r := range "follow up" {
+		m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("queued follow-up should not start a command")
+	}
+	if !m.querying {
+		t.Fatal("queueing must not end the in-flight turn")
+	}
+	if len(m.queued) != 1 || m.queued[0] != "follow up" {
+		t.Fatalf("queued = %#v", m.queued)
+	}
+	if got := m.input.Value(); got != "" {
+		t.Fatalf("composer should clear after queueing, got %q", got)
+	}
+}
+
+func TestCtrlSDuringTurnSteers(t *testing.T) {
+	m := newTestModel()
+	m.querying = true
+	for _, r := range "change course" {
+		m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if cmd == nil {
+		t.Fatal("Ctrl+S should return a steer command")
+	}
+	if len(m.queued) != 0 {
+		t.Fatalf("steer should not queue, queued = %#v", m.queued)
+	}
+	if got := m.input.Value(); got != "" {
+		t.Fatalf("composer should clear after steer, got %q", got)
+	}
+}
+
 func TestEscapeClearsClipboardImages(t *testing.T) {
 	m := newTestModel()
 	m.pendingImages = []string{"data:image/png;base64,eA=="}

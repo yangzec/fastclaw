@@ -7,6 +7,12 @@ action on upgrade — read those notes before deploying.
 
 ### Added
 
+- **Codex-style follow-up queue.** Sending while a turn is running now
+  queues by default (composer tray + TUI list) and runs after `done`,
+  instead of always inserting into the current turn. Switch the
+  composer to **插入** (or press ⌘/Ctrl+Enter / TUI Ctrl+S) to steer
+  the in-flight turn. Per-item **插入** promotes a queued line; Stop
+  still aborts and leaves the queue intact.
 - **Zhipu / Kimi / Grok / latest GPT context defaults.** Models and
   onboard presets now include 智谱 (`glm-5.3`, `glm-5.3-flash`, 1M),
   Kimi (`kimi-k3`, 1,048,576), Grok (`grok-4.6` / `grok-4.5`, 500k —

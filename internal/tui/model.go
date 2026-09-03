@@ -408,6 +408,18 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.slashMatches = nil
 			return m, nil
 		}
+
+	case "ctrl+s":
+		// Codex-style: Enter queues; Ctrl+S steers the in-flight turn.
+		if m.querying {
+			text := m.input.Value()
+			if text == "" {
+				return m, nil
+			}
+			m.input.Reset()
+			m.slashMatches = nil
+			return m, m.steerCmd(text)
+		}
 	}
 
 	submitted, cmd := m.input.Update(msg)
@@ -425,7 +437,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.querying && len(images) > 0 {
-		m.errMsg = "image attachments cannot steer an active turn; wait for it to finish or press Esc to detach"
+		m.errMsg = "image attachments cannot queue during an active turn; wait for it to finish or press Esc to detach"
 		return m, nil
 	}
 	if len(images) > 0 && (strings.HasPrefix(text, "!") || strings.HasPrefix(text, "/")) {
@@ -460,8 +472,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.querying {
-		// Turn in flight: steer it (Claude Code-style follow-up).
-		return m, m.steerCmd(text)
+		// Codex default: queue until this turn finishes, then send as
+		// the next turn. Ctrl+S steers instead (see handleKey).
+		m.queued = append(m.queued, text)
+		m.errMsg = ""
+		m.sync()
+		return m, nil
 	}
 	return m, m.sendTurn(text, images)
 }
@@ -727,8 +743,8 @@ func (m *Model) finishTurn(err error) (tea.Model, tea.Cmd) {
 	m.sync()
 
 	if len(m.queued) > 0 && err == nil {
-		next := strings.Join(m.queued, "\n\n")
-		m.queued = nil
+		next := m.queued[0]
+		m.queued = append([]string(nil), m.queued[1:]...)
 		return m, m.sendTurn(next, nil)
 	}
 	return m, nil
@@ -885,6 +901,23 @@ func (m *Model) renderActivity() string {
 	return line
 }
 
+func (m *Model) renderQueue() string {
+	if len(m.queued) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	hint := "queued · Enter adds · Ctrl+S steers"
+	if !m.querying {
+		hint = "queued · will send after the current turn"
+	}
+	b.WriteString(styleMuted.Render(chatIndent+hint) + "\n")
+	for i, q := range m.queued {
+		line := fmt.Sprintf("%s %d. %s", chatIndent, i+1, truncateANSI(q, max(m.width-8, 20)))
+		b.WriteString(styleDim.Render(line) + "\n")
+	}
+	return b.String()
+}
+
 func (m *Model) renderSlashSuggestions() string {
 	maxShow := min(len(m.slashMatches), 6)
 	var inner strings.Builder
@@ -956,6 +989,9 @@ func (m *Model) View() string {
 		if m.querying {
 			b.WriteString(m.renderActivity())
 			b.WriteString("\n")
+		}
+		if q := m.renderQueue(); q != "" {
+			b.WriteString(q)
 		}
 		if len(m.slashMatches) > 0 {
 			b.WriteString(m.renderSlashSuggestions())
