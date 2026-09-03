@@ -59,6 +59,40 @@ func (s *Server) agentScopeModel(r *http.Request, agentID string) string {
 	return ""
 }
 
+// agentScopeMaxTokens reads the per-agent completion-budget override.
+// 0 means no overlay (runtime falls back to system/user defaults).
+func (s *Server) agentScopeMaxTokens(r *http.Request, agentID string) int {
+	return jsonPositiveInt(s.agentScopeDefaultsRead(r, agentID)["maxTokens"])
+}
+
+// jsonPositiveInt accepts the shapes encoding/json and the store use
+// for numbers (int, int64, float64, json.Number).
+func jsonPositiveInt(v any) int {
+	n := 0
+	switch x := v.(type) {
+	case int:
+		n = x
+	case int32:
+		n = int(x)
+	case int64:
+		n = int(x)
+	case float64:
+		n = int(x)
+	case json.Number:
+		i, err := x.Int64()
+		if err != nil {
+			return 0
+		}
+		n = int(i)
+	default:
+		return 0
+	}
+	if n <= 0 {
+		return 0
+	}
+	return n
+}
+
 // saveAgentScopeModel upserts (model="") or deletes (model=="") the
 // agent-scope agents.defaults row.
 func (s *Server) saveAgentScopeModel(r *http.Request, agentID, model string) error {
@@ -539,6 +573,10 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		// send {} to clear, or send the full desired map to replace.
 		MCPServers      map[string]config.MCPServerConfig `json:"mcpServers,omitempty"`
 		MCPServersReset bool                              `json:"mcpServersReset,omitempty"`
+		// MaxTokens is the per-agent completion budget (LLM max_tokens).
+		// nil = leave unchanged; <=0 = clear the override so system/user
+		// defaults apply (8192 after ApplyDefaults).
+		MaxTokens *int `json:"maxTokens,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -657,6 +695,13 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 	} else if req.AutoPersist != nil {
 		defaultsPatch["autoPersist"] = *req.AutoPersist
 	}
+	if req.MaxTokens != nil {
+		if *req.MaxTokens <= 0 {
+			defaultsPatch["maxTokens"] = nil
+		} else {
+			defaultsPatch["maxTokens"] = *req.MaxTokens
+		}
+	}
 	if err := s.applyAgentScopeDefaultsPatch(r, rec.ID, defaultsPatch); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -693,6 +738,7 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 			"userId":           rec.UserID,
 			"name":             rec.Name,
 			"model":            s.agentScopeModel(r, rec.ID),
+			"maxTokens":        s.agentScopeMaxTokens(r, rec.ID),
 			"promptMode":       s.agentScopePromptMode(r, rec.ID),
 			"splitReplies":     s.agentScopeSplitReplies(r, rec.ID),
 			"autoPersist":      s.agentScopeAutoPersist(r, rec.ID),
@@ -734,6 +780,7 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 			"userId":           rec.UserID,
 			"role":             role,
 			"model":            s.agentScopeModel(r, rec.ID),
+			"maxTokens":        s.agentScopeMaxTokens(r, rec.ID),
 			"promptMode":       s.agentScopePromptMode(r, rec.ID),
 			"splitReplies":     s.agentScopeSplitReplies(r, rec.ID),
 			"autoPersist":      s.agentScopeAutoPersist(r, rec.ID),

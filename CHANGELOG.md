@@ -41,9 +41,12 @@ action on upgrade — read those notes before deploying.
 
 - **Composer context meter and model switcher.** The chat input shows
   working-set tokens vs the model's context window (same estimate
-  compaction uses), and a model button next to Send lists configured
-  provider models. Switching writes the agent's model; viewers see
-  the name only.
+  compaction uses), plus this agent's max output (`maxTokens`, default
+  8192). Owners can change the completion budget from the meter row
+  (2k–64k presets). `PUT /api/agents/{id}` accepts `maxTokens`
+  (`<=0` clears the override). A model button next to Send lists
+  configured provider models. Switching writes the agent's model;
+  viewers see labels only.
 - **Codex-style follow-up queue.** Sending while a turn is running now
   queues by default (composer tray + TUI list) and runs after `done`,
   instead of always inserting into the current turn. Switch the

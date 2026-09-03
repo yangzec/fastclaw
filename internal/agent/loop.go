@@ -1041,12 +1041,10 @@ func (a *Agent) Sessions() *session.Manager {
 	return a.sessions
 }
 
-// WebChatTurnActive reports whether HandleMessage is currently running
-// for this session. A page reload uses this so in-progress tool calls
-// stay "running" instead of being painted as stopped.
 // WebChatContext is the composer meter: working-set tokens (what the
-// next LLM call will send), the configured context window, and the
-// compact threshold. sessionId empty → tokens=0 without minting a row.
+// next LLM call will send), the configured context window, the
+// completion budget (maxTokens), and the compact threshold.
+// sessionId empty → tokens=0 without minting a row.
 func (a *Agent) WebChatContext(sessionId, chatterUID string) map[string]any {
 	tokens := 0
 	msgCount := 0
@@ -1066,15 +1064,23 @@ func (a *Agent) WebChatContext(sessionId, chatterUID string) map[string]any {
 		window = a.effectiveContextWindow(chatterUID)
 		threshold = a.compactTokenThreshold(chatterUID)
 	}
+	maxTok := 0
+	if a != nil {
+		maxTok = a.maxTokens
+	}
 	return map[string]any{
 		"model":         model,
 		"contextWindow": window,
+		"maxTokens":     maxTok,
 		"tokens":        tokens,
 		"threshold":     threshold,
 		"messageCount":  msgCount,
 	}
 }
 
+// WebChatTurnActive reports whether HandleMessage is currently running
+// for this session. A page reload uses this so in-progress tool calls
+// stay "running" instead of being painted as stopped.
 func (a *Agent) WebChatTurnActive(sessionId string) bool {
 	if a == nil || a.sessions == nil {
 		return false
