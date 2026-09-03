@@ -1818,7 +1818,7 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 		return noProviderMsg
 	}
 
-	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, a.memory.WithUserID(chatterUID), a.isTrustedTurn(msg))
+	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, a.memory.WithUserID(chatterUID), a.turnAccessFor(msg))
 	knowledgeMeta := knowledgeMetadata(extractKnowledgeCitationSources(systemPrompt))
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 	// Tool catalog injection: plan mode passes tools=nil to the LLM so
@@ -2373,11 +2373,10 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// wired) the executor used by exec/read_file/list_dir is tied to a
 	// session-private container.
 	a.bindSession(ctx, msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
-	// Flag whether this turn's chatter is the agent owner / channel
-	// admin. File tools use this to refuse identity-file reads from
-	// regular chatters (SOUL/IDENTITY/BOOTSTRAP/... leak as verbatim
-	// chat replies otherwise).
-	a.registry.SetCallerIsAdmin(a.isTrustedTurn(msg))
+	// Split per-turn privileges: agent-admin (persona / provisioning)
+	// vs host (exec on the gateway). Owning the agent is not a host
+	// grant — see Agent.chatterCanHost.
+	a.applyTurnAccess(msg)
 	// Plumb the persistent session_key for goal-scoped tools.
 	// SetSessionID above uses msg.ChatID (the channel-level chat
 	// identifier); goal tools need the durable session.Session.SessionKey
@@ -2418,7 +2417,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: BeforeSystemPrompt, UserID: a.ownerUserID})
 
 	chatterMem := a.memory.WithUserID(chatterUID)
-	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem, a.isTrustedTurn(msg))
+	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem, a.turnAccessFor(msg))
 	knowledgeMeta := knowledgeMetadata(extractKnowledgeCitationSources(systemPrompt))
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 
@@ -3275,7 +3274,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		sess.SetProviderModel(prov, mdl)
 	}
 	a.bindSession(ctx, msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
-	a.registry.SetCallerIsAdmin(a.isTrustedTurn(msg))
+	a.applyTurnAccess(msg)
 	a.registry.SetGoalSessionKey(sess.SessionKey())
 	// Per-user file writes (USER.md / MEMORY.md) need to land in the
 	// per-turn chatter's row, not the UserSpace owner — see
@@ -3294,7 +3293,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: BeforeSystemPrompt, UserID: a.ownerUserID})
 	chatterMem := a.memory.WithUserID(chatterUID)
-	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem, a.isTrustedTurn(msg))
+	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem, a.turnAccessFor(msg))
 	knowledgeMeta := knowledgeMetadata(extractKnowledgeCitationSources(systemPrompt))
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: AfterSystemPrompt, UserID: a.ownerUserID})

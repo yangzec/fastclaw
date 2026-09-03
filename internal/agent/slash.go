@@ -8,8 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fastclaw-ai/fastclaw/internal/buildinfo"
 	"github.com/fastclaw-ai/fastclaw/internal/bus"
 	"github.com/fastclaw-ai/fastclaw/internal/usage"
+	"github.com/fastclaw-ai/fastclaw/internal/users"
 )
 
 // slashResult holds the result of a slash command.
@@ -129,14 +131,18 @@ func (a *Agent) handleSlashCommand(msg bus.InboundMessage) slashResult {
 		return slashResult{handled: true, reply: fmt.Sprintf("⚡ FastClaw\nAgent: %s\nModel: %s", a.name, a.model)}
 
 	case "/whoami":
-		adminLine := "no — operator-only actions (host shell, agent management, write-slash commands) are unavailable"
+		adminLine := "no — write-mode slash commands and agent-management tools are unavailable"
 		if a.isAdminChatter(msg) {
 			adminLine = "yes"
 		}
+		hostLine := "no — host-shell exec and host filesystem are limited to super_admin"
+		if a.chatterCanHost(msg) {
+			hostLine = "yes"
+		}
 		return slashResult{
 			handled: true,
-			reply: fmt.Sprintf("Channel: `%s`\nYour user ID: `%s`\nSender name: `%s`\nAdmin: %s\n\n(The operator can add this ID to `admins.%s` in the agent config to grant admin access.)",
-				msg.Channel, msg.UserID, msg.SenderName, adminLine, msg.Channel),
+			reply: fmt.Sprintf("Channel: `%s`\nYour user ID: `%s`\nSender name: `%s`\nAgent admin: %s\nHost access: %s\n\n(Agent admin is the agent owner or a listed channel admin. Host access requires a super_admin FastClaw account — adding an ID to `admins.%s` does not grant a host shell.)",
+				msg.Channel, msg.UserID, msg.SenderName, adminLine, hostLine, msg.Channel),
 		}
 
 	default:
@@ -218,21 +224,79 @@ func (a *Agent) isAdminChatter(msg bus.InboundMessage) bool {
 	return false
 }
 
-// isTrustedTurn decides whether the current turn may touch the HOST
-// (host-shell exec, file access outside the workspace) on a self-hosted
-// install. Admin chatters qualify (isAdminChatter). Heartbeat turns do
-// too: their instructions come from HEARTBEAT.md, which the
-// identity-file gate keeps writable only by admin chatters. Cron
-// replays and subagent spawns stay untrusted even though they're
-// runtime-originated — their payload text was authored in some earlier
-// chat turn whose chatter can't be verified here, so a guest could park
-// a hostile command in a cron job and have it replayed with elevated
-// rights.
-func (a *Agent) isTrustedTurn(msg bus.InboundMessage) bool {
+// isTurnAgentAdmin is the per-turn "this chatter may manage THIS agent"
+// flag: persona files, create_agent / configure_agent, and write-mode
+// slash commands. Heartbeat qualifies so scheduled self-checks can still
+// read HEARTBEAT.md / SOUL.md. Distinct from chatterCanHost — owning an
+// agent is not a host-shell grant.
+func (a *Agent) isTurnAgentAdmin(msg bus.InboundMessage) bool {
 	if msg.Source == bus.SourceHeartbeat {
 		return true
 	}
 	return a.isAdminChatter(msg)
+}
+
+// chatterCanHost decides whether this turn may touch the HOST (host-shell
+// exec, file access outside the workspace) on a self-hosted install.
+//
+// Host access is a platform privilege, not an agent-owner privilege:
+// only a resolved FastClaw account with role=super_admin qualifies.
+// Hosted deploys, group chats on shared-identity channels, cron
+// replays, and subagent spawns never qualify. Heartbeat follows the
+// agent owner's role so a regular user cannot park `free` / `docker`
+// in HEARTBEAT.md and have it run on the gateway. Fail-closed: no
+// store, missing user, or non-active status means no host.
+func (a *Agent) chatterCanHost(msg bus.InboundMessage) bool {
+	if buildinfo.IsHostedDeploy() {
+		return false
+	}
+	switch msg.Source {
+	case bus.SourceCron, bus.SourceSubAgent, bus.SourceGoalContext:
+		return false
+	}
+	if msg.SharedIdentity && msg.PeerKind == "group" {
+		return false
+	}
+	if msg.Source == bus.SourceHeartbeat {
+		return a.userIsSuperAdmin(a.ownerUserID)
+	}
+	return a.userIsSuperAdmin(msg.UserID)
+}
+
+// isTrustedTurn is the host-access verdict for this turn. Kept as a
+// named wrapper so existing call sites and comments that say "trusted
+// turn" keep meaning "may touch the host".
+func (a *Agent) isTrustedTurn(msg bus.InboundMessage) bool {
+	return a.chatterCanHost(msg)
+}
+
+func (a *Agent) turnAccessFor(msg bus.InboundMessage) turnAccess {
+	return turnAccess{
+		CanHost: a.chatterCanHost(msg),
+		IsOwner: a.isTurnAgentAdmin(msg),
+	}
+}
+
+func (a *Agent) applyTurnAccess(msg bus.InboundMessage) {
+	if a.registry == nil {
+		return
+	}
+	a.registry.SetCallerIsAdmin(a.isTurnAgentAdmin(msg))
+	a.registry.SetCallerCanHost(a.chatterCanHost(msg))
+}
+
+func (a *Agent) userIsSuperAdmin(userID string) bool {
+	if userID == "" || a.dataStore == nil {
+		return false
+	}
+	rec, err := a.dataStore.GetUser(context.Background(), userID)
+	if err != nil || rec == nil {
+		return false
+	}
+	if rec.Status != "" && rec.Status != users.StatusActive {
+		return false
+	}
+	return rec.Role == users.RoleSuperAdmin
 }
 
 // slashRetry re-runs the last user message, discarding the last assistant response.

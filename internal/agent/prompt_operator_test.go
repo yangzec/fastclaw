@@ -28,10 +28,10 @@ func newOperatorBuilder(t *testing.T) *ContextBuilder {
 func TestAgentPrompt_TrustedTurnGrantsOperatorWork(t *testing.T) {
 	cb := newOperatorBuilder(t)
 
-	prompt := cb.BuildSystemPromptAs(ownerUID, cb.memory.WithUserID(ownerUID), true)
+	prompt := cb.BuildSystemPromptAs(ownerUID, cb.memory.WithUserID(ownerUID), turnAccess{CanHost: true, IsOwner: true})
 
 	// The verdict must be stated, not left to inference from USER.md.
-	mustContain(t, prompt, "current chatter IS this agent's operator")
+	mustContain(t, prompt, "current chatter IS a platform super_admin")
 	mustContain(t, prompt, "host shell")
 	// ...and the model must be told not to punt it back to the chatter.
 	mustContain(t, prompt, "do not ask them to run the command in their own terminal")
@@ -54,21 +54,33 @@ func TestAgentPrompt_TrustedTurnGrantsOperatorWork(t *testing.T) {
 
 	// The guest wording must not also be present — two contradictory
 	// branches in one prompt is what produced the original refusal.
-	mustNotContain(t, prompt, "is NOT this agent's operator")
+	mustNotContain(t, prompt, "is NOT a super_admin")
 }
 
 func TestAgentPrompt_UntrustedTurnKeepsOperatorOnly(t *testing.T) {
 	cb := newOperatorBuilder(t)
 
-	prompt := cb.BuildSystemPromptAs(chatterUID, cb.memory.WithUserID(chatterUID), false)
+	prompt := cb.BuildSystemPromptAs(chatterUID, cb.memory.WithUserID(chatterUID), turnAccess{})
 
-	mustContain(t, prompt, "current chatter is NOT this agent's operator")
-	mustContain(t, prompt, "operator-only")
+	mustContain(t, prompt, "current chatter is NOT a super_admin")
+	mustContain(t, prompt, "not this agent's owner")
 
 	// A guest must not be handed the provisioning recipe, nor the
 	// "run the CLI yourself" instruction.
 	mustNotContain(t, prompt, "fastclaw agents init")
-	mustNotContain(t, prompt, "current chatter IS this agent's operator")
+	mustNotContain(t, prompt, "current chatter IS a platform super_admin")
+}
+
+func TestAgentPrompt_OwnerWithoutHostUsesToolsNotCLI(t *testing.T) {
+	cb := newOperatorBuilder(t)
+
+	prompt := cb.BuildSystemPromptAs(ownerUID, cb.memory.WithUserID(ownerUID), turnAccess{IsOwner: true})
+
+	mustContain(t, prompt, "owns this agent")
+	mustContain(t, prompt, "is NOT a super_admin")
+	mustContain(t, prompt, "create_agent")
+	mustNotContain(t, prompt, "has already granted this turn host shell")
+	mustNotContain(t, prompt, "fastclaw agents init")
 }
 
 // Being the operator grants authority, not a host shell. On an
@@ -79,10 +91,10 @@ func TestAgentPrompt_EnforcedSandboxOperatorHandsOverCommands(t *testing.T) {
 	cb := newOperatorBuilder(t)
 	cb.sandboxEnabled = true
 
-	prompt := cb.BuildSystemPromptAs(ownerUID, cb.memory.WithUserID(ownerUID), true)
+	prompt := cb.BuildSystemPromptAs(ownerUID, cb.memory.WithUserID(ownerUID), turnAccess{CanHost: true, IsOwner: true})
 
-	// Still recognized as the operator — the request is legitimate.
-	mustContain(t, prompt, "current chatter IS this agent's operator")
+	// Still recognized as the super_admin — the request is legitimate.
+	mustContain(t, prompt, "current chatter IS a platform super_admin")
 	mustContain(t, prompt, `never answer one with "that's operator-only"`)
 	// ...but told plainly it cannot run the CLI itself.
 	mustContain(t, prompt, "you cannot run the")
@@ -109,8 +121,8 @@ func TestFastclawBinaryFallsBackOutsideTheCLI(t *testing.T) {
 func TestAgentPrompt_CLIListNamesAgentsInit(t *testing.T) {
 	cb := newOperatorBuilder(t)
 
-	for _, trusted := range []bool{true, false} {
-		prompt := cb.BuildSystemPromptAs(ownerUID, cb.memory.WithUserID(ownerUID), trusted)
+	for _, access := range []turnAccess{{}, {CanHost: true, IsOwner: true}} {
+		prompt := cb.BuildSystemPromptAs(ownerUID, cb.memory.WithUserID(ownerUID), access)
 		mustContain(t, prompt, "`fastclaw agents` (init / ls / config / rm)")
 		mustContain(t, prompt, "`fastclaw skill` (list / search / install)")
 	}

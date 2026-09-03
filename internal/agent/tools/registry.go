@@ -302,12 +302,20 @@ type Registry struct {
 	sandboxProvider func(ctx context.Context) (sandbox.Executor, error)
 	// callerIsAdmin marks the chatter driving the current turn as the
 	// agent owner / per-channel admin. Set per-turn by the agent loop
-	// via SetCallerIsAdmin from isAdminChatter(msg); the file tools
+	// via SetCallerIsAdmin from isTurnAgentAdmin(msg); the file tools
 	// gate identity-file ops on it. Defaults to false — i.e. tools
 	// must explicitly receive the admin signal to expose internal
 	// configuration. Without that fail-closed default, a missed wire
 	// silently makes every chatter an admin.
+	//
+	// Distinct from callerCanHost: owning an agent does not grant a
+	// host shell on a shared gateway.
 	callerIsAdmin bool
+	// callerCanHost marks the chatter as a platform super_admin whose
+	// identity resolved this turn. Host-shell exec, host_exec, and
+	// absolute host-path file tools consult this flag — not
+	// callerIsAdmin. Defaults to false (fail-closed).
+	callerCanHost bool
 	// envProvider + skillDirs cache the skill-env injection wiring set
 	// at agent boot via RegisterExecWithSkillEnv so a later
 	// SetExecutor (per-session) can re-register the sandboxed exec
@@ -500,7 +508,8 @@ func (r *Registry) HasTool(name string) bool {
 // False whenever a sandbox could service the call: an executor is bound
 // (enforced mode), a sandbox is required, a lazy provider is installed
 // (optional mode, reachable via exec(sandbox:true)), or the caller isn't
-// an admin (guests are forced into the sandbox — see makeExecToolFull).
+// a super_admin (guests and agent owners are forced into the sandbox —
+// see makeExecToolFull).
 // Deliberately conservative: "might be sandboxed" answers false, because
 // a wrong "yes, host" produces confident claims about an environment we
 // never looked at.
@@ -511,7 +520,7 @@ func (r *Registry) ExecRunsOnHost() bool {
 	if r.executor != nil || r.sandboxRequired || r.sandboxProvider != nil {
 		return false
 	}
-	return r.callerIsAdmin
+	return r.callerCanHost
 }
 
 // SetSandboxRequired flips the exec tool's host-shell fallback off. Call
@@ -552,6 +561,20 @@ func (r *Registry) SetSessionID(sessionID string) {
 // deny.
 func (r *Registry) SetCallerIsAdmin(v bool) {
 	r.callerIsAdmin = v
+}
+
+// SetCallerCanHost records whether this turn may touch the host
+// filesystem / host shell. The agent loop sets it from
+// agent.chatterCanHost(msg) (super_admin only). Fail-closed default.
+func (r *Registry) SetCallerCanHost(v bool) {
+	r.callerCanHost = v
+}
+
+// CallerCanHost reports the per-turn host-access flag. Tests and
+// ExecRunsOnHost consult it; production tools should go through the
+// same field rather than re-deriving role.
+func (r *Registry) CallerCanHost() bool {
+	return r != nil && r.callerCanHost
 }
 
 // SetProjectID scopes the registry's workspace.Store calls to a project

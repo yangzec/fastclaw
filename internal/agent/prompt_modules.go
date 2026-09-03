@@ -40,15 +40,22 @@ type promptCtx struct {
 	now        time.Time
 	loc        *time.Location
 	dateLine   string // pre-rendered, shared across modules
-	// trusted mirrors Agent.isTrustedTurn for this turn: the chatter is
-	// the agent owner or a channel admin (or it's a heartbeat). The tool
-	// layer already enforces it via Registry.SetCallerIsAdmin; carrying
-	// it into the prompt is what stops the model from *self*-refusing
-	// operator work it is in fact authorized to do. Without this the
-	// model falls back to guessing from USER.md, and an empty USER.md
-	// reads as "unknown chatter" → it declines platform-management
-	// requests from the operator themselves.
-	trusted bool
+	// canHost / isOwner mirror Agent.turnAccessFor for this turn.
+	// canHost is host-shell access (super_admin). isOwner is agent-admin
+	// (owner / listed channel admin / heartbeat). The tool layer
+	// already enforces both via Registry.SetCallerCanHost /
+	// SetCallerIsAdmin; carrying them into the prompt stops the model
+	// from self-refusing work it is authorized to do, or from treating
+	// "I own this agent" as a host grant.
+	canHost bool
+	isOwner bool
+}
+
+// turnAccess is the per-turn privilege split passed into
+// BuildSystemPromptAs. Zero value is a guest: no host, not the owner.
+type turnAccess struct {
+	CanHost bool
+	IsOwner bool
 }
 
 // moduleEntry pairs a human-readable key with its builder function.
@@ -250,7 +257,7 @@ func modAgentIntro(p *promptCtx) string {
 			"The management interface is the `fastclaw` CLI: `fastclaw provider` (LLM credentials), `fastclaw tools provider-set` / `category-set` (web_search & friends), `fastclaw channels`, `fastclaw agents` (init / ls / config / rm), `fastclaw skill` (list / search / install), `fastclaw admin`, `fastclaw cron` — run any subcommand with --help to see flags. "+
 			"CLI writes persist to the database and hot-reload the running gateway, so no restart is needed.\n%s",
 			buildinfo.Version, buildinfo.Commit, buildinfo.Date,
-			operatorAccessLine(p.trusted, p.cb.sandboxEnabled))
+			operatorAccessLine(turnAccess{CanHost: p.canHost, IsOwner: p.isOwner}, p.cb.sandboxEnabled))
 	}
 
 	return fmt.Sprintf(`You run on the FastClaw runtime. Your identity (name, role, personality)
@@ -353,38 +360,56 @@ func fastclawBinary() string {
 	return exe
 }
 
-func operatorAccessLine(trusted, sandboxEnforced bool) string {
-	if !trusted {
-		return "Host access follows the CHATTER, not the agent, and the current chatter is NOT this agent's operator. " +
+func operatorAccessLine(access turnAccess, sandboxEnforced bool) string {
+	var b strings.Builder
+	if !access.CanHost {
+		b.WriteString("Host access is limited to platform super_admin accounts, and the current chatter is NOT a super_admin. " +
 			"Your exec calls run in the sandbox (or are refused when none is configured) and file tools are confined to the workspace. " +
-			"Platform-management work — creating agents, installing skills, changing runtime config, upgrades — is operator-only: " +
+			"Host-level work — CPU/memory/disk of this machine, docker, systemctl, upgrades, editing runtime config via the host CLI — is unavailable: " +
 			"say so plainly once and offer what you CAN do instead. Do not retry the command, and do not hand them a `fastclaw` " +
-			"command to run as a workaround for work they aren't authorized to have done."
+			"command to run as a workaround for work they aren't authorized to have done.")
+	} else if sandboxEnforced {
+		b.WriteString(`The current chatter IS a platform super_admin. The runtime verified
+this from their account — NOT from USER.md — so host-level requests from them are
+legitimate; never answer one with "that's operator-only". But this build enforces the
+sandbox: your exec calls run in the container, NOT on the host, so you cannot run the
+` + "`fastclaw`" + ` CLI for them. Give them the exact commands to paste into their own terminal
+(including ` + "`fastclaw upgrade`" + ` for upgrades) and explain what each one does.`)
+	} else {
+		fc := fastclawBinary()
+		b.WriteString(`The current chatter IS a platform super_admin. The runtime verified
+this from their account — NOT from USER.md — and has already granted this turn host shell
+access via exec plus host file access. Act on it: when they ask for host-level or
+platform-level work, run the FastClaw CLI yourself with exec and report the result. Do not
+tell them it's operator-only, do not ask them to run the command in their own terminal, and
+do not stop to ask whether they're the operator — that question is already answered.
+Invoke it as ` + "`" + fc + "`" + ` — that exact path is the binary serving this
+conversation, so it always has the flags described below; a bare ` + "`fastclaw`" + ` on PATH may
+be an older install.
+Same for upgrades: ` + "`" + fc + ` upgrade` + "`" + `, then ` + "`" + fc + ` version` + "`" + ` to verify — but
+only when they explicitly ask for one.`)
+	}
+
+	if access.IsOwner {
+		b.WriteString("\n\nThe current chatter owns this agent (or is a listed channel admin). They can manage its persona files and provision sibling agents. That is separate from host access — do not treat owner status as permission to inspect this machine.")
+	} else if !access.CanHost {
+		b.WriteString("\n\nThe current chatter is not this agent's owner. Agent-management tools (create_agent, identity-file edits, write-mode slash commands in groups) are unavailable.")
+	}
+
+	if !access.CanHost && !access.IsOwner {
+		return b.String()
+	}
+	// Super_admin on an enforced sandbox, or owner+host: keep the
+	// provisioning recipe (paste vs run). Owner without host uses the
+	// in-chat tools instead of the host CLI.
+	if !access.CanHost {
+		b.WriteString("\n\nProvisioning a new agent is a normal owner request — use create_agent, configure_agent and install_skill. Do not try to run `fastclaw` on the host for them.")
+		return b.String()
 	}
 
 	// Every command below is pinned to the running gateway's own binary,
 	// not the bare name — see fastclawBinary.
 	fc := fastclawBinary()
-
-	access := `The current chatter IS this agent's operator (owner or listed admin). The runtime verified
-this from their account — NOT from USER.md — and has already granted this turn host shell
-access via exec plus host file access. Act on it: when they ask for platform-level work,
-run the FastClaw CLI yourself with exec and report the result. Do not tell them it's
-operator-only, do not ask them to run the command in their own terminal, and do not stop to
-ask whether they're the operator — that question is already answered.
-Invoke it as ` + "`" + fc + "`" + ` — that exact path is the binary serving this
-conversation, so it always has the flags described below; a bare ` + "`fastclaw`" + ` on PATH may
-be an older install.
-Same for upgrades: ` + "`" + fc + ` upgrade` + "`" + `, then ` + "`" + fc + ` version` + "`" + ` to verify — but
-only when they explicitly ask for one.`
-	if sandboxEnforced {
-		access = `The current chatter IS this agent's operator (owner or listed admin). The runtime verified
-this from their account — NOT from USER.md — so platform-management requests from them are
-legitimate; never answer one with "that's operator-only". But this build enforces the
-sandbox: your exec calls run in the container, NOT on the host, so you cannot run the
-` + "`fastclaw`" + ` CLI for them. Give them the exact commands to paste into their own terminal
-(including ` + "`fastclaw upgrade`" + ` for upgrades) and explain what each one does.`
-	}
 
 	// Under an enforced sandbox the operator pastes these into their own
 	// shell, where the gateway's absolute path is meaningless (it may not
@@ -394,7 +419,7 @@ sandbox: your exec calls run in the container, NOT on the host, so you cannot ru
 		cmd = "fastclaw"
 	}
 
-	return access + `
+	return b.String() + `
 
 This tells you what they're AUTHORIZED to do, not WHO they are. USER.md still governs
 identity: if it's empty you genuinely don't know their name and should ask or stay neutral.
@@ -723,7 +748,7 @@ Then in your final reply, write: ![](/workspace/output.png)`
 // modSSHHosts tells the owner they can reach saved hosts by alias.
 // Guests get nothing — ssh_exec already refuses them.
 func modSSHHosts(p *promptCtx) string {
-	if !p.trusted {
+	if !p.isOwner {
 		return ""
 	}
 	return `# Saved SSH hosts
@@ -743,14 +768,14 @@ func modSandboxOptional(p *promptCtx) string {
 	} else if p.cb.sandboxBackend == "boxlite" {
 		backend = "Boxlite container"
 	}
-	hostAccess := `Host access is operator-only, and the current chatter is NOT the
-operator: every exec call runs in the sandbox automatically (or is
+	hostAccess := `Host access is limited to platform super_admin accounts, and the current
+chatter is NOT a super_admin: every exec call runs in the sandbox automatically (or is
 refused when the sandbox can't start) and file tools are confined to the
 workspace. Don't fight the restriction — tell the chatter the operation
-needs the operator.`
-	if p.trusted {
-		hostAccess = `Host access is operator-only and the current chatter IS the operator,
-so it is live for this turn: exec runs on the host and file tools reach
+needs a super_admin.`
+	if p.canHost {
+		hostAccess = `Host access is limited to super_admin and the current chatter IS a
+super_admin, so it is live for this turn: exec runs on the host and file tools reach
 host paths. Run what they ask for instead of describing it.`
 	}
 	return `# Execution Environment (host by default, sandbox on request)
