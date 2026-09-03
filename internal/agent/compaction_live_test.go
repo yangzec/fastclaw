@@ -112,9 +112,6 @@ func TestWebChatContextReportsWorkingSet(t *testing.T) {
 	if empty["model"] != "openai/tiny" {
 		t.Fatalf("model = %v, want openai/tiny", empty["model"])
 	}
-	if empty["maxTokens"] != 512 {
-		t.Fatalf("maxTokens = %v, want 512", empty["maxTokens"])
-	}
 
 	sess := ag.sessions.Get("web", "", "s-ctx", "")
 	blob := strings.Repeat("n", 400) // 100 tokens at chars/4

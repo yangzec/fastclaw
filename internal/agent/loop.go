@@ -1042,9 +1042,8 @@ func (a *Agent) Sessions() *session.Manager {
 }
 
 // WebChatContext is the composer meter: working-set tokens (what the
-// next LLM call will send), the configured context window, the
-// completion budget (maxTokens), and the compact threshold.
-// sessionId empty → tokens=0 without minting a row.
+// next LLM call will send), the configured context window, and the
+// compact threshold. sessionId empty → tokens=0 without minting a row.
 func (a *Agent) WebChatContext(sessionId, chatterUID string) map[string]any {
 	tokens := 0
 	msgCount := 0
@@ -1064,14 +1063,9 @@ func (a *Agent) WebChatContext(sessionId, chatterUID string) map[string]any {
 		window = a.effectiveContextWindow(chatterUID)
 		threshold = a.compactTokenThreshold(chatterUID)
 	}
-	maxTok := 0
-	if a != nil {
-		maxTok = a.maxTokens
-	}
 	return map[string]any{
 		"model":         model,
 		"contextWindow": window,
-		"maxTokens":     maxTok,
 		"tokens":        tokens,
 		"threshold":     threshold,
 		"messageCount":  msgCount,
@@ -1821,6 +1815,7 @@ func buildToolCatalogForPlan(toolDefs []provider.Tool) string {
 // against the full session including this plan.
 func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) string {
 	chatterUID := a.chatterUserID(msg)
+	a.applyLiveMaxTokens(chatterUID)
 	ctx = sandbox.WithUserID(ctx, chatterUID)
 	ctx = store.WithChatterUserID(ctx, chatterUID)
 	ctx = store.WithChannel(ctx, msg.Channel)
@@ -2395,6 +2390,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	slog.Info("turn: refreshing skills",
 		"agent", a.name, "channel", msg.Channel, "chat_id", msg.ChatID, "user", chatterUID)
 	a.refreshSkillsFromStore(chatterUID)
+	a.applyLiveMaxTokens(chatterUID)
 	sess := a.sessions.Get(sessionTriple(msg, msg.ProjectID))
 	// Bind chatter onto sess. Session.ctx() builds its own
 	// context.Background-rooted ctx for store calls, so the
@@ -3302,6 +3298,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	slog.Info("turn: refreshing skills",
 		"agent", a.name, "channel", msg.Channel, "chat_id", msg.ChatID, "user", chatterUID)
 	a.refreshSkillsFromStore(chatterUID)
+	a.applyLiveMaxTokens(chatterUID)
 	sess := a.sessions.Get(sessionTriple(msg, msg.ProjectID))
 	// Bind chatter onto sess so its ctx() embeds WithChatterUserID
 	// for DBStore session writes — Session.ctx() rebuilds ctx from its
@@ -3988,7 +3985,29 @@ func copyProviders(src map[string]config.ProviderConfig) map[string]config.Provi
 }
 
 func (a *Agent) compactTokenThreshold(chatterUID string) int {
-	return CompactThreshold(lookupContextWindow(a.liveProviders(chatterUID), a.model), a.maxTokens)
+	return CompactThreshold(lookupContextWindow(a.liveProviders(chatterUID), a.model), a.effectiveMaxTokens(chatterUID))
+}
+
+func (a *Agent) effectiveMaxTokens(chatterUID string) int {
+	if n := lookupMaxTokens(a.liveProviders(chatterUID), a.model); n > 0 {
+		return n
+	}
+	if a != nil && a.maxTokens > 0 {
+		return a.maxTokens
+	}
+	return 8192
+}
+
+// applyLiveMaxTokens refreshes the request completion budget from the
+// Models catalog so a maxTokens save applies on the next message
+// without waiting for UserSpace eviction.
+func (a *Agent) applyLiveMaxTokens(chatterUID string) {
+	if a == nil {
+		return
+	}
+	if n := a.effectiveMaxTokens(chatterUID); n > 0 {
+		a.maxTokens = n
+	}
 }
 
 func (a *Agent) effectiveContextWindow(chatterUID string) int {

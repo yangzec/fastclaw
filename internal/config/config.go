@@ -387,7 +387,11 @@ type ModelEntry struct {
 	// UI; official preset sizes are defaults only. 0 means "unset" —
 	// compaction then falls back to KnownContextWindow, then 200000.
 	ContextWindow int `json:"contextWindow"`
-	MaxTokens     int `json:"maxTokens"`
+	// MaxTokens is the completion budget sent as max_tokens /
+	// max_completion_tokens. Operators set it on the Models page;
+	// official preset sizes are defaults only. 0 means "unset" —
+	// the agent loop then falls back to KnownMaxTokens, then 8192.
+	MaxTokens int `json:"maxTokens"`
 }
 
 // ProviderConfig holds API credentials for an LLM provider — used both as

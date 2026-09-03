@@ -415,6 +415,7 @@ export interface OnboardRequest {
   authType?: string;
   model?: string;
   contextWindow?: number;
+  maxTokens?: number;
   agentName?: string;
   sandboxEnabled?: boolean;
   sandboxBackend?: string;
@@ -932,7 +933,6 @@ export async function getChatHistoryWithCursor(agentId: string, sessionId: strin
 export interface ChatContextUsage {
   model: string;
   contextWindow: number;
-  maxTokens: number;
   tokens: number;
   threshold: number;
   messageCount: number;
@@ -945,7 +945,6 @@ export async function getChatContext(
   const empty: ChatContextUsage = {
     model: "",
     contextWindow: 0,
-    maxTokens: 0,
     tokens: 0,
     threshold: 0,
     messageCount: 0,
@@ -959,7 +958,6 @@ export async function getChatContext(
   return {
     model: typeof data?.model === "string" ? data.model : "",
     contextWindow: Number(data?.contextWindow) || 0,
-    maxTokens: Number(data?.maxTokens) || 0,
     tokens: Number(data?.tokens) || 0,
     threshold: Number(data?.threshold) || 0,
     messageCount: Number(data?.messageCount) || 0,
@@ -1435,9 +1433,6 @@ export interface AgentUpdatePayload {
   name?: string;
   description?: string;
   model?: string;
-  // Per-agent completion budget. Omit to leave unchanged; pass 0 to
-  // clear the override so system/user defaults apply.
-  maxTokens?: number;
   soul?: string;
   skills?: AgentSkillsConfig;
   // Whole-map replace: omit to leave providers untouched, send {} to

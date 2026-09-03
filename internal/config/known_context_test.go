@@ -36,6 +36,43 @@ func TestKnownContextWindowPresetIDs(t *testing.T) {
 	}
 }
 
+func TestKnownMaxTokensPresetIDs(t *testing.T) {
+	cases := []struct {
+		id   string
+		want int
+	}{
+		{"gpt-5.6", 128_000},
+		{"gpt-5.6-sol", 128_000},
+		{"openai/gpt-5.6", 128_000},
+		{"gpt-5.5", 128_000},
+		{"glm-5.3", 128_000},
+		{"zhipu/glm-5.3-flash", 128_000},
+		{"kimi-k3", 131_072},
+		{"kimi/k3", 131_072},
+		{"grok-4.6", 0},
+		{"claude-opus-4-7", 0},
+		{"totally-unknown-model", 0},
+		{"", 0},
+	}
+	for _, tc := range cases {
+		if got := KnownMaxTokens(tc.id); got != tc.want {
+			t.Errorf("KnownMaxTokens(%q) = %d, want %d", tc.id, got, tc.want)
+		}
+	}
+}
+
+func TestMaxTokensOrDefaultPrefersSaved(t *testing.T) {
+	if got := MaxTokensOrDefault("glm-5.3", 8192); got != 8192 {
+		t.Fatalf("saved override = %d, want 8192", got)
+	}
+	if got := MaxTokensOrDefault("glm-5.3", 0); got != 128_000 {
+		t.Fatalf("empty saved = %d, want official 128000", got)
+	}
+	if got := MaxTokensOrDefault("unknown", 0); got != 0 {
+		t.Fatalf("unknown = %d, want 0", got)
+	}
+}
+
 func TestContextWindowOrDefaultPrefersSaved(t *testing.T) {
 	if got := ContextWindowOrDefault("glm-5.3", 256_000); got != 256_000 {
 		t.Fatalf("saved override = %d, want 256000", got)

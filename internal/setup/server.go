@@ -38,7 +38,7 @@ type AgentHandle interface {
 	SteerWeb(sessionId, projectIDHint, text string) bool
 	WebChatHistory(sessionId string) []map[string]any
 	// WebChatContext is the composer usage meter: working-set tokens,
-	// configured window, completion budget, and compact threshold.
+	// configured window, and compact threshold.
 	WebChatContext(sessionId, chatterUID string) map[string]any
 	// WebChatTurnActive is true while HandleMessage is running for
 	// this session. The history endpoint uses it so a page reload

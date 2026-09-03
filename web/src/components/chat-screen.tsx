@@ -3268,8 +3268,6 @@ export function ChatScreen() {
                     sessionId={sessionId}
                     draftText={input}
                     refreshKey={`${sessionId}:${messages.length}:${sending ? 1 : 0}:${composerRev}`}
-                    canEdit={agentRole === "owner" && !isActAsView}
-                    onChanged={() => setComposerRev((n) => n + 1)}
                   />
                 ) : (
                   <span />

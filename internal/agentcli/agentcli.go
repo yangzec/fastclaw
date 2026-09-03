@@ -688,6 +688,7 @@ func appendModel(models []config.ModelEntry, id string) []config.ModelEntry {
 		ID:            id,
 		Name:          id,
 		ContextWindow: config.KnownContextWindow(id),
+		MaxTokens:     config.KnownMaxTokens(id),
 	})
 }
 

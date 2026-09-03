@@ -244,6 +244,7 @@ type onboardRequest struct {
 	AuthType       string `json:"authType,omitempty"`
 	Model          string `json:"model"`
 	ContextWindow  int    `json:"contextWindow,omitempty"`
+	MaxTokens      int    `json:"maxTokens,omitempty"`
 
 	AgentName string `json:"agentName,omitempty"`
 
@@ -316,6 +317,7 @@ func (s *Server) handleOnboard(w http.ResponseWriter, r *http.Request) {
 				ID:            req.Model,
 				Name:          req.Model,
 				ContextWindow: cw,
+				MaxTokens:     config.MaxTokensOrDefault(req.Model, req.MaxTokens),
 			}}
 		}
 		if err := scope.SaveProviderByScope(r.Context(), s.dataStore, scope.System, "", req.Provider, pcfg); err != nil {
