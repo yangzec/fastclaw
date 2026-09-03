@@ -954,18 +954,16 @@ export default function AgentModelsPage() {
                       />
                     </div>
                   </div>
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <ContextWindowField
-                      modelId={m.id}
-                      value={m.contextWindow}
-                      onChange={(next) => handleUpdateModel(idx, "contextWindow", next)}
-                    />
-                    <MaxTokensField
-                      modelId={m.id}
-                      value={m.maxTokens}
-                      onChange={(next) => handleUpdateModel(idx, "maxTokens", next)}
-                    />
-                  </div>
+                  <ContextWindowField
+                    modelId={m.id}
+                    value={m.contextWindow}
+                    onChange={(next) => handleUpdateModel(idx, "contextWindow", next)}
+                  />
+                  <MaxTokensField
+                    modelId={m.id}
+                    value={m.maxTokens}
+                    onChange={(next) => handleUpdateModel(idx, "maxTokens", next)}
+                  />
                 </div>
                 );
               })}

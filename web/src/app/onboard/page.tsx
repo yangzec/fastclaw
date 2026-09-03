@@ -643,18 +643,16 @@ function ProviderStep(props: {
             className="font-mono text-sm"
           />
         </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <ContextWindowField
-            modelId={props.model}
-            value={props.contextWindow}
-            onChange={props.setContextWindow}
-          />
-          <MaxTokensField
-            modelId={props.model}
-            value={props.maxTokens}
-            onChange={props.setMaxTokens}
-          />
-        </div>
+        <ContextWindowField
+          modelId={props.model}
+          value={props.contextWindow}
+          onChange={props.setContextWindow}
+        />
+        <MaxTokensField
+          modelId={props.model}
+          value={props.maxTokens}
+          onChange={props.setMaxTokens}
+        />
         <div className="space-y-1.5">
           <Label>API Base URL</Label>
           <Input

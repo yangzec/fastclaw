@@ -9,6 +9,7 @@ func TestKnownContextWindowPresetIDs(t *testing.T) {
 	}{
 		{"gpt-5.6", 1_050_000},
 		{"gpt-5.6-sol", 1_050_000},
+		{"gpt-5.6-luna", 1_050_000},
 		{"openai/gpt-5.6", 1_050_000},
 		{"gpt-5.5", 1_050_000},
 		{"openai/gpt-5.5", 1_050_000},

@@ -3,8 +3,12 @@ import { test } from "node:test";
 import {
   knownContextWindow,
   knownMaxTokens,
+  maxOutputTip,
+  maxTokenOptionsFor,
+  modelLimitFamily,
   presetContextWindow,
   presetMaxTokens,
+  suggestedMaxTokens,
   nextContextWindowOnIdChange,
   nextMaxTokensOnIdChange,
   DEFAULT_CONTEXT_WINDOW,
@@ -20,6 +24,7 @@ test("knownContextWindow covers latest GPT / Zhipu / Kimi / Grok ids", () => {
   assert.equal(knownContextWindow("kimi/k3"), 1_048_576);
   assert.equal(knownContextWindow("grok-4.6"), 500_000);
   assert.equal(knownContextWindow("grok/grok-4.5"), 500_000);
+  assert.equal(knownContextWindow("gpt-5.6-luna"), 1_050_000);
   assert.equal(knownContextWindow("unknown-model"), 0);
 });
 
@@ -46,14 +51,34 @@ test("knownMaxTokens covers GPT / Zhipu / Kimi ids", () => {
   assert.equal(knownMaxTokens("unknown-model"), 0);
 });
 
-test("presetMaxTokens falls back to 8192", () => {
-  assert.equal(presetMaxTokens("totally-unknown"), DEFAULT_MAX_TOKENS);
+test("suggestedMaxTokens differs for GPT-5.5 vs 5.6", () => {
+  assert.equal(modelLimitFamily("openai/gpt-5.6-sol"), "gpt-5.6");
+  assert.equal(modelLimitFamily("gpt-5.5"), "gpt-5.5");
+  assert.equal(suggestedMaxTokens("gpt-5.6"), 65_536);
+  assert.equal(suggestedMaxTokens("gpt-5.5"), 32_768);
   assert.equal(presetMaxTokens("kimi-k3"), 131_072);
+  assert.equal(presetMaxTokens("totally-unknown"), DEFAULT_MAX_TOKENS);
+});
+
+test("maxTokenOptionsFor marks suggested and official", () => {
+  const gpt56 = maxTokenOptionsFor("gpt-5.6");
+  assert.equal(gpt56.find((o) => o.value === 65_536)?.tag, "suggested");
+  assert.equal(gpt56.find((o) => o.value === 128_000)?.tag, "official");
+  const kimi = maxTokenOptionsFor("kimi-k3");
+  assert.ok(kimi.some((o) => o.value === 131_072 && o.tag === "suggested"));
+});
+
+test("maxOutputTip calls out 5.5 vs 5.6", () => {
+  assert.match(maxOutputTip("gpt-5.6-sol").headline, /5\.6/);
+  assert.match(maxOutputTip("gpt-5.6").body, /max/);
+  assert.match(maxOutputTip("gpt-5.5").body, /xhigh/);
+  assert.notEqual(maxOutputTip("gpt-5.5").headline, maxOutputTip("gpt-5.6").headline);
 });
 
 test("nextMaxTokensOnIdChange keeps a manual override", () => {
   assert.equal(nextMaxTokensOnIdChange("glm-5.3", "gpt-5.6", 4096), 4096);
   assert.equal(nextMaxTokensOnIdChange("kimi-k3", "gpt-5.6", 128_000), 131_072);
+  assert.equal(nextMaxTokensOnIdChange("gpt-5.5", "gpt-5.6", 65_536), 32_768);
   assert.equal(nextMaxTokensOnIdChange("kimi-k3", "", 0), 131_072);
   assert.equal(nextMaxTokensOnIdChange("kimi-k3", "unknown", DEFAULT_MAX_TOKENS), 131_072);
 });

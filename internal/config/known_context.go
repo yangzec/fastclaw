@@ -24,7 +24,7 @@ var knownContextWindows = map[string]int{
 	"gpt-5.6":                       1_050_000,
 	"gpt-5.6-sol":                   1_050_000,
 	"gpt-5.6-terra":                 1_050_000,
-	"gpt-5.6-luna":                  400_000,
+	"gpt-5.6-luna":                  1_050_000,
 	"gpt-5.5":                       1_050_000,
 	"gpt-5.5-pro":                   1_050_000,
 	"glm-5.3":                       1_000_000,
@@ -76,8 +76,8 @@ func ContextWindowOrDefault(model string, saved int) int {
 }
 
 // Official (or vendor-documented) max output sizes for the same
-// preset IDs. These are the request ceiling we prefill as maxTokens —
-// not "how long we want a typical reply". Keep in sync with
+// preset IDs. These are the vendor ceiling, not the daily request
+// budget the Models form suggests. Keep in sync with
 // web/src/lib/model-defaults.ts.
 //
 // Sources checked 2026-09-03:
