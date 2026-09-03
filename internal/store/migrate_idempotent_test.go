@@ -55,6 +55,9 @@ func TestMigrateIdempotentOnFreshInstall(t *testing.T) {
 	missing(t, "sessions", "channel", true)
 	missing(t, "sessions", "account_id", true)
 	missing(t, "sessions", "chat_id", true)
+	missing(t, "ssh_hosts", "last_test_status", true)
+	missing(t, "ssh_hosts", "last_test_error", true)
+	missing(t, "ssh_hosts", "last_tested_at", true)
 
 	// Spot-check that the indexes exist (the migrators all flow
 	// through CREATE INDEX IF NOT EXISTS, so missing index would mean

@@ -201,6 +201,75 @@ func TestSSHHostUpdateSkipsProbeWhenOnlyAliasChanges(t *testing.T) {
 	if probes != 1 {
 		t.Fatalf("alias-only update should not re-probe, probes=%d", probes)
 	}
+
+	updateHost, _ := json.Marshal(map[string]any{"host": "10.0.4.22"})
+	upd2 := httptest.NewRequest(http.MethodPut, "/api/ssh-hosts/"+created.Host.ID, bytes.NewReader(updateHost))
+	upd2.AddCookie(cookie)
+	upd2.SetPathValue("id", created.Host.ID)
+	upd2RR := httptest.NewRecorder()
+	s.authMiddleware(s.handleUpdateSSHHost)(upd2RR, upd2)
+	if upd2RR.Code != http.StatusOK {
+		t.Fatalf("host update status=%d body=%s", upd2RR.Code, upd2RR.Body.String())
+	}
+	if probes != 2 {
+		t.Fatalf("host change should re-probe, probes=%d", probes)
+	}
+}
+
+func TestSSHHostUpdateRefusesWhenProbeFails(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("FASTCLAW_HOME", t.TempDir())
+	s, resolver, admin, _ := newAuthTestServer(t, ctx)
+	calls := 0
+	stubSSHHostProbe(t, func(ctx context.Context, host store.SSHHostRecord, creds sshhosts.Creds, command string, timeout time.Duration) (sshhosts.Result, error) {
+		calls++
+		if calls == 1 {
+			return sshhosts.Result{}, nil
+		}
+		return sshhosts.Result{}, errors.New("no route to host")
+	})
+
+	createBody, _ := json.Marshal(map[string]any{
+		"name": "gpu-box", "host": "10.0.4.21", "username": "deploy",
+		"authType": "password", "password": "secret",
+	})
+	create := httptest.NewRequest(http.MethodPost, "/api/ssh-hosts", bytes.NewReader(createBody))
+	cookie, _ := resolver.IssueSession(ctx, admin.ID)
+	create.AddCookie(cookie)
+	createRR := httptest.NewRecorder()
+	s.authMiddleware(s.handleCreateSSHHost)(createRR, create)
+	if createRR.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", createRR.Code, createRR.Body.String())
+	}
+	var created struct {
+		Host struct {
+			ID string `json:"id"`
+		} `json:"host"`
+	}
+	if err := json.Unmarshal(createRR.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	updateBody, _ := json.Marshal(map[string]any{"host": "10.0.9.9"})
+	upd := httptest.NewRequest(http.MethodPut, "/api/ssh-hosts/"+created.Host.ID, bytes.NewReader(updateBody))
+	upd.AddCookie(cookie)
+	upd.SetPathValue("id", created.Host.ID)
+	updRR := httptest.NewRecorder()
+	s.authMiddleware(s.handleUpdateSSHHost)(updRR, upd)
+	if updRR.Code != http.StatusBadRequest {
+		t.Fatalf("update status=%d body=%s", updRR.Code, updRR.Body.String())
+	}
+
+	got, err := s.dataStore.GetSSHHost(ctx, created.Host.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Host != "10.0.4.21" {
+		t.Fatalf("failed re-probe overwrote host: %+v", got)
+	}
+	if got.LastTestStatus != store.SSHTestOK {
+		t.Fatalf("failed re-probe should leave previous status, got %+v", got)
+	}
 }
 
 func TestSSHHostTestRecordsFailure(t *testing.T) {

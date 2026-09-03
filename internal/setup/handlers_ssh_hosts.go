@@ -111,7 +111,7 @@ func (s *Server) handleCreateSSHHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rec.SecretEnc = enc
-	if err := probeSSHHost(r.Context(), rec, creds); err != nil {
+	if _, err := probeSSHHost(r.Context(), rec, creds); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "connection failed: " + err.Error()})
 		return
 	}
@@ -206,7 +206,7 @@ func (s *Server) handleUpdateSSHHost(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
-		if err := probeSSHHost(r.Context(), rec, probeCreds); err != nil {
+		if _, err := probeSSHHost(r.Context(), rec, probeCreds); err != nil {
 			jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "connection failed: " + err.Error()})
 			return
 		}
@@ -268,7 +268,7 @@ func (s *Server) handleTestSSHHost(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	probeErr := probeSSHHost(r.Context(), rec, creds)
+	res, probeErr := probeSSHHost(r.Context(), rec, creds)
 	_ = s.dataStore.SaveSSHHost(r.Context(), rec)
 	if probeErr != nil {
 		jsonResponse(w, http.StatusBadGateway, map[string]any{
@@ -282,7 +282,7 @@ func (s *Server) handleTestSSHHost(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{
 		"ok":             true,
-		"output":         "ok",
+		"output":         res.Output,
 		"lastTestStatus": rec.LastTestStatus,
 		"lastTestedAt":   rec.LastTestedAt,
 	})
@@ -316,21 +316,21 @@ func (s *Server) sshHostNameTaken(ctx context.Context, userID, name, exceptID st
 	return nil
 }
 
-func probeSSHHost(ctx context.Context, rec *store.SSHHostRecord, creds sshhosts.Creds) error {
+func probeSSHHost(ctx context.Context, rec *store.SSHHostRecord, creds sshhosts.Creds) (sshhosts.Result, error) {
 	res, err := sshHostProbe(ctx, *rec, creds, "echo ok", 20*time.Second)
 	now := time.Now().UTC()
 	rec.LastTestedAt = &now
 	if err != nil {
 		rec.LastTestStatus = store.SSHTestFail
 		rec.LastTestError = clipSSHTestError(err.Error())
-		return err
+		return res, err
 	}
 	rec.LastTestStatus = store.SSHTestOK
 	rec.LastTestError = ""
 	if res.PinnedHostKey != "" && rec.HostKey == "" {
 		rec.HostKey = res.PinnedHostKey
 	}
-	return nil
+	return res, nil
 }
 
 func credsForProbe(creds sshhosts.Creds, existing *store.SSHHostRecord, credsChanged bool) (sshhosts.Creds, error) {
