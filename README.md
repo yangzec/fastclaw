@@ -61,7 +61,7 @@ Open `http://localhost:18953` and login with your admin token.
 - **Skills** — Install shared skills from ClawHub or GitHub
 - **Models** — Configure LLM providers (OpenAI, Anthropic, Ollama, OpenRouter, etc.)
 - **API Keys** — Issue programmatic credentials (admin / user / agent tiers)
-- **Settings** — General (theme), Account (profile + password), Runtime (sandbox config; admin only)
+- **Settings** — General (theme), Account (profile + password), SSH Hosts (saved servers for `ssh_exec`), Runtime (sandbox config; admin only)
 
 > Non-admin users get scoped access to **Models**, **API Keys**, and
 > **Settings (General + Account)** out of the box. They see admin-shared
@@ -131,7 +131,8 @@ table and is edited through the dashboard or `fastclaw agents config`.
 - Sessions are isolated per channel + chatID, so a user's Telegram thread and Discord thread stay separate
 
 ### Tools & Sandbox
-- Built-in: exec, read_file, write_file, list_dir, web_fetch, web_search, memory_search
+- Built-in: exec, ssh_exec, read_file, write_file, list_dir, web_fetch, web_search, memory_search
+- Saved SSH hosts (Settings → SSH Hosts): store a public key or password once; the owner’s agent connects by alias so credentials never enter chat
 - E2B cloud sandbox or Docker sandbox — automatic skill + workspace hydrate, post-exec sync (sandbox-side files mirrored back to the durable store after every tool call)
 - Sandbox is a **boundary on hosted deploys, a tool on self-hosted installs**: with `FASTCLAW_DEPLOY=hosted` every exec/file call is locked inside the sandbox; on a self-hosted install the host shell stays the default and the model opts into the sandbox per call with `exec(sandbox:true)`. Set `FASTCLAW_SANDBOX_ENFORCE=1` to get the hosted-style lockdown on a self-hosted install (recommended when agents are exposed to untrusted IM chatters)
 - MCP server support

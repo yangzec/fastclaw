@@ -2190,6 +2190,76 @@ export async function getSessionHistory(
   return (data.history || []) as WorkspaceHistoryEntry[];
 }
 
+export type SSHAuthType = "key" | "password";
+
+export interface SSHHost {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  authType: SSHAuthType;
+  defaultCwd?: string;
+  enabled: boolean;
+  hasSecret?: boolean;
+  hasHostKey?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SSHHostWrite {
+  name: string;
+  host: string;
+  port?: number;
+  username: string;
+  authType: SSHAuthType;
+  password?: string;
+  privateKey?: string;
+  passphrase?: string;
+  defaultCwd?: string;
+  enabled?: boolean;
+}
+
+export async function listSSHHosts(): Promise<{ hosts?: SSHHost[]; error?: string }> {
+  const res = await apiFetch("/api/ssh-hosts");
+  return res.json();
+}
+
+export async function createSSHHost(
+  req: SSHHostWrite,
+): Promise<{ ok?: boolean; host?: SSHHost; error?: string }> {
+  const res = await apiFetch("/api/ssh-hosts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  return res.json();
+}
+
+export async function updateSSHHost(
+  id: string,
+  req: Partial<SSHHostWrite>,
+): Promise<{ ok?: boolean; host?: SSHHost; error?: string }> {
+  const res = await apiFetch(`/api/ssh-hosts/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  return res.json();
+}
+
+export async function deleteSSHHost(id: string): Promise<{ ok?: boolean; error?: string }> {
+  const res = await apiFetch(`/api/ssh-hosts/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return res.json();
+}
+
+export async function testSSHHost(
+  id: string,
+): Promise<{ ok?: boolean; output?: string; error?: string }> {
+  const res = await apiFetch(`/api/ssh-hosts/${encodeURIComponent(id)}/test`, { method: "POST" });
+  return res.json();
+}
+
 export async function restoreSessionHistory(
   agentId: string,
   sessionId: string,
