@@ -100,13 +100,15 @@ func LoggingHook() HookFunc {
 			hc.StartTime = time.Now()
 			slog.Info("hook: before model call", "agent", hc.AgentName)
 		case AfterModelCall:
-			elapsed := time.Since(hc.StartTime)
 			hasTools := hc.Response != nil && hc.Response.HasToolCalls()
-			slog.Info("hook: after model call",
+			args := []any{
 				"agent", hc.AgentName,
-				"elapsed", elapsed,
 				"has_tool_calls", hasTools,
-			)
+			}
+			if !hc.StartTime.IsZero() {
+				args = append(args, "elapsed", time.Since(hc.StartTime))
+			}
+			slog.Info("hook: after model call", args...)
 		case BeforeToolCall:
 			hc.StartTime = time.Now()
 			slog.Info("hook: before tool call",
@@ -114,13 +116,19 @@ func LoggingHook() HookFunc {
 				"tool", hc.ToolName,
 			)
 		case AfterToolCall:
-			elapsed := time.Since(hc.StartTime)
-			slog.Info("hook: after tool call",
+			// AfterToolCall is a fresh HookContext — StartTime is not
+			// copied from BeforeToolCall (and parallel tools would race
+			// a shared clock anyway). Skip elapsed when the clock is
+			// zero so we don't log time.Since(0) ≈ 292 years.
+			args := []any{
 				"agent", hc.AgentName,
 				"tool", hc.ToolName,
-				"elapsed", elapsed,
 				"error", hc.Error,
-			)
+			}
+			if !hc.StartTime.IsZero() {
+				args = append(args, "elapsed", time.Since(hc.StartTime))
+			}
+			slog.Info("hook: after tool call", args...)
 		case BeforeSystemPrompt:
 			slog.Debug("hook: before system prompt", "agent", hc.AgentName)
 		case AfterSystemPrompt:

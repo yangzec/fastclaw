@@ -558,6 +558,36 @@ func TestCompactMessagesForceSummarizesUnderThreshold(t *testing.T) {
 	}
 }
 
+func TestCompactGiantHotTailToolIsCapped(t *testing.T) {
+	// The 14:27 MCP session: one exec dump (~500KB) sat in the
+	// keep-recent window, so summarize left tokens_before≈tokens_after.
+	// FastClaw's configured window was larger than the upstream 502
+	// limit, so hard-trim never ran.
+	huge := strings.Repeat("X", 200_000) // ~50k tokens
+	msgs := []provider.Message{
+		{Role: "user", Content: "add 9 mcp servers", Origin: provider.OriginUser},
+		{Role: "assistant", Content: "looking", Origin: provider.OriginUser, ToolCalls: []provider.ToolCall{
+			{ID: "t1", Function: provider.FunctionCall{Name: "exec", Arguments: `{"command":"fastclaw agents config --help"}`}},
+		}},
+		{Role: "tool", Name: "exec", ToolCallID: "t1", Content: huge, Origin: provider.OriginUser},
+	}
+	before := EstimateTokens(msgs)
+	f := &fakeSummarizer{}
+	res, err := CompactMessagesWith(context.Background(), msgs, t.TempDir(), f, "m", 1_000_000, CompactOptions{Force: true, KeepRecentTokens: 20_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := EstimateTokens(res.Messages)
+	if after >= before*9/10 {
+		t.Fatalf("giant hot-tail tool must shrink: before=%d after=%d", before, after)
+	}
+	for _, m := range res.Messages {
+		if m.Role == "tool" && len([]rune(m.Content)) > maxHotTailToolRunes+80 {
+			t.Fatalf("hot-tail tool still %d runes", len([]rune(m.Content)))
+		}
+	}
+}
+
 func TestKeepRecentCutoffKeepsTokenBudget(t *testing.T) {
 	blob := strings.Repeat("n", 400) // 100 tokens each
 	var msgs []provider.Message

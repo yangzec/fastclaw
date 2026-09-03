@@ -922,6 +922,7 @@ func (r *Registry) Execute(ctx context.Context, name string, args string) (strin
 	}
 
 	result, err := tool.fn(ctx, json.RawMessage(args))
+	result = clipToolResult(result)
 	if err != nil {
 		return result + "\n[Analyze the error above and try a different approach.]", err
 	}

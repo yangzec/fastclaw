@@ -40,6 +40,10 @@ const (
 	// summarizeToolMaxRunes matches Pi's serializeConversation cap so
 	// one exec/read dump cannot blow the summarizer prompt.
 	summarizeToolMaxRunes = 2000
+	// maxHotTailToolRunes caps a single tool result that landed in the
+	// verbatim keep-recent window. Without this, one 500KB exec dump is
+	// "recent" and summarize leaves ~200k tokens untouched.
+	maxHotTailToolRunes = 8000
 	// compactSummaryMaxTokens is the structured-handoff budget.
 	compactSummaryMaxTokens = 4096
 	droppedHistoryNotice    = "[Earlier turns were dropped to fit the model context window. Full history is in memory logs.]"
@@ -235,11 +239,17 @@ func CompactMessagesWith(ctx context.Context, messages []provider.Message, works
 			force:            opts.Force,
 		})
 		if err == nil {
+			compressed = capOversizedToolResults(compressed, maxHotTailToolRunes)
 			after := EstimateTokens(compressed)
 			slog.Info("after compression", "tokens_before", tokens, "tokens_after", after)
 			method := compactMethodSummarize
-			if after >= threshold {
-				slog.Warn("compression still over threshold, hard-trimming", "tokens", after, "threshold", threshold)
+			// Force + a giant hot-tail tool can leave after still huge
+			// while under a 1M-class threshold (the overflow 502 that
+			// triggered Force is the real window). Hard-trim if we
+			// barely shrunk and are still over the keep-recent budget.
+			barelyShrunk := after > tokens*9/10 && after > keep
+			if after >= threshold || (opts.Force && barelyShrunk) {
+				slog.Warn("compression still over threshold, hard-trimming", "tokens", after, "threshold", threshold, "force", opts.Force)
 				compressed = hardTrimMessages(compressed, threshold)
 				method = compactMethodHardTrim
 			}
@@ -253,7 +263,7 @@ func CompactMessagesWith(ctx context.Context, messages []provider.Message, works
 		slog.Warn("compression failed, falling back to local shrink", "error", err)
 	}
 
-	pruned := pruneToolResultsBefore(messages, keepRecentCutoff(messages, keep))
+	pruned := capOversizedToolResults(pruneToolResultsBefore(messages, keepRecentCutoff(messages, keep)), maxHotTailToolRunes)
 	prunedTokens := EstimateTokens(pruned)
 	slog.Info("after pruning", "tokens_before", tokens, "tokens_after", prunedTokens)
 	if prunedTokens < threshold {
@@ -334,6 +344,27 @@ func pruneToolResultsBefore(messages []provider.Message, cutoff int) []provider.
 	}
 
 	return result
+}
+
+// capOversizedToolResults shrinks any single tool payload that would
+// otherwise occupy the entire keep-recent window by itself. Full
+// output stays in the JSONL archive written before compaction.
+func capOversizedToolResults(messages []provider.Message, maxRunes int) []provider.Message {
+	if maxRunes <= 0 {
+		maxRunes = maxHotTailToolRunes
+	}
+	out := make([]provider.Message, len(messages))
+	copy(out, messages)
+	for i := range out {
+		if out[i].Role != "tool" {
+			continue
+		}
+		if len([]rune(out[i].Content)) <= maxRunes {
+			continue
+		}
+		out[i].Content = capRunes(out[i].Content, maxRunes) + "\n" + truncatedPlaceholder
+	}
+	return out
 }
 
 // hardTrimMessages is the last-resort fit: truncate every oversized

@@ -97,6 +97,20 @@ action on upgrade — read those notes before deploying.
 
 ### Fixed
 
+- **Gateway no longer panics on a content-only tool failure.**
+  `isFailedToolResult` can be true from an HTTP 4xx/5xx body (or the
+  analyze-error marker) while `r.err` is nil. The non-streaming loop
+  called `r.err.Error()` and crashed the process. Same nil-guard the
+  streaming path already had.
+- **Compaction now clips a giant tool result in the keep-recent tail.**
+  One 500KB `exec` dump used to be "recent" and survive summarize
+  almost intact (`202996 → 202907` tokens), then overflow-retry 502'd
+  again because the configured window was larger than the upstream
+  limit. Tail tool payloads are capped at 8k runes; ingest clips any
+  tool return over 64KiB. Logging no longer prints `elapsed=2562047h`
+  when AfterToolCall has no start time.
+
+
 - **Compaction follows Pi's working-set shrink.** Auto-compact and
   `/compact [focus…]` now keep a ~20k-token verbatim hot tail (not
   the last 20 messages), ask the model for a structured Goal /
