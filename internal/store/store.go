@@ -321,6 +321,12 @@ const (
 	SSHAuthPassword = "password"
 )
 
+// Last-test outcomes written when a host is added or re-probed.
+const (
+	SSHTestOK   = "ok"
+	SSHTestFail = "fail"
+)
+
 // ErrSSHHostNameTaken is returned when SaveSSHHost would collide on
 // the per-user unique name.
 var ErrSSHHostNameTaken = errors.New("ssh host name already exists")
@@ -328,20 +334,24 @@ var ErrSSHHostNameTaken = errors.New("ssh host name already exists")
 // SSHHostRecord is one saved SSH connection owned by a FastClaw user.
 // SecretEnc and HostKey stay off the public JSON surface; handlers
 // return a sanitized view with hasSecret / hasHostKey flags.
+// LastTestStatus is "ok", "fail", or empty (legacy row, never probed).
 type SSHHostRecord struct {
-	ID         string    `json:"id"`
-	UserID     string    `json:"userId"`
-	Name       string    `json:"name"`
-	Host       string    `json:"host"`
-	Port       int       `json:"port"`
-	Username   string    `json:"username"`
-	AuthType   string    `json:"authType"`
-	SecretEnc  string    `json:"-"`
-	HostKey    string    `json:"-"`
-	DefaultCWD string    `json:"defaultCwd,omitempty"`
-	Enabled    bool      `json:"enabled"`
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+	ID             string     `json:"id"`
+	UserID         string     `json:"userId"`
+	Name           string     `json:"name"`
+	Host           string     `json:"host"`
+	Port           int        `json:"port"`
+	Username       string     `json:"username"`
+	AuthType       string     `json:"authType"`
+	SecretEnc      string     `json:"-"`
+	HostKey        string     `json:"-"`
+	DefaultCWD     string     `json:"defaultCwd,omitempty"`
+	Enabled        bool       `json:"enabled"`
+	LastTestStatus string     `json:"lastTestStatus,omitempty"`
+	LastTestError  string     `json:"lastTestError,omitempty"`
+	LastTestedAt   *time.Time `json:"lastTestedAt,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
 }
 
 // UserRecord is one row of the users table.

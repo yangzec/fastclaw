@@ -174,6 +174,9 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 	if err := d.migrateConfigsDropLegacyColumns(ctx); err != nil {
 		return fmt.Errorf("migrate configs drop legacy columns: %w", err)
 	}
+	if err := d.migrateSSHHostsAddTestStatus(ctx); err != nil {
+		return fmt.Errorf("migrate ssh_hosts test status: %w", err)
+	}
 	// Promote cron_jobs time columns to timestamptz. Runs last among the
 	// cron_jobs migrations so the table has its final column shape before
 	// the type conversion (ADD COLUMN works on any column type, so the
@@ -1111,6 +1114,41 @@ func (d *DBStore) migrateUsersAvatarURL(ctx context.Context) error {
 	return nil
 }
 
+// migrateSSHHostsAddTestStatus records the last connection probe on
+// hosts that were saved before test-on-add. Empty last_test_status
+// means "never probed" so the UI can show Unknown instead of inventing
+// a green check.
+func (d *DBStore) migrateSSHHostsAddTestStatus(ctx context.Context) error {
+	exists, err := d.tableExists(ctx, "ssh_hosts")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	type col struct {
+		name string
+		ddl  string
+	}
+	for _, c := range []col{
+		{"last_test_status", `ALTER TABLE ssh_hosts ADD COLUMN last_test_status TEXT NOT NULL DEFAULT ''`},
+		{"last_test_error", `ALTER TABLE ssh_hosts ADD COLUMN last_test_error TEXT NOT NULL DEFAULT ''`},
+		{"last_tested_at", `ALTER TABLE ssh_hosts ADD COLUMN last_tested_at TIMESTAMP`},
+	} {
+		has, err := d.tableHasColumn(ctx, "ssh_hosts", c.name)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := d.db.ExecContext(ctx, c.ddl); err != nil {
+			return fmt.Errorf("add %s: %w", c.name, err)
+		}
+	}
+	return nil
+}
+
 // migrateAPIKeysAddType retrofits the `type` column onto apikeys for
 // pre-tier installs. Every legacy row was an explicit-agent-list key, so
 // backfilling DEFAULT 'agent' preserves behavior — admin/user tiers can
@@ -2008,6 +2046,9 @@ func (d *DBStore) migrationSQL() []string {
 			host_key TEXT NOT NULL DEFAULT '',
 			default_cwd TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 1,
+			last_test_status TEXT NOT NULL DEFAULT '',
+			last_test_error TEXT NOT NULL DEFAULT '',
+			last_tested_at TIMESTAMP,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE (user_id, name)

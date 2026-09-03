@@ -59,15 +59,36 @@ const emptyForm: FormState = {
   defaultCwd: "",
 };
 
+function statusBadge(h: SSHHost) {
+  if (h.lastTestStatus === "ok") {
+    return <Badge>Connected</Badge>;
+  }
+  if (h.lastTestStatus === "fail") {
+    return (
+      <Badge variant="destructive" title={h.lastTestError || "connection failed"}>
+        Failed
+      </Badge>
+    );
+  }
+  return <Badge variant="outline">Not tested</Badge>;
+}
+
+function formatTestedAt(value?: string | null) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString();
+}
+
 export default function SSHHostsPage() {
   const [hosts, setHosts] = useState<SSHHost[]>([]);
   const [error, setError] = useState("");
   const [form, setForm] = useState<FormState>(emptyForm);
+  const [formError, setFormError] = useState("");
   const [editing, setEditing] = useState<SSHHost | null>(null);
   const [open, setOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<SSHHost | null>(null);
   const [testingId, setTestingId] = useState("");
-  const [testNote, setTestNote] = useState("");
   const [saving, setSaving] = useState(false);
 
   async function refresh() {
@@ -84,6 +105,7 @@ export default function SSHHostsPage() {
   function openCreate() {
     setEditing(null);
     setForm(emptyForm);
+    setFormError("");
     setOpen(true);
   }
 
@@ -100,12 +122,14 @@ export default function SSHHostsPage() {
       passphrase: "",
       defaultCwd: h.defaultCwd || "",
     });
+    setFormError("");
     setOpen(true);
   }
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
+    setFormError("");
     setError("");
     const port = Number(form.port || "22");
     const body = {
@@ -127,7 +151,7 @@ export default function SSHHostsPage() {
       : await createSSHHost(body);
     setSaving(false);
     if (res.error || !res.ok) {
-      setError(res.error || "save failed");
+      setFormError(res.error || "connection failed");
       return;
     }
     setOpen(false);
@@ -136,10 +160,14 @@ export default function SSHHostsPage() {
 
   async function handleTest(h: SSHHost) {
     setTestingId(h.id);
-    setTestNote("");
     const res = await testSSHHost(h.id);
     setTestingId("");
-    setTestNote(res.ok ? `${h.name}: connected` : `${h.name}: ${res.error || "failed"}`);
+    if (res.error && !res.ok) {
+      setError(`${h.name}: ${res.error}`);
+    } else {
+      setError("");
+    }
+    refresh();
   }
 
   return (
@@ -148,8 +176,9 @@ export default function SSHHostsPage() {
         <div>
           <h3 className="text-xl font-semibold tracking-tight">SSH Hosts</h3>
           <p className="text-sm text-muted-foreground mt-1">
-            Save servers once. The agent connects with the alias — passwords and
-            private keys stay out of chat.
+            FastClaw tests the connection before saving. The agent then
+            connects with the alias — passwords and private keys stay out of
+            chat.
           </p>
         </div>
         <Button onClick={openCreate}>
@@ -159,7 +188,6 @@ export default function SSHHostsPage() {
       </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
-      {testNote && <p className="text-sm text-muted-foreground">{testNote}</p>}
 
       {hosts.length === 0 ? (
         <p className="text-sm text-muted-foreground rounded-lg border border-dashed p-6">
@@ -171,17 +199,28 @@ export default function SSHHostsPage() {
           {hosts.map((h) => (
             <div key={h.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-medium">{h.name}</span>
                   <Badge variant="secondary">
                     {h.authType === "key" ? "public key" : "password"}
                   </Badge>
+                  {statusBadge(h)}
                   {!h.enabled && <Badge variant="outline">disabled</Badge>}
                 </div>
                 <p className="text-sm text-muted-foreground truncate">
                   {h.username}@{h.host}:{h.port}
                   {h.defaultCwd ? ` · ${h.defaultCwd}` : ""}
                 </p>
+                {h.lastTestStatus === "fail" && h.lastTestError ? (
+                  <p className="text-xs text-destructive mt-1 truncate" title={h.lastTestError}>
+                    {h.lastTestError}
+                  </p>
+                ) : null}
+                {formatTestedAt(h.lastTestedAt) ? (
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Last tested {formatTestedAt(h.lastTestedAt)}
+                  </p>
+                ) : null}
               </div>
               <div className="flex items-center gap-1">
                 <Button
@@ -191,7 +230,7 @@ export default function SSHHostsPage() {
                   disabled={testingId === h.id}
                 >
                   <PlugZap className="size-4" />
-                  {testingId === h.id ? "Testing…" : "Test"}
+                  {testingId === h.id ? "Testing…" : "Retest"}
                 </Button>
                 <Button variant="ghost" size="icon" onClick={() => openEdit(h)}>
                   <Pencil className="size-4" />
@@ -211,8 +250,9 @@ export default function SSHHostsPage() {
             <DialogHeader>
               <DialogTitle>{editing ? "Edit SSH host" : "Add SSH host"}</DialogTitle>
               <DialogDescription>
-                The agent will call this host by the alias. Leave secret fields
-                blank when editing to keep the saved credential.
+                FastClaw will try the connection before saving. If it fails,
+                nothing is stored. Leave secret fields blank when editing to
+                keep the saved credential.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-3 py-4">
@@ -325,10 +365,13 @@ export default function SSHHostsPage() {
                   onChange={(e) => setForm({ ...form, defaultCwd: e.target.value })}
                 />
               </div>
+              {formError && (
+                <p className="text-sm text-destructive">{formError}</p>
+              )}
             </div>
             <DialogFooter>
               <Button type="submit" disabled={saving}>
-                {saving ? "Saving…" : "Save"}
+                {saving ? "Testing connection…" : "Test and save"}
               </Button>
             </DialogFooter>
           </form>

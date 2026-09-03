@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestSSHHostCRUD(t *testing.T) {
@@ -41,6 +42,21 @@ func TestSSHHostCRUD(t *testing.T) {
 	}
 	if got.Host != "10.0.4.21" || got.SecretEnc != "ciphertext" {
 		t.Fatalf("got %+v", got)
+	}
+
+	tested := time.Now().UTC().Truncate(time.Second)
+	h.LastTestStatus = SSHTestOK
+	h.LastTestError = ""
+	h.LastTestedAt = &tested
+	if err := st.SaveSSHHost(ctx, h); err != nil {
+		t.Fatal(err)
+	}
+	got, err = st.GetSSHHost(ctx, h.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastTestStatus != SSHTestOK || got.LastTestedAt == nil {
+		t.Fatalf("test status not persisted: %+v", got)
 	}
 
 	dup := *h

@@ -2221,6 +2221,8 @@ export async function getSessionHistory(
 
 export type SSHAuthType = "key" | "password";
 
+export type SSHTestStatus = "ok" | "fail" | "";
+
 export interface SSHHost {
   id: string;
   name: string;
@@ -2232,6 +2234,9 @@ export interface SSHHost {
   enabled: boolean;
   hasSecret?: boolean;
   hasHostKey?: boolean;
+  lastTestStatus?: SSHTestStatus;
+  lastTestError?: string;
+  lastTestedAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
 }
