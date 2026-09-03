@@ -43,7 +43,7 @@ function toolsForServer(
 ): AgentRegisteredTool[] {
   if (!live) return [];
   const prefix = mcpToolPrefix(serverName);
-  return live.filter((t) => t.source === "mcp" && t.name.startsWith(prefix));
+  return live.filter((t) => t.name.startsWith(prefix));
 }
 
 export default function AgentMCPPage() {
@@ -64,7 +64,7 @@ export default function AgentMCPPage() {
     const tools = await listAgentRegisteredTools(agentId);
     setLiveTools(tools);
     if (tools) {
-      const mcp = tools.filter((t) => t.source === "mcp");
+      const mcp = tools.filter((t) => t.source === "mcp" || t.name.startsWith("mcp_"));
       setLiveNote(
         mcp.length > 0
           ? `${mcp.length} MCP tool${mcp.length === 1 ? "" : "s"} loaded now. Next message can call them — no FastClaw restart.`
