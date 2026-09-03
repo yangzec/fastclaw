@@ -6,10 +6,67 @@ import (
 	"time"
 
 	"github.com/fastclaw-ai/fastclaw/internal/bus"
+	"github.com/fastclaw-ai/fastclaw/internal/config"
 	"github.com/fastclaw-ai/fastclaw/internal/scope"
 	"github.com/fastclaw-ai/fastclaw/internal/store"
 	"github.com/fastclaw-ai/fastclaw/internal/users"
 )
+
+func TestAssembleConfigLoadsGlobalMCPServers(t *testing.T) {
+	db, err := store.NewDBStore("sqlite", "file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	ctx := context.Background()
+	if err := scope.SaveSetting(ctx, db, "", "", NSMCPServers, map[string]interface{}{
+		"shared": map[string]interface{}{"type": "http", "url": "https://mcp.example/sse", "inherit": "all"},
+		"secret": map[string]interface{}{"type": "http", "url": "https://mcp.example/private"},
+	}); err != nil {
+		t.Fatalf("save mcpServers: %v", err)
+	}
+	cfg, err := assembleConfig(ctx, db, "u1", "")
+	if err != nil {
+		t.Fatalf("assembleConfig: %v", err)
+	}
+	got, ok := cfg.MCPServers["shared"]
+	if !ok || got.Type != "http" || got.URL != "https://mcp.example/sse" {
+		t.Fatalf("expected inherited MCP server, got %+v", cfg.MCPServers)
+	}
+	if _, ok := cfg.MCPServers["secret"]; ok {
+		t.Fatal("system inherit=none must not attach to a tenant agent")
+	}
+}
+
+func TestPluginEnabledForAgentInheritsSystem(t *testing.T) {
+	system := map[string]config.PluginEntryCfg{
+		"mem0": {Enabled: true, Inherit: config.InheritAll},
+		"echo": {Enabled: false},
+		"idle": {Enabled: true},
+	}
+
+	if !pluginEnabledForAgent(nil, system, "mem0") {
+		t.Fatal("missing overlay should inherit enabled+inherit=all")
+	}
+	if pluginEnabledForAgent(nil, system, "idle") {
+		t.Fatal("enabled without inherit=all must stay catalog-only")
+	}
+	if pluginEnabledForAgent(nil, system, "echo") {
+		t.Fatal("system-disabled plugin should stay off")
+	}
+	if pluginEnabledForAgent(nil, system, "unknown") {
+		t.Fatal("no system entry and no overlay should default deny")
+	}
+	if pluginEnabledForAgent(map[string]bool{"mem0": false}, system, "mem0") {
+		t.Fatal("explicit agent false should hide inherited plugin")
+	}
+	if !pluginEnabledForAgent(map[string]bool{"echo": true}, system, "echo") {
+		t.Fatal("explicit agent true should enable a system-off plugin")
+	}
+}
 
 func TestPathSandboxRequiredOnlyForHostedDeploy(t *testing.T) {
 	t.Setenv("FASTCLAW_DEPLOY", "")

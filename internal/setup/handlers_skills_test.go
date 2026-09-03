@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/fastclaw-ai/fastclaw/internal/auth"
+	"github.com/fastclaw-ai/fastclaw/internal/scope"
 	"github.com/fastclaw-ai/fastclaw/internal/store"
 	"github.com/fastclaw-ai/fastclaw/internal/users"
 )
@@ -79,8 +80,15 @@ func TestListAgentSkillsIncludesInheritedGlobal(t *testing.T) {
 	}
 	writeSkill(filepath.Join(home, "skills"), "global-only", "from global")
 	writeSkill(filepath.Join(home, "skills"), "shared", "global copy")
+	writeSkill(filepath.Join(home, "skills"), "catalog-only", "not shared")
 	writeSkill(filepath.Join(home, "agents", agentID, "agent", "skills"), "shared", "agent copy")
 	writeSkill(filepath.Join(home, "agents", agentID, "agent", "skills"), "agent-only", "from agent")
+	if err := scope.SaveSetting(ctx, s.dataStore, "", "", "skills.entries", map[string]interface{}{
+		"global-only": map[string]interface{}{"enabled": true, "inherit": "all"},
+		"shared":      map[string]interface{}{"enabled": true, "inherit": "all"},
+	}); err != nil {
+		t.Fatalf("save skills.entries: %v", err)
+	}
 
 	req := authTestRequest(t, ctx, resolver, http.MethodGet, "/api/agents/"+agentID+"/skills", admin.ID)
 	req.SetPathValue("id", agentID)
@@ -116,8 +124,126 @@ func TestListAgentSkillsIncludesInheritedGlobal(t *testing.T) {
 	if byName["shared"].Source != "agent" || byName["shared"].Desc != "agent copy" {
 		t.Fatalf("shared should be agent shadow, got %+v", byName["shared"])
 	}
+	if _, ok := byName["catalog-only"]; ok {
+		t.Fatalf("catalog-only without inherit=all must not appear: %+v", got)
+	}
 	if _, ok := byName["shared"]; !ok || len(got) != 3 {
-		t.Fatalf("want 3 skills (shadowed global omitted), got %+v", got)
+		t.Fatalf("want 3 skills (shadowed global omitted, catalog-only hidden), got %+v", got)
+	}
+}
+
+func TestListSkillsIncludesInheritAfterSave(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, admin, _ := newAuthTestServer(t, ctx)
+	home := t.TempDir()
+	t.Setenv("FASTCLAW_HOME", home)
+	root := filepath.Join(home, "skills", "reviewer")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("---\nname: reviewer\ndescription: review\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	list := func() map[string]string {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		s.authMiddleware(s.handleListSkills)(rr, authTestRequest(t, ctx, resolver, http.MethodGet, "/api/skills", admin.ID))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("list status = %d body = %s", rr.Code, rr.Body.String())
+		}
+		var got []struct {
+			Name    string `json:"name"`
+			Inherit string `json:"inherit"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		out := map[string]string{}
+		for _, e := range got {
+			out[e.Name] = e.Inherit
+		}
+		return out
+	}
+
+	if got := list()["reviewer"]; got != "" {
+		t.Fatalf("default inherit = %q, want empty", got)
+	}
+
+	post := httptest.NewRecorder()
+	s.authMiddleware(s.handleUpdateConfig)(post, configTestRequest(t, ctx, resolver, http.MethodPost, "/api/config", admin.ID, map[string]any{
+		"skills": map[string]any{"entries": map[string]any{"reviewer": map[string]any{"enabled": true, "inherit": "all"}}},
+	}))
+	if post.Code != http.StatusOK {
+		t.Fatalf("POST status = %d body = %s", post.Code, post.Body.String())
+	}
+	if got := list()["reviewer"]; got != "all" {
+		t.Fatalf("after save inherit = %q, want all", got)
+	}
+}
+
+func TestListAgentSkillsStaysCatalogOnlyUntilInheritAll(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, admin, _ := newAuthTestServer(t, ctx)
+	home := t.TempDir()
+	t.Setenv("FASTCLAW_HOME", home)
+
+	agentID := "agt_skill_optin"
+	if err := s.dataStore.SaveAgent(ctx, &store.AgentRecord{
+		ID: agentID, UserID: admin.ID, Name: "Opt-in Bot",
+	}); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+	root := filepath.Join(home, "skills", "reviewer")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "---\nname: reviewer\ndescription: review code\n---\n# reviewer\n"
+	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	list := func() []string {
+		t.Helper()
+		req := authTestRequest(t, ctx, resolver, http.MethodGet, "/api/agents/"+agentID+"/skills", admin.ID)
+		req.SetPathValue("id", agentID)
+		rr := httptest.NewRecorder()
+		s.authMiddleware(s.handleListAgentSkills)(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("list status = %d body = %s", rr.Code, rr.Body.String())
+		}
+		var got []struct {
+			Name   string `json:"name"`
+			Source string `json:"source"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v body = %s", err, rr.Body.String())
+		}
+		names := make([]string, 0, len(got))
+		for _, e := range got {
+			names = append(names, e.Name+":"+e.Source)
+		}
+		return names
+	}
+
+	if names := list(); len(names) != 0 {
+		t.Fatalf("default must not inherit global skill, got %v", names)
+	}
+
+	post := httptest.NewRecorder()
+	s.authMiddleware(s.handleUpdateConfig)(post, configTestRequest(t, ctx, resolver, http.MethodPost, "/api/config", admin.ID, map[string]any{
+		"skills": map[string]any{
+			"entries": map[string]any{
+				"reviewer": map[string]any{"enabled": true, "inherit": "all"},
+			},
+		},
+	}))
+	if post.Code != http.StatusOK {
+		t.Fatalf("POST /api/config status = %d body = %s", post.Code, post.Body.String())
+	}
+
+	if names := list(); len(names) != 1 || names[0] != "reviewer:inherited" {
+		t.Fatalf("after inherit=all want reviewer:inherited, got %v", names)
 	}
 }
 
@@ -128,6 +254,7 @@ func TestMergeAgentSkillList(t *testing.T) {
 			{"name": "local", "description": "global-hidden"},
 			{"name": "shared", "description": "g"},
 		},
+		map[string]bool{"shared": true},
 	)
 	if len(out) != 2 {
 		t.Fatalf("len = %d", len(out))
@@ -137,6 +264,27 @@ func TestMergeAgentSkillList(t *testing.T) {
 	}
 	if out[1]["source"] != "inherited" || out[1]["name"] != "shared" {
 		t.Fatalf("second = %+v", out[1])
+	}
+
+	hidden := mergeAgentSkillList(
+		[]map[string]any{{"name": "local"}},
+		[]map[string]any{{"name": "catalog-only"}, {"name": "shared"}},
+		map[string]bool{"shared": true},
+	)
+	if len(hidden) != 2 {
+		t.Fatalf("catalog-only without inherit=all should drop, got %+v", hidden)
+	}
+	if hidden[1]["name"] != "shared" {
+		t.Fatalf("shared should remain, got %+v", hidden)
+	}
+
+	none := mergeAgentSkillList(
+		[]map[string]any{{"name": "local"}},
+		[]map[string]any{{"name": "shared"}},
+		nil,
+	)
+	if len(none) != 1 || none[0]["name"] != "local" {
+		t.Fatalf("empty allowlist must hide all global skills, got %+v", none)
 	}
 }
 

@@ -119,8 +119,8 @@ export interface AgentDetail {
   // with the web channel (owner's identity). Default false.
   sharedIdentity?: boolean;
   // plugins is the per-agent hook-plugin enable overlay: pluginID →
-  // enabled. Missing keys fall back to the system-wide enable state
-  // (visible via /api/plugins). null/undefined means "no per-agent
+  // enabled. Missing keys inherit plugins.entries[id].enabled from
+  // the global Plugins page. null/undefined means "no per-agent
   // override at all".
   plugins?: Record<string, boolean> | null;
   soul?: string;
@@ -144,12 +144,19 @@ export interface SkillInfo {
   // source is set on the agent Skills page: "agent" is installed in
   // this agent's home, "inherited" comes from the global skills dir.
   source?: "agent" | "inherited";
+  inherit?: "none" | "all" | string;
 }
 
 export interface SkillEntryCfg {
   enabled?: boolean;
   apiKey?: string;
   env?: Record<string, string>;
+  // inherit=all attaches this skill to agents. Empty / none = catalog only.
+  inherit?: "none" | "all" | string;
+}
+
+export function inheritsToAgents(inherit?: string): boolean {
+  return inherit === "all";
 }
 
 // updateSkillEntries persists skill env / apiKey patches. When agentId
@@ -173,10 +180,13 @@ export async function updateSkillEntries(
 
 export interface PluginInfo {
   id: string;
+  name?: string;
+  description?: string;
   type: string;
   version: string;
   status: string;
   enabled: boolean;
+  inherit?: string;
   config?: Record<string, unknown>;
 }
 
@@ -262,6 +272,14 @@ export interface ConfigResponse {
     // SkillsLoader.SkillEnvVars resolves agentEntries[<agent>][<skill>]
     // first, falling back to the global entries map.
     agentEntries?: Record<string, Record<string, SkillEntryCfg>>;
+  };
+  // MCP catalog for this viewer (system row for platform admin,
+  // the caller's user row otherwise). inherit=all attaches at runtime.
+  mcpServers?: Record<string, MCPServerConfig>;
+  plugins?: {
+    enabled?: boolean;
+    paths?: string[];
+    entries?: Record<string, { enabled: boolean; inherit?: string; config?: Record<string, unknown> }>;
   };
   // Presentation hints the dashboard needs to render inheritance state
   // without re-resolving the scope chain client-side. systemDefaultModel
@@ -1442,6 +1460,10 @@ export interface HookPlugin {
   name?: string;
   description?: string;
   version?: string;
+  // System-wide plugins.entries[id].enabled. Agent overlays sit on
+  // top of this — missing overlay key inherits this value.
+  enabled?: boolean;
+  inherit?: string;
 }
 
 export async function listHookPlugins(): Promise<HookPlugin[]> {
@@ -1461,6 +1483,12 @@ export interface MCPServerConfig {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  // Agent overlay that hides an inherited global server without
+  // deleting the shared definition.
+  disabled?: boolean;
+  // inherit=all attaches this server to agents that can see the row.
+  // Empty / none = catalog only (default).
+  inherit?: "none" | "all" | string;
 }
 
 export interface AgentFileConfig {
@@ -1472,6 +1500,7 @@ export interface AgentFileConfig {
   skills?: AgentSkillsConfig;
   providers?: Record<string, ProviderData>;
   mcpServers?: Record<string, MCPServerConfig>;
+  inheritedMcpServers?: Record<string, MCPServerConfig>;
 }
 
 // Fetch the raw agent.json for one agent (per-agent overrides only — not

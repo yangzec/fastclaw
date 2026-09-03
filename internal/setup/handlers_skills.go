@@ -9,6 +9,7 @@ import (
 
 	"github.com/fastclaw-ai/fastclaw/internal/agent"
 	"github.com/fastclaw-ai/fastclaw/internal/config"
+	"github.com/fastclaw-ai/fastclaw/internal/scope"
 	"github.com/fastclaw-ai/fastclaw/internal/skills"
 )
 
@@ -40,6 +41,21 @@ func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusOK, []any{})
 		return
 	}
+	// Attach the viewer's catalog inherit so the Skills page switch
+	// can bind from this list after save/reload, not only from a
+	// second GET /api/config that may still be in flight.
+	uid := config.UserIDFromContext(r.Context())
+	if entries, err := skillEntriesForViewer(r.Context(), s.dataStore, uid, isPlatformAdmin(r)); err == nil {
+		for _, e := range out {
+			name, _ := e["name"].(string)
+			if name == "" {
+				continue
+			}
+			if pe, ok := entries[name]; ok && pe.Inherit != "" {
+				e["inherit"] = pe.Inherit
+			}
+		}
+	}
 	jsonResponse(w, http.StatusOK, out)
 }
 
@@ -69,15 +85,16 @@ func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
 
 // handleListAgentSkills lists skills this agent can use: its own
 // home/skills copies (source=agent) plus global ~/.fastclaw/skills
-// that are not shadowed (source=inherited). Matches runtime merge
-// order — agent layer wins on name collision.
+// marked inherit=all that are not shadowed (source=inherited).
+// Matches runtime merge order — agent layer wins on name collision.
 func (s *Server) handleListAgentSkills(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	// Skill listing exposes per-skill env spec (which env keys the
 	// owner has set). Owner-only — Identity.CanAccessAgent is a
 	// deferred-true for session callers and would let any signed-in
 	// user enumerate any agent's skills.
-	if s.requireAgentOwner(w, r, id) == nil {
+	rec := s.requireAgentOwner(w, r, id)
+	if rec == nil {
 		return
 	}
 	homePath, err := config.AgentHomeDir(id)
@@ -110,7 +127,30 @@ func (s *Server) handleListAgentSkills(w http.ResponseWriter, r *http.Request) {
 		globalSkills = scanSkillsDir(globalDir)
 	}
 
-	out := mergeAgentSkillList(agentSkills, globalSkills)
+	inheritAll := map[string]bool{}
+	if s.dataStore != nil {
+		var entries map[string]config.SkillEntryCfg
+		if err := scope.SettingAt(r.Context(), s.dataStore, "skills.entries", "", "", &entries); err == nil {
+			for name, e := range entries {
+				if config.SkillInheritsToAgents(e) {
+					inheritAll[name] = true
+				}
+			}
+		}
+		if rec.UserID != "" {
+			var userEntries map[string]config.SkillEntryCfg
+			if err := scope.SettingAt(r.Context(), s.dataStore, "skills.entries", rec.UserID, "", &userEntries); err == nil {
+				for name, e := range userEntries {
+					if config.SkillInheritsToAgents(e) {
+						inheritAll[name] = true
+					} else {
+						delete(inheritAll, name)
+					}
+				}
+			}
+		}
+	}
+	out := mergeAgentSkillList(agentSkills, globalSkills, inheritAll)
 	if out == nil {
 		jsonResponse(w, http.StatusOK, []any{})
 		return
@@ -119,9 +159,9 @@ func (s *Server) handleListAgentSkills(w http.ResponseWriter, r *http.Request) {
 }
 
 // mergeAgentSkillList tags agent-local skills as source=agent and
-// appends global skills that the agent did not override as
-// source=inherited. Nil inputs become empty.
-func mergeAgentSkillList(agentSkills, globalSkills []map[string]any) []map[string]any {
+// appends global skills the catalog marked inherit=all (and the
+// agent did not override) as source=inherited. Nil inputs become empty.
+func mergeAgentSkillList(agentSkills, globalSkills []map[string]any, inheritAll map[string]bool) []map[string]any {
 	seen := make(map[string]bool, len(agentSkills))
 	out := make([]map[string]any, 0, len(agentSkills)+len(globalSkills))
 	for _, e := range agentSkills {
@@ -140,6 +180,9 @@ func mergeAgentSkillList(agentSkills, globalSkills []map[string]any) []map[strin
 		}
 		name, _ := e["name"].(string)
 		if name == "" || seen[name] {
+			continue
+		}
+		if !inheritAll[name] {
 			continue
 		}
 		e["source"] = "inherited"

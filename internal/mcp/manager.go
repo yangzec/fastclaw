@@ -31,6 +31,10 @@ func NewManager(servers map[string]config.MCPServerConfig) *Manager {
 	}
 
 	for name, cfg := range servers {
+		if cfg.Disabled {
+			slog.Info("skipping disabled MCP server", "server", name)
+			continue
+		}
 		var client Client
 		switch cfg.Type {
 		case "http":

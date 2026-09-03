@@ -136,13 +136,13 @@ table and is edited through the dashboard or `fastclaw agents config`.
 - Built-in: exec, read_file, write_file, list_dir, web_fetch, web_search, memory_search
 - E2B cloud sandbox or Docker sandbox — automatic skill + workspace hydrate, post-exec sync (sandbox-side files mirrored back to the durable store after every tool call)
 - Sandbox is a **boundary on hosted deploys, a tool on self-hosted installs**: with `FASTCLAW_DEPLOY=hosted` every exec/file call is locked inside the sandbox; on a self-hosted install the host shell stays the default and the model opts into the sandbox per call with `exec(sandbox:true)`. Set `FASTCLAW_SANDBOX_ENFORCE=1` to get the hosted-style lockdown on a self-hosted install (recommended when agents are exposed to untrusted IM chatters)
-- MCP server support
-- Plugin system (JSON-RPC subprocess)
+- MCP server support — configure in the MCP catalog; Share with agents is opt-in (`inherit=all`). Agents can overlay or disable a shared server by name. System catalog is isolated from other tenants
+- Plugin system (JSON-RPC subprocess) — enable to start the process, Share with agents to attach hooks, override per-agent
 
 ### Skills
 - Bundled skills: code-runner, image-gen, data-analysis, translation, web-search, skill-creator
 - Install from [ClawHub](https://clawhub.ai) or [skills.sh](https://skills.sh)
-- Agent-private or globally shared
+- Agent-private or globally shared (Share with agents / `inherit=all` is opt-in; catalog-only by default)
 
 ### Memory
 - MEMORY.md — long-term facts, auto-updated by heartbeat

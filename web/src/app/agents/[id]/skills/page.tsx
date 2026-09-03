@@ -173,7 +173,7 @@ export default function AgentSkillsPage() {
           <h2 className="text-2xl font-semibold tracking-tight">Skills</h2>
           <p className="text-sm text-muted-foreground mt-1">
             Skills for <strong>{agentName}</strong> — this agent&apos;s
-            copies plus inherited global skills
+            copies plus global skills marked Share with agents
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -204,8 +204,8 @@ export default function AgentSkillsPage() {
               No skills yet
             </p>
             <p className="text-xs text-muted-foreground/60 mb-4 max-w-sm text-center">
-              Install a skill for this agent, or add one under global
-              Skills — those show up here as inherited.
+              Install a skill for this agent, or share one from the
+              global Skills catalog — those show up here as inherited.
             </p>
             <Button variant="outline" size="sm" onClick={() => setInstallOpen(true)}>
               <Download className="h-4 w-4 mr-2" />

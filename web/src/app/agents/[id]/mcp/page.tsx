@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -13,23 +13,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Server, Plus, Trash2, Pencil, AlertTriangle } from "lucide-react";
+import { Server, Plus, Trash2, Pencil, AlertTriangle, Undo2 } from "lucide-react";
 import {
   getAgentConfig,
   getMe,
@@ -38,13 +23,22 @@ import {
 } from "@/lib/api";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { useAgentName } from "@/hooks/use-agent-name";
+import {
+  MCPEditDialog,
+  mcpEndpoint,
+  type MCPEntry,
+} from "@/components/mcp-server-dialog";
 
-type MCPEntry = { name: string } & MCPServerConfig;
+type Row = MCPEntry & {
+  source: "inherited" | "agent";
+  shadowed?: boolean;
+};
 
 export default function AgentMCPPage() {
   const agentId = useAgentIdFromURL();
   const agentName = useAgentName(agentId);
-  const [servers, setServers] = useState<Record<string, MCPServerConfig>>({});
+  const [inheritedServers, setInheritedServers] = useState<Record<string, MCPServerConfig>>({});
+  const [localServers, setLocalServers] = useState<Record<string, MCPServerConfig>>({});
   const [loading, setLoading] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
   const [editEntry, setEditEntry] = useState<MCPEntry | null>(null);
@@ -55,11 +49,12 @@ export default function AgentMCPPage() {
     if (!agentId) return;
     setLoading(true);
     try {
-      const [cfg, me] = await Promise.all([
+      const [agentCfg, me] = await Promise.all([
         getAgentConfig(agentId),
         getMe().catch(() => null),
       ]);
-      setServers(cfg.mcpServers ?? {});
+      setLocalServers(agentCfg.mcpServers ?? {});
+      setInheritedServers(agentCfg.inheritedMcpServers ?? {});
       if (me?.deployMode === "hosted") setIsHosted(true);
     } finally {
       setLoading(false);
@@ -70,31 +65,64 @@ export default function AgentMCPPage() {
     fetchConfig();
   }, [fetchConfig]);
 
-  const saveServers = async (next: Record<string, MCPServerConfig>) => {
+  const rows = useMemo<Row[]>(() => {
+    const names = new Set([
+      ...Object.keys(inheritedServers),
+      ...Object.keys(localServers),
+    ]);
+    const out: Row[] = [];
+    for (const name of names) {
+      const local = localServers[name];
+      const inherited = inheritedServers[name];
+      if (local) {
+        out.push({
+          name,
+          ...local,
+          source: "agent",
+          shadowed: !!inherited,
+        });
+      } else if (inherited) {
+        out.push({ name, ...inherited, source: "inherited" });
+      }
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  }, [inheritedServers, localServers]);
+
+  const saveLocal = async (next: Record<string, MCPServerConfig>) => {
     await updateAgent(agentId, { mcpServers: next });
-    setServers(next);
+    setLocalServers(next);
   };
 
   const handleSaveEntry = async (entry: MCPEntry) => {
     const { name, ...cfg } = entry;
-    // If editing with a new name, remove old key
+    const next = { ...localServers };
     if (editEntry && editEntry.name !== name) {
-      const next = { ...servers };
       delete next[editEntry.name];
-      next[name] = cfg;
-      await saveServers(next);
-    } else {
-      await saveServers({ ...servers, [name]: cfg });
     }
+    next[name] = cfg;
+    await saveLocal(next);
     setEditOpen(false);
     setEditEntry(null);
   };
 
-  const handleDelete = async (name: string) => {
-    const next = { ...servers };
+  const handleDeleteLocal = async (name: string) => {
+    const next = { ...localServers };
     delete next[name];
-    await saveServers(next);
+    await saveLocal(next);
     setDeleteTarget(null);
+  };
+
+  const handleDisableInherited = async (row: Row) => {
+    await saveLocal({
+      ...localServers,
+      [row.name]: { ...stripMeta(row), disabled: true },
+    });
+  };
+
+  const handleResetInherit = async (name: string) => {
+    const next = { ...localServers };
+    delete next[name];
+    await saveLocal(next);
   };
 
   if (loading) {
@@ -106,8 +134,7 @@ export default function AgentMCPPage() {
     );
   }
 
-  const entries = Object.entries(servers);
-  const hasStdio = entries.some(([, cfg]) => cfg.type === "stdio");
+  const hasStdio = rows.some((r) => r.type === "stdio" && !r.disabled);
 
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
@@ -125,8 +152,9 @@ export default function AgentMCPPage() {
         <div>
           <h2 className="text-xl font-semibold">MCP Servers</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Connect external tool servers via Model Context Protocol.
-            Tools from MCP servers are available to {agentName || "this agent"} in every conversation.
+            Servers for <strong>{agentName || "this agent"}</strong> — only
+            catalog items marked Share with agents show as inherited, plus
+            this agent&apos;s overlays.
           </p>
         </div>
         <Button
@@ -140,43 +168,62 @@ export default function AgentMCPPage() {
         </Button>
       </div>
 
-      {entries.length === 0 ? (
+      {rows.length === 0 ? (
         <div className="rounded-lg border border-dashed p-12 text-center text-muted-foreground">
           <Server className="w-10 h-10 mx-auto mb-3 opacity-40" />
           <p>No MCP servers configured.</p>
           <p className="text-xs mt-1">
-            Add an MCP server to extend this agent with external tools.
+            Add a server for this agent, or share one from the MCP
+            catalog — those show up here as inherited.
           </p>
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {entries.map(([name, cfg]) => (
+          {rows.map((row) => (
             <div
-              key={name}
+              key={row.name}
               className="rounded-lg border bg-card p-4 space-y-2"
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
                   <Server className="w-4 h-4 shrink-0 text-muted-foreground" />
-                  <span className="font-medium truncate">{name}</span>
+                  <span className="font-medium truncate">{row.name}</span>
                 </div>
-                <Badge variant="secondary" className="shrink-0 text-xs">
-                  {cfg.type}
-                </Badge>
+                <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+                  <Badge variant="secondary" className="text-xs">
+                    {row.type}
+                  </Badge>
+                  {row.source === "inherited" ? (
+                    <Badge variant="secondary" className="text-[10px]">
+                      Inherited
+                    </Badge>
+                  ) : row.shadowed ? (
+                    <Badge variant="outline" className="text-[10px]">
+                      Override
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-[10px]">
+                      This agent
+                    </Badge>
+                  )}
+                  {row.disabled && (
+                    <Badge variant="outline" className="text-[10px]">
+                      Off
+                    </Badge>
+                  )}
+                </div>
               </div>
               <div className="text-xs text-muted-foreground truncate">
-                {cfg.type === "http"
-                  ? cfg.url || "(no URL)"
-                  : [cfg.command, ...(cfg.args ?? [])].join(" ")}
+                {mcpEndpoint(row)}
               </div>
-              {cfg.env && Object.keys(cfg.env).length > 0 && (
+              {row.env && Object.keys(row.env).length > 0 && (
                 <div className="text-xs text-muted-foreground">
-                  env: {Object.keys(cfg.env).join(", ")}
+                  env: {Object.keys(row.env).join(", ")}
                 </div>
               )}
-              {cfg.headers && Object.keys(cfg.headers).length > 0 && (
+              {row.headers && Object.keys(row.headers).length > 0 && (
                 <div className="text-xs text-muted-foreground">
-                  headers: {Object.keys(cfg.headers).join(", ")}
+                  headers: {Object.keys(row.headers).join(", ")}
                 </div>
               )}
               <div className="flex gap-1 pt-1">
@@ -184,28 +231,53 @@ export default function AgentMCPPage() {
                   variant="ghost"
                   size="icon"
                   className="h-7 w-7"
+                  title={row.source === "inherited" ? "Override for this agent" : "Edit"}
                   onClick={() => {
-                    setEditEntry({ name, ...cfg });
+                    setEditEntry(row);
                     setEditOpen(true);
                   }}
                 >
                   <Pencil className="w-3.5 h-3.5" />
                 </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 text-destructive"
-                  onClick={() => setDeleteTarget(name)}
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </Button>
+                {row.source === "inherited" ? (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-destructive"
+                    title="Disable for this agent"
+                    onClick={() => handleDisableInherited(row)}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </Button>
+                ) : (
+                  <>
+                    {row.shadowed && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        title="Reset to inherited"
+                        onClick={() => handleResetInherit(row.name)}
+                      >
+                        <Undo2 className="w-3.5 h-3.5" />
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-destructive"
+                      onClick={() => setDeleteTarget(row.name)}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Edit / Add dialog */}
       <MCPEditDialog
         open={editOpen}
         onOpenChange={(o) => {
@@ -213,28 +285,29 @@ export default function AgentMCPPage() {
           setEditOpen(o);
         }}
         initial={editEntry}
-        existingNames={Object.keys(servers)}
+        existingNames={rows.map((r) => r.name)}
         onSave={handleSaveEntry}
       />
 
-      {/* Delete confirmation */}
       <AlertDialog
         open={!!deleteTarget}
         onOpenChange={(o) => !o && setDeleteTarget(null)}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove MCP server</AlertDialogTitle>
+            <AlertDialogTitle>Remove MCP overlay</AlertDialogTitle>
             <AlertDialogDescription>
-              Remove <strong>{deleteTarget}</strong> from this agent?
-              The server&apos;s tools will no longer be available.
+              Remove the agent overlay for <strong>{deleteTarget}</strong>?
+              {deleteTarget && inheritedServers[deleteTarget]
+                ? " The inherited server will come back."
+                : " The server's tools will no longer be available."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground"
-              onClick={() => deleteTarget && handleDelete(deleteTarget)}
+              onClick={() => deleteTarget && handleDeleteLocal(deleteTarget)}
             >
               Remove
             </AlertDialogAction>
@@ -245,212 +318,14 @@ export default function AgentMCPPage() {
   );
 }
 
-// ---- Edit / Add dialog ----
-
-function MCPEditDialog({
-  open,
-  onOpenChange,
-  initial,
-  existingNames,
-  onSave,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  initial: MCPEntry | null;
-  existingNames: string[];
-  onSave: (entry: MCPEntry) => Promise<void>;
-}) {
-  const [name, setName] = useState("");
-  const [type, setType] = useState<"http" | "stdio">("stdio");
-  const [url, setUrl] = useState("");
-  const [command, setCommand] = useState("");
-  const [args, setArgs] = useState("");
-  const [envText, setEnvText] = useState("");
-  const [headersText, setHeadersText] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (!open) return;
-    if (initial) {
-      setName(initial.name);
-      setType(initial.type || "stdio");
-      setUrl(initial.url ?? "");
-      setCommand(initial.command ?? "");
-      setArgs((initial.args ?? []).join(" "));
-      setEnvText(kvToText(initial.env));
-      setHeadersText(kvToText(initial.headers));
-    } else {
-      setName("");
-      setType("stdio");
-      setUrl("");
-      setCommand("");
-      setArgs("");
-      setEnvText("");
-      setHeadersText("");
-    }
-    setError("");
-  }, [open, initial]);
-
-  const handleSubmit = async () => {
-    const trimName = name.trim();
-    if (!trimName) {
-      setError("Name is required");
-      return;
-    }
-    if (!initial && existingNames.includes(trimName)) {
-      setError("A server with this name already exists");
-      return;
-    }
-    if (initial && initial.name !== trimName && existingNames.includes(trimName)) {
-      setError("A server with this name already exists");
-      return;
-    }
-
-    const entry: MCPEntry = { name: trimName, type };
-    if (type === "http") {
-      if (!url.trim()) {
-        setError("URL is required for HTTP type");
-        return;
-      }
-      entry.url = url.trim();
-      const h = textToKV(headersText);
-      if (Object.keys(h).length > 0) entry.headers = h;
-    } else {
-      if (!command.trim()) {
-        setError("Command is required for stdio type");
-        return;
-      }
-      entry.command = command.trim();
-      const a = args.trim();
-      if (a) entry.args = a.split(/\s+/);
-      const e = textToKV(envText);
-      if (Object.keys(e).length > 0) entry.env = e;
-    }
-
-    setSaving(true);
-    try {
-      await onSave(entry);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Save failed");
-    } finally {
-      setSaving(false);
-    }
+function stripMeta(row: Row): MCPServerConfig {
+  return {
+    type: row.type,
+    url: row.url,
+    headers: row.headers,
+    command: row.command,
+    args: row.args,
+    env: row.env,
+    disabled: row.disabled,
   };
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>{initial ? "Edit MCP Server" : "Add MCP Server"}</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-4">
-          <div className="space-y-1.5">
-            <Label>Name</Label>
-            <Input
-              placeholder="e.g. postgres, filesystem"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <Label>Type</Label>
-            <Select value={type} onValueChange={(v) => setType(v as "http" | "stdio")}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="stdio">stdio</SelectItem>
-                <SelectItem value="http">http</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {type === "http" ? (
-            <>
-              <div className="space-y-1.5">
-                <Label>URL</Label>
-                <Input
-                  placeholder="https://example.com/mcp"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Headers <span className="text-muted-foreground font-normal">(optional, KEY=VALUE per line)</span></Label>
-                <textarea
-                  className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 min-h-[60px] resize-y"
-                  placeholder={"Authorization=Bearer $TOKEN\nX-Custom=value"}
-                  value={headersText}
-                  onChange={(e) => setHeadersText(e.target.value)}
-                  rows={3}
-                />
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="space-y-1.5">
-                <Label>Command</Label>
-                <Input
-                  placeholder="e.g. npx, python, node"
-                  value={command}
-                  onChange={(e) => setCommand(e.target.value)}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Arguments <span className="text-muted-foreground font-normal">(space-separated)</span></Label>
-                <Input
-                  placeholder="e.g. -y @anthropic/mcp-server-postgres postgresql://..."
-                  value={args}
-                  onChange={(e) => setArgs(e.target.value)}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Environment <span className="text-muted-foreground font-normal">(optional, KEY=VALUE per line)</span></Label>
-                <textarea
-                  className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 min-h-[60px] resize-y"
-                  placeholder={"DATABASE_URL=postgresql://...\nAPI_KEY=$SECRET"}
-                  value={envText}
-                  onChange={(e) => setEnvText(e.target.value)}
-                  rows={3}
-                />
-              </div>
-            </>
-          )}
-
-          {error && <p className="text-sm text-destructive">{error}</p>}
-
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleSubmit} disabled={saving}>
-              {saving ? "Saving..." : initial ? "Save" : "Add"}
-            </Button>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// KEY=VALUE text ↔ Record<string, string>
-function kvToText(kv?: Record<string, string>): string {
-  if (!kv) return "";
-  return Object.entries(kv)
-    .map(([k, v]) => `${k}=${v}`)
-    .join("\n");
-}
-
-function textToKV(text: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const idx = trimmed.indexOf("=");
-    if (idx <= 0) continue;
-    out[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1);
-  }
-  return out;
 }

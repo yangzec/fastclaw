@@ -110,6 +110,27 @@ func (s *Server) applyAgentScopeDefaultsPatch(r *http.Request, agentID string, p
 	return scope.SaveSettingByScope(r.Context(), s.dataStore, scope.Agent, agentID, "agents.defaults", data)
 }
 
+// agentMCPServersFromConfig pulls mcpServers out of an agent's
+// config blob. Missing / unparseable → empty map.
+func agentMCPServersFromConfig(data map[string]interface{}) map[string]config.MCPServerConfig {
+	if data == nil {
+		return nil
+	}
+	raw, ok := data["mcpServers"]
+	if !ok || raw == nil {
+		return nil
+	}
+	blob, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var out map[string]config.MCPServerConfig
+	if json.Unmarshal(blob, &out) != nil {
+		return nil
+	}
+	return out
+}
+
 // applyAgentScopePluginsPatch merges per-agent plugin enable
 // overrides into the (scope=agent, name=plugins.enabled) row.
 //
@@ -560,6 +581,10 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// MCP servers: whole-map replace into the agent config blob.
+	// Masked header/env values ("****") are resolved back to the
+	// stored agent overlay or, for a new shadow of an inherited
+	// server, the global mcpServers row — same protection as
+	// POST /api/config so a no-op save can't clobber secrets.
 	if req.MCPServersReset {
 		if rec.Config != nil {
 			delete(rec.Config, "mcpServers")
@@ -571,7 +596,20 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		if len(req.MCPServers) == 0 {
 			delete(rec.Config, "mcpServers")
 		} else {
-			rec.Config["mcpServers"] = req.MCPServers
+			existing := agentMCPServersFromConfig(rec.Config)
+			global := map[string]config.MCPServerConfig{}
+			if cfg, err := s.loadUserConfig(r); err == nil && cfg != nil {
+				global = cfg.MCPServers
+			}
+			merged := make(map[string]config.MCPServerConfig, len(req.MCPServers))
+			for name, in := range req.MCPServers {
+				base := existing[name]
+				if base.Type == "" {
+					base = global[name]
+				}
+				merged[name] = mergeMCPServer(base, in)
+			}
+			rec.Config["mcpServers"] = merged
 		}
 	}
 	if err := s.dataStore.SaveAgent(r.Context(), rec); err != nil {
@@ -720,7 +758,20 @@ func (s *Server) handleGetAgentConfig(w http.ResponseWriter, r *http.Request) {
 		blob, _ := json.Marshal(rec.Config)
 		_ = json.Unmarshal(blob, &cfg)
 	}
-	jsonResponse(w, http.StatusOK, cfg)
+	if len(cfg.MCPServers) > 0 {
+		masked := make(map[string]config.MCPServerConfig, len(cfg.MCPServers))
+		for k, v := range cfg.MCPServers {
+			masked[k] = maskMCPServer(v)
+		}
+		cfg.MCPServers = masked
+	}
+	blob, _ := json.Marshal(cfg)
+	out := map[string]any{}
+	_ = json.Unmarshal(blob, &out)
+	if inherited := inheritedMCPForOwner(r.Context(), s.dataStore, rec.UserID); len(inherited) > 0 {
+		out["inheritedMcpServers"] = inherited
+	}
+	jsonResponse(w, http.StatusOK, out)
 }
 
 func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
