@@ -131,7 +131,7 @@ export default function AgentMCPPage() {
 
   if (loading) {
     return (
-      <div className="p-6 space-y-6 max-w-5xl mx-auto">
+      <div className="mx-auto max-w-5xl space-y-6 p-4 sm:p-6">
         <Skeleton className="h-10 w-48" />
         <Skeleton className="h-48 w-full" />
       </div>
@@ -141,7 +141,7 @@ export default function AgentMCPPage() {
   const hasStdio = rows.some((r) => r.type === "stdio" && !r.disabled);
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl mx-auto">
+    <div className="mx-auto max-w-5xl space-y-6 p-4 sm:p-6">
       {isHosted && hasStdio && (
         <div className="flex items-start gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-3 text-sm">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-yellow-500" />
@@ -152,7 +152,7 @@ export default function AgentMCPPage() {
           </div>
         </div>
       )}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-xl font-semibold">MCP Servers</h2>
           <p className="text-sm text-muted-foreground mt-1">

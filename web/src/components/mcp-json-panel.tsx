@@ -58,7 +58,7 @@ export function MCPJsonPanel({
   };
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border bg-card p-4">
+    <div className="flex flex-col gap-3 rounded-lg border bg-card p-3 sm:p-4">
       <div className="flex flex-col gap-1">
         <Label>mcp.json</Label>
         <p className="text-xs text-muted-foreground">
@@ -67,7 +67,7 @@ export function MCPJsonPanel({
         </p>
       </div>
       <textarea
-        className="min-h-[280px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-xs leading-5 ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        className="min-h-[220px] w-full resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-xs leading-5 ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 sm:min-h-[280px]"
         placeholder={MCP_JSON_PLACEHOLDER}
         value={text}
         onChange={(e) => setText(e.target.value)}

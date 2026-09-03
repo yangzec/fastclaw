@@ -237,7 +237,7 @@ export function MCPEditDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="max-md:inset-0 max-md:top-0 max-md:left-0 max-md:h-[100dvh] max-md:w-full max-md:max-w-none max-md:translate-x-0 max-md:translate-y-0 max-md:rounded-none sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{initial ? "Edit MCP Server" : "Add MCP Server"}</DialogTitle>
         </DialogHeader>

@@ -16,8 +16,9 @@ action on upgrade — read those notes before deploying.
 - **MCP JSON configuration.** The MCP page opens on a JSON tab
   where you paste Cursor or Claude Desktop `mcp.json` (or a
   name→config map) and save. `type` is optional — `url` means http,
-  `command` means stdio. Cards and the form editor remain as the
-  other tab.
+  `command` means stdio.   Cards and the form editor remain as the
+  other tab. On phones, Settings lists MCP in a
+  wrapping grid so it is not hidden behind a sideways swipe.
 - **Composer autofocus on new and switched chats.** Opening a new
   conversation or switching sessions (including project chats) puts
   the caret in the message box. A second click on New chat does the
