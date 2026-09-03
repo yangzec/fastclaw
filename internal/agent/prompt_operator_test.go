@@ -52,6 +52,14 @@ func TestAgentPrompt_TrustedTurnGrantsOperatorWork(t *testing.T) {
 	mustContain(t, prompt, "Installing into\n     an agent OTHER than yourself is normal")
 	mustContain(t, prompt, "Never install a skill into yourself as a substitute")
 
+	// MCP / plugins / Models are dashboard doors. The 14:27 incident
+	// dumped `agents config --help` and source after configure_agent
+	// rejected mcpServers — the prompt must name the door and forbid that.
+	mustContain(t, prompt, "do NOT read source code")
+	mustContain(t, prompt, "Never retry configure_agent with key=mcpServers")
+	mustContain(t, prompt, "Do not exec `--help`")
+	mustNotContain(t, prompt, "run any subcommand with --help")
+
 	// The guest wording must not also be present — two contradictory
 	// branches in one prompt is what produced the original refusal.
 	mustNotContain(t, prompt, "is NOT this agent's operator")

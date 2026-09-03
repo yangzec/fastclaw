@@ -134,9 +134,13 @@ func RegisterAgentAdmin(r *Registry, deps AgentAdminDeps) {
 		},
 	)
 
+	allowedKeys := strings.Join(agentcli.SortedAgentScopeKeys(), ", ")
 	r.Register(
 		"configure_agent",
-		"Set a configuration value on an agent you own (most commonly its model), or write its identity files. "+
+		"Set a configuration value on an agent you own, or write its identity files. "+
+			"Supported keys: "+allowedKeys+", sandbox.*. "+
+			"NOT settable here: mcpServers, plugins, tools, provider.* (dashboard-scoped). "+
+			"For MCP servers tell the user to open the agent → MCP (or sidebar MCP) and paste mcp.json — never retry them via this tool, the call will be rejected. "+
 			"Use key='model' with value='<provider>/<model>'. To write persona files use file='IDENTITY.md' or 'SOUL.md' with content.",
 		map[string]interface{}{
 			"type": "object",
@@ -147,7 +151,7 @@ func RegisterAgentAdmin(r *Registry, deps AgentAdminDeps) {
 				},
 				"key": map[string]interface{}{
 					"type":        "string",
-					"description": "Config key to set, e.g. 'model'. Omit when writing a file instead.",
+					"description": "Config key to set. Allowed: " + allowedKeys + ", sandbox.*. Not allowed: mcpServers, plugins, tools, provider.* — dashboard only; never retry those, the call will be rejected. Omit when writing a file instead.",
 				},
 				"value": map[string]interface{}{
 					"type":        "string",

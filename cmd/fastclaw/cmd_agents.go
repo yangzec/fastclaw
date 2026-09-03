@@ -250,7 +250,15 @@ func agentsConfigCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "config <name> <get|set> [key] [value]",
 		Short: "Read or update an agent's configuration",
-		Args:  cobra.MinimumNArgs(2),
+		Long: `Read or update an agent's configuration.
+
+Settable keys: model, maxTokens, temperature, maxToolIterations,
+maxParallelToolCalls, thinking, policy, promptMode, splitReplies, sandbox.*
+
+MCP servers, plugins, and provider credentials are not settable here.
+Add MCP in the dashboard (agent → MCP, or sidebar MCP) — paste mcp.json
+on the JSON tab — or PUT /api/agents/<id> with {"mcpServers": {...}}.`,
+		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			st, err := openStoreFromEnv()
 			if err != nil {

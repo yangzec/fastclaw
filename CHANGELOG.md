@@ -101,6 +101,12 @@ action on upgrade — read those notes before deploying.
 
 ### Fixed
 
+- **configure_agent now names the real door when mcpServers is refused.**
+  Rejected keys list what *is* settable, point at the dashboard
+  (agent → MCP / sidebar MCP / Models), and say not to retry, dump
+  `--help`, or read source. The tool description and operator prompt
+  say the same so the model stops after one refusal instead of
+  grepping the tree.
 - **Compaction follows Pi's working-set shrink.** Auto-compact and
   `/compact [focus…]` now keep a ~20k-token verbatim hot tail (not
   the last 20 messages), ask the model for a structured Goal /

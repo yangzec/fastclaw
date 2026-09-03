@@ -247,7 +247,8 @@ func modAgentIntro(p *promptCtx) string {
 	} else {
 		fastclawLine = fmt.Sprintf("FastClaw: %s (commit %s, built %s). Self-hosted install.\n"+
 			"Runtime configuration (LLM providers, IM channels, tool providers like web_search, agent settings, sandbox, cron jobs) lives in FastClaw's DATABASE, not in YAML/JSON config files — don't go hunting for config files, and NEVER edit ~/.fastclaw/fastclaw.db directly. "+
-			"The management interface is the `fastclaw` CLI: `fastclaw provider` (LLM credentials), `fastclaw tools provider-set` / `category-set` (web_search & friends), `fastclaw channels`, `fastclaw agents` (init / ls / config / rm), `fastclaw skill` (list / search / install), `fastclaw admin`, `fastclaw cron` — run any subcommand with --help to see flags. "+
+			"The management interface is the `fastclaw` CLI: `fastclaw provider` (LLM credentials), `fastclaw tools provider-set` / `category-set` (web_search & friends), `fastclaw channels`, `fastclaw agents` (init / ls / config / rm), `fastclaw skill` (list / search / install), `fastclaw admin`, `fastclaw cron`. "+
+			"MCP servers, plugins, and provider credentials are NOT `agents config` keys — use the dashboard (agent → MCP, sidebar MCP, Models). Do not exec `--help` or read FastClaw source to discover another door. "+
 			"CLI writes persist to the database and hot-reload the running gateway, so no restart is needed.\n%s",
 			buildinfo.Version, buildinfo.Commit, buildinfo.Date,
 			operatorAccessLine(p.trusted, p.cb.sandboxEnabled))
@@ -415,7 +416,12 @@ stop after step 1:
      agent's name and id and that it's ready to chat with in the dashboard.
 Give the new agent an IDENTITY.md / SOUL.md too when the operator described a persona:
 write the text to a local file, then ` + "`" + cmd + ` agents files put <agt_id> IDENTITY.md <path>` + "`" + `.
-The CLI hot-reloads the gateway itself, so don't restart anything.`
+The CLI hot-reloads the gateway itself, so don't restart anything.
+
+## Platform ops quick reference (do NOT read source code for these)
+- MCP servers: not settable via configure_agent or ` + "`" + cmd + ` agents config` + "`" + `. Add them in the dashboard (agent → MCP, or sidebar MCP for a shared catalog — paste mcp.json on the JSON tab). If the user asks you to add MCP servers, explain this, give them the exact JSON to paste, and stop. Never retry configure_agent with key=mcpServers.
+- Plugins: ` + "`" + cmd + ` plugins install|list|remove` + "`" + ` (hub / GitHub / npm / local path), or the dashboard Plugins page.
+- Provider credentials & models: dashboard → Models; never editable from a chat session.`
 }
 
 // modChatbotIntro builds the Chatbot-mode identity scaffolding: slim
@@ -1140,6 +1146,9 @@ Five failure modes that cost rounds:
    configure_agent), finish with check_agent and report what it
    actually said. If it says NOT ready, relay the problems instead of
    handing over a broken agent.
+   If configure_agent rejects a key (mcpServers, plugins, provider.*),
+   do not retry, do not exec --help, and do not read FastClaw source.
+   Tell the user the dashboard door from the error and stop.
 
 When a tool result fails (4xx/5xx, empty, error), the runtime appends
 "[Analyze the error above and try a different approach.]" — that
