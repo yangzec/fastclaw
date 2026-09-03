@@ -824,13 +824,12 @@ func (r *Registry) GetFunc(name string) ToolFunc {
 	return t.fn
 }
 
-// Definitions returns all tool definitions for the LLM.
+// Definitions returns tool definitions visible to the current chatter.
+// Owner-only and host-only tools are omitted for guests so every LLM
+// catalog path (agent loop, subagent, SDK adapter) stays consistent
+// with DefinitionsForMode / DenyIfHidden.
 func (r *Registry) Definitions() []provider.Tool {
-	defs := make([]provider.Tool, 0, len(r.tools))
-	for _, t := range r.tools {
-		defs = append(defs, t.def)
-	}
-	return defs
+	return r.DefinitionsForMode(nil)
 }
 
 // ToolInfo is the lightweight projection of a registered tool used by
@@ -921,6 +920,9 @@ func (r *Registry) DefinitionsForMode(builtinAllow []string) []provider.Tool {
 	}
 	defs := make([]provider.Tool, 0, len(r.tools))
 	for name, t := range r.tools {
+		if !r.toolVisibleToCaller(name) {
+			continue
+		}
 		if t.source != SourceBuiltin {
 			// Plugin / MCP / future sources — always pass through.
 			defs = append(defs, t.def)
@@ -942,6 +944,9 @@ func (r *Registry) Execute(ctx context.Context, name string, args string) (strin
 	tool, ok := r.tools[name]
 	if !ok {
 		return "", fmt.Errorf("unknown tool: %s", name)
+	}
+	if err := r.DenyIfHidden(name); err != nil {
+		return "", err
 	}
 
 	result, err := tool.fn(ctx, json.RawMessage(args))

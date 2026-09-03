@@ -112,11 +112,17 @@ func buildSDKRegistry(fcRegistry *tools.Registry) *sdktools.Registry {
 		if fn == nil {
 			continue
 		}
+		name := def.Function.Name
 		sdkReg.Register(&toolAdapter{
-			name:        def.Function.Name,
+			name:        name,
 			description: def.Function.Description,
 			params:      def.Function.Parameters,
-			fn:          fn,
+			fn: func(ctx context.Context, args json.RawMessage) (string, error) {
+				if err := fcRegistry.DenyIfHidden(name); err != nil {
+					return "", err
+				}
+				return fn(ctx, args)
+			},
 		})
 	}
 	return sdkReg

@@ -898,7 +898,7 @@ func makeListDir(r *Registry) ToolFunc {
 				}
 				fmt.Fprintf(&sb, "f %s (%d bytes)\n", rel, o.Size)
 			}
-			return sb.String(), nil
+			return r.filterGuestDirListing(sb.String()), nil
 		}
 
 		root := r.rootForPath(args.Path)
@@ -923,7 +923,7 @@ func makeListDir(r *Registry) ToolFunc {
 			}
 		}
 
-		return sb.String(), nil
+		return r.filterGuestDirListing(sb.String()), nil
 	}
 }
 
@@ -1210,12 +1210,12 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 					}
 					fmt.Fprintf(&sb, "f %s (%d bytes)\n", rel, o.Size)
 				}
-				return sb.String(), nil
+				return r.filterGuestDirListing(sb.String()), nil
 			}
 			// Store error → fall through to sandbox so a freshly-written
 			// sandbox-only dir is still listable.
 			out, err := ex.ListDir(ctx, args.Path)
-			return MetaSandboxPrefix + out, err
+			return MetaSandboxPrefix + r.filterGuestDirListing(out), err
 		case RouteHostFS:
 			full, ok := hostHomePath(args.Path)
 			if !ok {
@@ -1238,12 +1238,12 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 				}
 				fmt.Fprintf(&sb, "f %s (%d bytes)\n", e.Name(), info.Size())
 			}
-			return sb.String(), nil
+			return r.filterGuestDirListing(sb.String()), nil
 		case RouteRefuseSuggestSandbox:
 			return "", fmt.Errorf("%s", errSandboxRequiredMessage)
 		default: // RouteSandbox / RouteSystemStore (no list semantics) / RouteSkillStore
 			out, err := ex.ListDir(ctx, args.Path)
-			return MetaSandboxPrefix + out, err
+			return MetaSandboxPrefix + r.filterGuestDirListing(out), err
 		}
 	})
 
