@@ -44,15 +44,13 @@ action on upgrade — read those notes before deploying.
   compaction uses), and a model button next to Send lists configured
   provider models. Switching writes the agent's model; viewers see
   the name only.
-- **Per-model context and max output on the Models page.** Both
-  fields are chips plus a tip for that model. Context: 128k / 200k /
-  256k / 400k / 500k / 1M / 1.05M — GPT-5.5 and 5.6 both suggest
-  1.05M on the API (the 400k you remember is the old ChatGPT 5.5
-  product tier); Grok 500k; GLM 1M; Kimi 1.05M. Max output: 8k /
-  16k / 32k / 64k / 128k (plus 131k for Kimi). GPT-5.5 suggests
-  32k; GPT-5.6 suggests 64k because `max` reasoning shares the
-  output budget. Saving writes the catalog row; unset maxTokens
-  stays 8192. `gpt-5.6-luna` context default is 1.05M.
+- **Per-model context and max output on the Models page.** Each
+  model row applies a recommended pair automatically (banner:
+  「推荐已套用」). GPT-5.6 = 1.05M / 64k, GPT-5.5 = 1.05M / 32k,
+  GLM = 1M / 64k, Kimi = 1.05M / 131k, Grok = 500k / 32k. Chips
+  stay available; 「套用推荐」 restores the pair. Old 200k / 8k
+  rows pick up the new defaults when you open the dialog. `gpt-5.6-luna`
+  context default is 1.05M.
 - **Codex-style follow-up queue.** Sending while a turn is running now
   queues by default (composer tray + TUI list) and runs after `done`,
   instead of always inserting into the current turn. Switch the

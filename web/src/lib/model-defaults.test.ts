@@ -5,7 +5,10 @@ import {
   knownMaxTokens,
   contextWindowOptionsFor,
   contextWindowTip,
+  formContextWindow,
+  formMaxTokens,
   maxOutputTip,
+  modelLimitsTip,
   maxTokenOptionsFor,
   modelLimitFamily,
   presetContextWindow,
@@ -68,6 +71,22 @@ test("knownMaxTokens covers GPT / Zhipu / Kimi ids", () => {
   assert.equal(knownMaxTokens("kimi/k3"), 131_072);
   assert.equal(knownMaxTokens("grok-4.6"), 0);
   assert.equal(knownMaxTokens("unknown-model"), 0);
+});
+
+test("form helpers upgrade generic 200k/8k to model defaults", () => {
+  assert.equal(formContextWindow("gpt-5.6", 0), 1_050_000);
+  assert.equal(formContextWindow("gpt-5.6", DEFAULT_CONTEXT_WINDOW), 1_050_000);
+  assert.equal(formContextWindow("gpt-5.6", 400_000), 400_000);
+  assert.equal(formMaxTokens("gpt-5.6", 0), 65_536);
+  assert.equal(formMaxTokens("gpt-5.6", DEFAULT_MAX_TOKENS), 65_536);
+  assert.equal(formMaxTokens("gpt-5.5", DEFAULT_MAX_TOKENS), 32_768);
+  assert.equal(formMaxTokens("gpt-5.6", 128_000), 128_000);
+});
+
+test("modelLimitsTip names both defaults", () => {
+  assert.match(modelLimitsTip("gpt-5.6").headline, /1\.05M/);
+  assert.match(modelLimitsTip("gpt-5.6").headline, /64k/);
+  assert.match(modelLimitsTip("gpt-5.5").headline, /32k/);
 });
 
 test("suggestedMaxTokens differs for GPT-5.5 vs 5.6", () => {

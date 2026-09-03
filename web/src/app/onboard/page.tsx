@@ -39,8 +39,7 @@ import { getStatus, onboard, testProvider } from "@/lib/api";
 import { MIN_PASSWORD_LENGTH } from "@/lib/password";
 import { PROVIDER_PRESETS, PROVIDER_LABELS } from "@/lib/provider-presets";
 import { nextContextWindowOnIdChange, nextMaxTokensOnIdChange, presetContextWindow, presetMaxTokens } from "@/lib/model-defaults";
-import { ContextWindowField } from "@/components/context-window-field";
-import { MaxTokensField } from "@/components/max-tokens-field";
+import { ModelLimitsFields } from "@/components/model-limits-fields";
 
 const STEPS = [
   { id: "welcome", label: "Welcome", icon: PartyPopper },
@@ -643,15 +642,12 @@ function ProviderStep(props: {
             className="font-mono text-sm"
           />
         </div>
-        <ContextWindowField
+        <ModelLimitsFields
           modelId={props.model}
-          value={props.contextWindow}
-          onChange={props.setContextWindow}
-        />
-        <MaxTokensField
-          modelId={props.model}
-          value={props.maxTokens}
-          onChange={props.setMaxTokens}
+          contextWindow={props.contextWindow}
+          maxTokens={props.maxTokens}
+          onContextWindowChange={props.setContextWindow}
+          onMaxTokensChange={props.setMaxTokens}
         />
         <div className="space-y-1.5">
           <Label>API Base URL</Label>

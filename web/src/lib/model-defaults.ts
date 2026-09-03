@@ -57,6 +57,29 @@ export function presetContextWindow(modelId: string): number {
   return knownContextWindow(modelId) || DEFAULT_CONTEXT_WINDOW;
 }
 
+export function recommendedLimits(modelId: string): { contextWindow: number; maxTokens: number } {
+  return {
+    contextWindow: presetContextWindow(modelId),
+    maxTokens: presetMaxTokens(modelId),
+  };
+}
+
+// Treat the generic UI fallbacks as "never configured" so opening an
+// old row (200k / 8192) picks up the model-specific recommended pair.
+export function formContextWindow(modelId: string, saved: number): number {
+  if (saved <= 0 || saved === DEFAULT_CONTEXT_WINDOW) {
+    return presetContextWindow(modelId);
+  }
+  return saved;
+}
+
+export function formMaxTokens(modelId: string, saved: number): number {
+  if (saved <= 0 || saved === DEFAULT_MAX_TOKENS) {
+    return presetMaxTokens(modelId);
+  }
+  return saved;
+}
+
 export const CONTEXT_WINDOW_OPTIONS: { value: number; label: string }[] = [
   { value: 128_000, label: "128k" },
   { value: 200_000, label: "200k" },
@@ -269,6 +292,44 @@ export function maxOutputTip(modelId: string): ModelLimitTip {
       return {
         headline: "建议 8k，按截断再加",
         body: "没认到官方上限就先 8k 或 16k。被截断再升到 32k / 64k。数字是每次请求的 max_tokens，压缩也会按它留空。",
+      };
+  }
+}
+
+export function modelLimitsTip(modelId: string): ModelLimitTip {
+  const rec = recommendedLimits(modelId);
+  const ctx = compactLimitLabel(rec.contextWindow);
+  const out = compactLimitLabel(rec.maxTokens);
+  switch (modelLimitFamily(modelId)) {
+    case "gpt-5.6":
+      return {
+        headline: `GPT-5.6 推荐 · 上下文 ${ctx} · 输出 ${out}`,
+        body: "窗口和 5.5 一样是 1.05M。差别在输出：5.6 多了 max 推理，思考也算在输出预算里，所以默认 64k（5.5 是 32k）。Sol / 高推理可改 128k；Luna 日常可降到 16k–32k。超过 272k 输入会加价。",
+      };
+    case "gpt-5.5":
+      return {
+        headline: `GPT-5.5 推荐 · 上下文 ${ctx} · 输出 ${out}`,
+        body: "API 窗口已是 1.05M，和 5.6 相同。你记得的 400k 是 ChatGPT 产品旧档，网关还是那个套餐再改窗口。输出建议 32k：推理只到 xhigh，没有 5.6 的 max，不必拉满。",
+      };
+    case "glm":
+      return {
+        headline: `GLM-5.3 推荐 · 上下文 ${ctx} · 输出 ${out}`,
+        body: "官方 1M / 128k，智谱默认输出也是 64k。Flash 同口径。短对话可以把输出降到 16k–32k。",
+      };
+    case "kimi":
+      return {
+        headline: `Kimi K3 推荐 · 上下文 ${ctx} · 输出 ${out}`,
+        body: "窗口 1,048,576，输入输出共用。窗口选满；输出用默认 131k，不要拉到 1M（占 TPM）。",
+      };
+    case "grok":
+      return {
+        headline: `Grok 推荐 · 上下文 ${ctx} · 输出 ${out}`,
+        body: "4.6 / 4.5 官方窗口 500k，不是 1M。输出官方没写上限，32k 够用。",
+      };
+    default:
+      return {
+        headline: `通用推荐 · 上下文 ${ctx} · 输出 ${out}`,
+        body: "没认到官方数字就用 200k / 8k。知道窗口再改；输出被截断再往上加。",
       };
   }
 }
