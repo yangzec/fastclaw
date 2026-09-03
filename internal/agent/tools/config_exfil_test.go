@@ -107,6 +107,22 @@ func TestDefinitionsHideOwnerAndHostToolsFromGuest(t *testing.T) {
 	}
 }
 
+func TestDefinitionsAlsoHidesOwnerAndHostTools(t *testing.T) {
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	noop := func(context.Context, json.RawMessage) (string, error) { return "", nil }
+	r.Register("exec", "run", map[string]any{}, noop)
+	r.Register("create_agent", "provision", map[string]any{}, noop)
+	r.Register(HostExecToolName, "host", map[string]any{}, noop)
+
+	names := toolDefNames(r.Definitions())
+	if names["create_agent"] || names[HostExecToolName] {
+		t.Fatalf("Definitions() leaked hidden tools to guest: %v", names)
+	}
+	if !names["exec"] {
+		t.Fatal("Definitions() dropped exec for guest")
+	}
+}
+
 func TestExecuteHidesOwnerToolsFromGuest(t *testing.T) {
 	r := NewRegistry(t.TempDir(), t.TempDir())
 	r.Register("create_agent", "provision", map[string]any{}, func(context.Context, json.RawMessage) (string, error) {
