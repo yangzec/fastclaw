@@ -66,16 +66,16 @@ export default function GlobalMCPPage() {
     setServers(next);
   };
 
-  const handleSaveEntry = async (entry: MCPEntry) => {
-    const { name, ...cfg } = entry;
-    if (editEntry && editEntry.name !== name) {
-      const next = { ...servers };
+  const handleSaveEntries = async (entries: MCPEntry[]) => {
+    const next = { ...servers };
+    if (editEntry && entries.length === 1 && editEntry.name !== entries[0].name) {
       delete next[editEntry.name];
-      next[name] = cfg;
-      await saveServers(next);
-    } else {
-      await saveServers({ ...servers, [name]: cfg });
     }
+    for (const entry of entries) {
+      const { name, ...cfg } = entry;
+      next[name] = cfg;
+    }
+    await saveServers(next);
     setEditOpen(false);
     setEditEntry(null);
   };
@@ -135,8 +135,8 @@ export default function GlobalMCPPage() {
           <h2 className="text-2xl font-semibold tracking-tight">MCP Servers</h2>
           <p className="text-sm text-muted-foreground mt-1">
             {isAdmin
-              ? "Platform catalog. Share with agents attaches a server to every tenant. Off keeps it catalog-only — other tenants never see the definition or its secrets."
-              : "Your catalog. Share with agents attaches a server to your agents only. Off keeps it here until an agent adds it itself."}
+              ? "Platform catalog. Paste a Cursor mcp.json or fill the form. Share with agents attaches a server to every tenant. Off keeps it catalog-only — other tenants never see the definition or its secrets."
+              : "Your catalog. Paste a Cursor mcp.json or fill the form. Share with agents attaches a server to your agents only. Off keeps it here until an agent adds it itself."}
           </p>
         </div>
         <Button
@@ -155,7 +155,8 @@ export default function GlobalMCPPage() {
           <Server className="w-10 h-10 mx-auto mb-3 opacity-40" />
           <p>No global MCP servers configured.</p>
           <p className="text-xs mt-1">
-            New servers stay catalog-only until you turn on Share with agents.
+            Paste a Cursor-style mcp.json, or add a server. New ones stay
+            catalog-only until you turn on Share with agents.
           </p>
         </div>
       ) : (
@@ -232,7 +233,7 @@ export default function GlobalMCPPage() {
         initial={editEntry}
         existingNames={Object.keys(servers)}
         showInherit
-        onSave={handleSaveEntry}
+        onSave={handleSaveEntries}
       />
 
       <AlertDialog

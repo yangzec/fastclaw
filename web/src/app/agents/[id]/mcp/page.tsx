@@ -93,13 +93,15 @@ export default function AgentMCPPage() {
     setLocalServers(next);
   };
 
-  const handleSaveEntry = async (entry: MCPEntry) => {
-    const { name, ...cfg } = entry;
+  const handleSaveEntries = async (entries: MCPEntry[]) => {
     const next = { ...localServers };
-    if (editEntry && editEntry.name !== name) {
+    if (editEntry && entries.length === 1 && editEntry.name !== entries[0].name) {
       delete next[editEntry.name];
     }
-    next[name] = cfg;
+    for (const entry of entries) {
+      const { name, ...cfg } = entry;
+      next[name] = cfg;
+    }
     await saveLocal(next);
     setEditOpen(false);
     setEditEntry(null);
@@ -173,8 +175,9 @@ export default function AgentMCPPage() {
           <Server className="w-10 h-10 mx-auto mb-3 opacity-40" />
           <p>No MCP servers configured.</p>
           <p className="text-xs mt-1">
-            Add a server for this agent, or share one from the MCP
-            catalog — those show up here as inherited.
+            Paste a Cursor-style mcp.json, add a server for this agent,
+            or share one from the MCP catalog — those show up here as
+            inherited.
           </p>
         </div>
       ) : (
@@ -286,7 +289,7 @@ export default function AgentMCPPage() {
         }}
         initial={editEntry}
         existingNames={rows.map((r) => r.name)}
-        onSave={handleSaveEntry}
+        onSave={handleSaveEntries}
       />
 
       <AlertDialog
