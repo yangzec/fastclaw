@@ -149,7 +149,7 @@ export function AgentSettingsDialog({
           "max-md:inset-0 max-md:top-0 max-md:left-0 max-md:h-[100dvh] max-md:w-full max-md:max-w-none max-md:translate-x-0 max-md:translate-y-0 max-md:rounded-none",
         )}
       >
-        <aside className="flex shrink-0 flex-row gap-1 overflow-x-auto border-b bg-muted/40 p-2 pr-14 pt-[max(0.5rem,env(safe-area-inset-top,0px))] md:flex-col md:overflow-y-auto md:border-b-0 md:border-r md:p-3 md:pt-3 md:pr-3">
+        <aside className="grid shrink-0 grid-cols-3 gap-1 border-b bg-muted/40 p-2 pr-14 pt-[max(0.5rem,env(safe-area-inset-top,0px))] md:flex md:flex-col md:overflow-y-auto md:border-b-0 md:border-r md:p-3 md:pt-3 md:pr-3">
           {agentTabs.length > 0 && (
             <>
               <SectionLabel>Agent</SectionLabel>
@@ -249,7 +249,7 @@ function TabButton({
       onClick={() => onSelect(tab.id)}
       className={cn(
         "flex shrink-0 items-center gap-2 rounded-md px-2.5 py-2 text-sm text-left transition-colors",
-        "max-md:px-3 max-md:py-2.5",
+        "max-md:flex-col max-md:justify-center max-md:gap-1 max-md:px-1 max-md:py-2 max-md:text-center max-md:text-[11px] max-md:leading-tight",
         active
           ? "bg-accent text-accent-foreground font-medium"
           : "text-foreground/80 hover:bg-accent/50",

@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Server, Plus, Trash2, Pencil, AlertTriangle, Undo2 } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   getAgentConfig,
   getMe,
@@ -23,6 +24,7 @@ import {
 } from "@/lib/api";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { useAgentName } from "@/hooks/use-agent-name";
+import { MCPJsonPanel } from "@/components/mcp-json-panel";
 import {
   MCPEditDialog,
   mcpEndpoint,
@@ -129,7 +131,7 @@ export default function AgentMCPPage() {
 
   if (loading) {
     return (
-      <div className="p-6 space-y-6 max-w-5xl mx-auto">
+      <div className="mx-auto max-w-5xl space-y-6 p-4 sm:p-6">
         <Skeleton className="h-10 w-48" />
         <Skeleton className="h-48 w-full" />
       </div>
@@ -139,7 +141,7 @@ export default function AgentMCPPage() {
   const hasStdio = rows.some((r) => r.type === "stdio" && !r.disabled);
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl mx-auto">
+    <div className="mx-auto max-w-5xl space-y-6 p-4 sm:p-6">
       {isHosted && hasStdio && (
         <div className="flex items-start gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-3 text-sm">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-yellow-500" />
@@ -150,7 +152,7 @@ export default function AgentMCPPage() {
           </div>
         </div>
       )}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-xl font-semibold">MCP Servers</h2>
           <p className="text-sm text-muted-foreground mt-1">
@@ -170,6 +172,20 @@ export default function AgentMCPPage() {
         </Button>
       </div>
 
+      <Tabs defaultValue="json">
+        <TabsList>
+          <TabsTrigger value="json">JSON</TabsTrigger>
+          <TabsTrigger value="cards">Cards</TabsTrigger>
+        </TabsList>
+        <TabsContent value="json" className="pt-4">
+          <MCPJsonPanel
+            servers={localServers}
+            stripInherit
+            hint="This agent's overlay mcp.json. Inherited catalog servers are not listed here — paste to add or replace overlays."
+            onSave={saveLocal}
+          />
+        </TabsContent>
+        <TabsContent value="cards" className="pt-4">
       {rows.length === 0 ? (
         <div className="rounded-lg border border-dashed p-12 text-center text-muted-foreground">
           <Server className="w-10 h-10 mx-auto mb-3 opacity-40" />
@@ -280,6 +296,8 @@ export default function AgentMCPPage() {
           ))}
         </div>
       )}
+        </TabsContent>
+      </Tabs>
 
       <MCPEditDialog
         open={editOpen}
