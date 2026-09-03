@@ -1230,17 +1230,21 @@ export function ChatScreen() {
   // ChatScreen stays mounted across sidebar nav (agent layout-client),
   // so the composer textarea does not remount when the user opens a new
   // chat or switches sessions. Put the caret in the input on those
-  // transitions and on first mount. rAF waits for the empty↔compact
-  // textarea swap to commit so we focus the node that's actually on
-  // screen. A matching `fastclaw:focus-composer` event covers the
-  // "New chat" click when the URL is already the empty-chat route.
+  // transitions and on first mount. `messages.length === 0` is in the
+  // dep list because a cache-miss switch briefly renders the empty
+  // composer, then history lands and swaps in the compact textarea —
+  // without this, focus dies on that remount. rAF waits for the swap
+  // to commit so we focus the node that's actually on screen. A
+  // matching `fastclaw:focus-composer` event covers the "New chat"
+  // click when the URL is already the empty-chat route.
+  const composerIsEmpty = messages.length === 0;
   useEffect(() => {
     if (!selectedAgent) return;
     const id = window.requestAnimationFrame(() => {
       textareaRef.current?.focus();
     });
     return () => window.cancelAnimationFrame(id);
-  }, [urlSessionId, urlProjectId, selectedAgent]);
+  }, [urlSessionId, urlProjectId, selectedAgent, composerIsEmpty]);
 
   useEffect(() => {
     const onFocusComposer = () => {
