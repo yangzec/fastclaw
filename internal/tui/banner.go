@@ -41,5 +41,5 @@ func renderTips() string {
 	return pair("Enter", "send") + pair("  Ctrl+J", "newline") + pair("  /help", "commands") +
 		"\n" +
 		pair("Ctrl+C", "interrupt") + pair("  Esc", "detach") +
-		pair("  Ctrl+L", "clear") + pair("  !cmd", "shell")
+		pair("  Ctrl+S", "steer") + pair("  !cmd", "shell")
 }

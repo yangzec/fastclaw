@@ -8,6 +8,16 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { fileUrl, getAgent, getAgentKnowledgeFile, getChangedFiles, getChatHistoryWithCursor, getChatSessions, getChatTodo, getMe, getScopePreview, getScopePreviewLogs, getSessionHistory, listAgentFiles, listProjects, renameChatSession, restoreSessionHistory, revealAgentWorkspace, sendChatStream, steerChat, stopChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type KnowledgeSource, type ScopePreview, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile, type WorkspaceHistoryEntry } from "@/lib/api";
+import {
+  loadFollowupBehavior,
+  loadSessionQueue,
+  newFollowupId,
+  resolveFollowupAction,
+  saveFollowupBehavior,
+  saveSessionQueue,
+  type FollowupBehavior,
+  type QueuedFollowup,
+} from "@/lib/followup";
 import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, Folder, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal, ExternalLink, MoreHorizontal, PanelLeftClose, PanelLeftOpen, BookOpen, Upload } from "lucide-react";
 import Link from "next/link";
 import { ChatMarkdown } from "@/components/chat-markdown";
@@ -591,6 +601,11 @@ export function ChatScreen() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  // Codex-style follow-up: default is queue (run after this turn).
+  // "steer" injects into the in-flight turn at the next tool/model
+  // boundary. Persisted so the composer matches last session's choice.
+  const [followupBehavior, setFollowupBehavior] = useState<FollowupBehavior>(loadFollowupBehavior);
+  const [queuedFollowups, setQueuedFollowups] = useState<QueuedFollowup[]>([]);
   // todo.md state for the current session — agent maintains the file,
   // we re-fetch on every write_file/edit_file event that touches
   // todo.md plus once at mount. Empty `items` hides the panel.
@@ -726,6 +741,12 @@ export function ChatScreen() {
   const selectedAgentRef = useRef(selectedAgent);
   sessionIdRef.current = sessionId;
   selectedAgentRef.current = selectedAgent;
+  const queuedFollowupsRef = useRef<QueuedFollowup[]>([]);
+  queuedFollowupsRef.current = queuedFollowups;
+  const handleSendRef = useRef<(overrideText?: string, force?: boolean) => Promise<void>>(async () => {});
+  // Stop is per chat. A single boolean used to leak across sessions:
+  // stopping B while A was still streaming would skip A's drain.
+  const followupAbortRef = useRef(new Set<string>());
   const messagesCacheRef = useRef(new Map<string, ChatMessage[]>());
   const inFlightSessionsRef = useRef(new Set<string>());
   const abortBySessionRef = useRef(new Map<string, AbortController>());
@@ -790,7 +811,49 @@ export function ChatScreen() {
     setAgentName("");
     setAttachments([]);
     setSending(false);
+    setQueuedFollowups([]);
   }, [selectedAgent]);
+
+  const lastFollowupScopeRef = useRef("");
+  useEffect(() => {
+    if (!selectedAgent || !sessionId) {
+      setQueuedFollowups([]);
+      return;
+    }
+    const items = loadSessionQueue(selectedAgent, sessionId);
+    queuedFollowupsRef.current = items;
+    setQueuedFollowups(items);
+    // If the user left while this chat was still streaming, the turn
+    // may have finished in the background and skipped drain (we never
+    // send into a different session). Coming back to an idle,
+    // not-stopped chat should pick up the leftover tray.
+    const scope = chatScopeKey(selectedAgent, sessionId);
+    const switched = lastFollowupScopeRef.current !== "" && lastFollowupScopeRef.current !== scope;
+    lastFollowupScopeRef.current = scope;
+    if (!switched || inFlightSessionsRef.current.has(scope) || followupAbortRef.current.has(scope)) {
+      return;
+    }
+    const next = items[0];
+    if (!next) return;
+    const remaining = items.slice(1);
+    queuedFollowupsRef.current = remaining;
+    setQueuedFollowups(remaining);
+    saveSessionQueue(selectedAgent, sessionId, remaining);
+    queueMicrotask(() => {
+      void handleSendRef.current(next.text, true);
+    });
+  }, [selectedAgent, sessionId]);
+
+  const replaceQueue = useCallback((
+    items: QueuedFollowup[] | ((prev: QueuedFollowup[]) => QueuedFollowup[]),
+  ) => {
+    setQueuedFollowups((prev) => {
+      const next = typeof items === "function" ? items(prev) : items;
+      queuedFollowupsRef.current = next;
+      if (selectedAgent && sessionId) saveSessionQueue(selectedAgent, sessionId, next);
+      return next;
+    });
+  }, [selectedAgent, sessionId]);
 
   // Resolve the agent's display name once. The chat title and any
   // future header bits should show "Chat with My Helper", not the
@@ -1649,6 +1712,7 @@ export function ChatScreen() {
     // Sending always means "I want to see what happens next" — re-pin
     // to bottom even if the user had scrolled up to read earlier in the
     // conversation.
+    followupAbortRef.current.delete(turnKey);
     stickToBottomRef.current = true;
     setTurnMessages((prev) => [
       ...prev,
@@ -2098,11 +2162,24 @@ export function ChatScreen() {
         setSubagentProgress(null);
         textareaRef.current?.focus();
       }
+      // Codex follow-up drain: after a finished turn (not Stop), send
+      // the next queued message as its own turn. Stop leaves the tray
+      // intact so the user can delete or fire items themselves.
+      if (!followupAbortRef.current.has(turnKey)) {
+        const next = queuedFollowupsRef.current[0];
+        if (next && sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+          replaceQueue((prev) => prev.filter((item) => item.id !== next.id));
+          void handleSendRef.current(next.text, true);
+        }
+      }
     }
-  }, [input, attachments, selectedAgent, sessionId, sending, isReadOnlyView, isReadOnlySafeSlashCommand, loadSessions, pathname, router, urlProjectId, patchMessages, applySteerEvent]);
+  }, [input, attachments, selectedAgent, sessionId, sending, isReadOnlyView, isReadOnlySafeSlashCommand, loadSessions, pathname, router, urlProjectId, patchMessages, applySteerEvent, replaceQueue]);
+
+  handleSendRef.current = handleSend;
 
   const handleStop = useCallback(() => {
     const key = chatScopeKey(selectedAgent, sessionId);
+    followupAbortRef.current.add(key);
     const ac = abortBySessionRef.current.get(key) ?? abortRef.current;
     if (selectedAgent && sessionId) {
       void stopChat(selectedAgent, sessionId).catch(() => {});
@@ -2124,18 +2201,10 @@ export function ChatScreen() {
     }
   }, [selectedAgent, sessionId]);
 
-  // handleSteer fires while a turn is streaming: it buffers the message
-  // into the running turn (the agent folds it in between tool rounds and
-  // streams a "steer" echo on the existing SSE). On 409 (no active turn
-  // — the turn just ended) it falls back to a normal send so nothing is
-  // lost.
-  const handleSteer = useCallback(async () => {
-    const text = input.trim();
-    // Only ever called from handleKeyDown's `if (sending)` branch;
-    // within one render React state is snapshot-consistent, so `sending`
-    // is necessarily true here.
-    if (!text || !selectedAgent || !sending) return;
-    setInput("");
+  // steerFollowup injects text into the in-flight turn (Codex "Steer
+  // instead"). 409 / no active turn falls back to a normal send.
+  const steerFollowup = useCallback(async (text: string) => {
+    if (!text || !selectedAgent) return;
     const optimisticId = `s-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     setMessages((prev) => [
       ...prev,
@@ -2155,7 +2224,44 @@ export function ChatScreen() {
       setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
       await handleSend(text, true);
     }
-  }, [input, selectedAgent, sending, sessionId, urlProjectId, handleSend]);
+  }, [selectedAgent, sessionId, urlProjectId, handleSend]);
+
+  const enqueueFollowup = useCallback((text: string) => {
+    const item: QueuedFollowup = { id: newFollowupId(), text };
+    replaceQueue((prev) => [...prev, item]);
+  }, [replaceQueue]);
+
+  const removeQueuedFollowup = useCallback((id: string) => {
+    replaceQueue((prev) => prev.filter((item) => item.id !== id));
+  }, [replaceQueue]);
+
+  const steerQueuedFollowup = useCallback(async (item: QueuedFollowup) => {
+    replaceQueue((prev) => prev.filter((q) => q.id !== item.id));
+    if (sending) {
+      await steerFollowup(item.text);
+      return;
+    }
+    await handleSend(item.text, true);
+  }, [replaceQueue, sending, steerFollowup, handleSend]);
+
+  // submitFollowup is Enter (or the Queue/Steer button) while a turn is
+  // streaming. Default comes from followupBehavior; Ctrl/Cmd flips it.
+  const submitFollowup = useCallback(async (flip = false) => {
+    const text = input.trim();
+    if (!text || !selectedAgent || !sending) return;
+    setInput("");
+    const action = resolveFollowupAction(followupBehavior, flip);
+    if (action === "steer") {
+      await steerFollowup(text);
+      return;
+    }
+    enqueueFollowup(text);
+  }, [input, selectedAgent, sending, followupBehavior, steerFollowup, enqueueFollowup]);
+
+  const setFollowupMode = useCallback((mode: FollowupBehavior) => {
+    setFollowupBehavior(mode);
+    saveFollowupBehavior(mode);
+  }, []);
 
   const addAttachmentFiles = useCallback((list: FileList | File[] | null) => {
     if (!list) return;
@@ -2276,10 +2382,11 @@ export function ChatScreen() {
     // button. Shift+Enter still sends on desktop only.
     if (e.key === "Enter" && !e.shiftKey && !isMobile) {
       e.preventDefault();
-      // While a turn is streaming, Enter steers the running turn instead
-      // of being blocked; otherwise it's a normal send.
+      // Codex: while a turn is streaming, Enter uses the saved
+      // follow-up mode (queue by default). Ctrl/Cmd+Enter flips it
+      // for this message only (queue ↔ steer).
       if (sending) {
-        handleSteer();
+        void submitFollowup(e.metaKey || e.ctrlKey);
       } else {
         handleSend();
       }
@@ -2818,6 +2925,46 @@ export function ChatScreen() {
                 Sending messages here is disabled.
               </div>
             )}
+            {queuedFollowups.length > 0 && (
+              <div className="mb-2 rounded-xl border border-border bg-muted/30 px-3 py-2">
+                <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                  <span>排队 {queuedFollowups.length} 条 · 本轮结束后按顺序发送</span>
+                  <button
+                    type="button"
+                    className="hover:text-foreground"
+                    onClick={() => replaceQueue([])}
+                  >
+                    清空
+                  </button>
+                </div>
+                <ul className="space-y-1.5">
+                  {queuedFollowups.map((item, idx) => (
+                    <li key={item.id} className="flex items-start gap-2 text-sm">
+                      <span className="mt-0.5 w-4 shrink-0 text-[11px] text-muted-foreground">{idx + 1}.</span>
+                      <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{item.text}</span>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <button
+                          type="button"
+                          className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+                          onClick={() => void steerQueuedFollowup(item)}
+                          title={sending ? "插入当前回合" : "现在发送"}
+                        >
+                          {sending ? "插入" : "发送"}
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          onClick={() => removeQueuedFollowup(item.id)}
+                          aria-label="Remove queued message"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {slashOpen && filteredItems.length > 0 && (
               <SlashMenu
                 items={filteredItems}
@@ -2916,6 +3063,10 @@ export function ChatScreen() {
                         ? "Read-only — viewing another user's chat"
                         : isReadOnlyChannel
                           ? `Slash commands only — reply from ${channelLabel(currentChannel)}`
+                          : sending
+                            ? followupBehavior === "queue"
+                              ? "Enter 排队 · ⌘/Ctrl+Enter 插入当前回合"
+                              : "Enter 插入当前回合 · ⌘/Ctrl+Enter 排队"
                           : selectedAgent
                             ? `Message ${agentName || selectedAgent}... ("/" to pick a skill)`
                             : "Select an agent first"
@@ -2958,14 +3109,27 @@ export function ChatScreen() {
                       )}
                     </div>
                     {sending ? (
-                      <Button
-                        onClick={handleStop}
-                        size="icon"
-                        className="h-9 w-9 shrink-0 rounded-full"
-                        aria-label="Stop generating"
-                      >
-                        <Square className="h-3.5 w-3.5 fill-current" />
-                      </Button>
+                      <div className="flex items-center gap-1.5">
+                        {input.trim() ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-9 rounded-full px-3 text-xs"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => void submitFollowup(false)}
+                          >
+                            {followupBehavior === "queue" ? "排队" : "插入"}
+                          </Button>
+                        ) : null}
+                        <Button
+                          onClick={handleStop}
+                          size="icon"
+                          className="h-9 w-9 shrink-0 rounded-full"
+                          aria-label="Stop generating"
+                        >
+                          <Square className="h-3.5 w-3.5 fill-current" />
+                        </Button>
+                      </div>
                     ) : (
                       <Button
                         type="button"
@@ -3017,6 +3181,10 @@ export function ChatScreen() {
                         ? "Read-only — viewing another user's chat"
                         : isReadOnlyChannel
                           ? `Slash commands only — reply from ${channelLabel(currentChannel)}`
+                          : sending
+                            ? followupBehavior === "queue"
+                              ? "Enter 排队 · ⌘/Ctrl+Enter 插入当前回合"
+                              : "Enter 插入当前回合 · ⌘/Ctrl+Enter 排队"
                           : selectedAgent
                             ? `Message ${agentName || selectedAgent}... ("/" to pick a skill)`
                             : "Select an agent first"
@@ -3027,14 +3195,27 @@ export function ChatScreen() {
                     style={{ maxHeight: 200, minHeight: 32 }}
                   />
                   {sending ? (
-                    <Button
-                      onClick={handleStop}
-                      size="icon"
-                      className="h-10 w-10 shrink-0 rounded-lg md:h-8 md:w-8"
-                      aria-label="Stop generating"
-                    >
-                      <Square className="h-3.5 w-3.5 fill-current" />
-                    </Button>
+                    <div className="flex items-center gap-1.5">
+                      {input.trim() ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-10 rounded-lg px-2.5 text-xs md:h-8"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => void submitFollowup(false)}
+                        >
+                          {followupBehavior === "queue" ? "排队" : "插入"}
+                        </Button>
+                      ) : null}
+                      <Button
+                        onClick={handleStop}
+                        size="icon"
+                        className="h-10 w-10 shrink-0 rounded-lg md:h-8 md:w-8"
+                        aria-label="Stop generating"
+                      >
+                        <Square className="h-3.5 w-3.5 fill-current" />
+                      </Button>
+                    </div>
                   ) : (
                     <Button
                       type="button"
@@ -3051,6 +3232,26 @@ export function ChatScreen() {
                 </div>
               )}
             </div>
+            {canUseComposer && (
+              <div className="mt-1.5 flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
+                <span>回复时</span>
+                <button
+                  type="button"
+                  className={followupBehavior === "queue" ? "font-medium text-foreground" : "hover:text-foreground"}
+                  onClick={() => setFollowupMode("queue")}
+                >
+                  排队
+                </button>
+                <span>·</span>
+                <button
+                  type="button"
+                  className={followupBehavior === "steer" ? "font-medium text-foreground" : "hover:text-foreground"}
+                  onClick={() => setFollowupMode("steer")}
+                >
+                  插入
+                </button>
+              </div>
+            )}
           </div>
         </div>
         {lightboxSrc && (
