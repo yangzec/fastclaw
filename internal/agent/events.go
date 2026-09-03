@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync"
+
+	"github.com/fastclaw-ai/fastclaw/internal/provider"
 )
 
 // ChatEvent represents a real-time event emitted during the agent ReAct loop.
@@ -44,6 +47,72 @@ func ContextWithChatEvents(ctx context.Context, ch chan<- ChatEvent) context.Con
 // subscribers are skipped). The legacy channel send respects
 // ctx.Done() so the agent goroutine doesn't leak when the channel
 // consumer is gone but the agent ctx is cancelled.
+// turnUsage accumulates provider.Usage across every LLM call in one
+// HandleMessage turn (including extra completions after 插入). The
+// trailing `done` event carries the totals so the chat UI can show
+// this-turn 入→出 without another round-trip.
+type turnUsage struct {
+	mu    sync.Mutex
+	u     provider.Usage
+	calls int
+}
+
+type turnUsageKey struct{}
+
+func withTurnUsage(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(turnUsageKey{}).(*turnUsage); ok {
+		return ctx
+	}
+	return context.WithValue(ctx, turnUsageKey{}, &turnUsage{})
+}
+
+func addTurnUsage(ctx context.Context, u provider.Usage) {
+	acc, ok := ctx.Value(turnUsageKey{}).(*turnUsage)
+	if !ok || acc == nil {
+		return
+	}
+	acc.mu.Lock()
+	defer acc.mu.Unlock()
+	acc.u.InputTokens += u.InputTokens
+	acc.u.OutputTokens += u.OutputTokens
+	acc.u.CacheReadTokens += u.CacheReadTokens
+	acc.u.CacheCreationTokens += u.CacheCreationTokens
+	acc.calls++
+}
+
+func turnUsageData(ctx context.Context) map[string]any {
+	acc, ok := ctx.Value(turnUsageKey{}).(*turnUsage)
+	if !ok || acc == nil {
+		return nil
+	}
+	acc.mu.Lock()
+	defer acc.mu.Unlock()
+	if acc.calls == 0 {
+		return nil
+	}
+	if acc.u.InputTokens == 0 && acc.u.OutputTokens == 0 &&
+		acc.u.CacheReadTokens == 0 && acc.u.CacheCreationTokens == 0 {
+		return nil
+	}
+	return map[string]any{
+		"inputTokens":         acc.u.InputTokens,
+		"outputTokens":        acc.u.OutputTokens,
+		"cacheReadTokens":     acc.u.CacheReadTokens,
+		"cacheCreationTokens": acc.u.CacheCreationTokens,
+		"requestCount":        acc.calls,
+	}
+}
+
+// emitDone closes the turn SSE. When the turn burned any reported
+// tokens, they ride on data.usage so the composer can show 入→出.
+func emitDone(ctx context.Context) {
+	if usage := turnUsageData(ctx); usage != nil {
+		emitEvent(ctx, ChatEvent{Type: "done", Data: map[string]any{"usage": usage}})
+		return
+	}
+	emitEvent(ctx, ChatEvent{Type: "done"})
+}
+
 func emitEvent(ctx context.Context, evt ChatEvent) {
 	stream := streamFromContext(ctx)
 

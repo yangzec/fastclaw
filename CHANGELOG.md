@@ -39,6 +39,10 @@ action on upgrade — read those notes before deploying.
 
 ### Added
 
+- **This-turn token line in chat.** After a reply, the composer footer
+  shows a quiet `12.4k → 890` (input → output) for the turn that just
+  finished. Hover for cache tokens and extra LLM calls (e.g. after
+  插入). The `done` SSE event now carries `data.usage`.
 - **Codex-style follow-up queue.** Sending while a turn is running now
   queues by default (composer tray + TUI list) and runs after `done`,
   instead of always inserting into the current turn. Switch the

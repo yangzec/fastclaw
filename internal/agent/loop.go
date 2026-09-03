@@ -747,6 +747,7 @@ func (a *Agent) checkQuota(ctx context.Context) string {
 // durationMs is the wall-clock time of the LLM call; pass 0 when not
 // measured (the daily bucket doesn't use it, only the log table).
 func (a *Agent) meterTokens(ctx context.Context, sessionKey string, u provider.Usage, durationMs int64) {
+	addTurnUsage(ctx, u)
 	if a.meter == nil {
 		return
 	}
@@ -1815,7 +1816,7 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 	if a.provider == nil {
 		noProviderMsg := noProviderConfiguredMsg(a.model)
 		emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": noProviderMsg}})
-		emitEvent(ctx, ChatEvent{Type: "done"})
+		emitDone(ctx)
 		return noProviderMsg
 	}
 
@@ -1846,12 +1847,12 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			slog.Info("plan-mode chat canceled", "agent", a.name)
-			emitEvent(ctx, ChatEvent{Type: "done"})
+			emitDone(ctx)
 			return ""
 		}
 		slog.Error("plan-mode chat failed", "agent", a.name, "error", err)
 		emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": err.Error()}})
-		emitEvent(ctx, ChatEvent{Type: "done"})
+		emitDone(ctx)
 		return "Sorry, I couldn't draft the plan — the LLM call failed."
 	}
 	a.meterTokens(ctx, sess.Key(), resp.Usage, 0)
@@ -1869,7 +1870,7 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 		"content":  resp.Content,
 		"metadata": planMeta,
 	}})
-	emitEvent(ctx, ChatEvent{Type: "done"})
+	emitDone(ctx)
 	return resp.Content
 }
 
@@ -2282,7 +2283,8 @@ func (a *Agent) runToolsWithProgress(ctx context.Context, toolCalls []provider.T
 
 // HandleMessage processes an inbound message through the ReAct loop.
 func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) string {
-	// Check for slash commands first. Empty reply means "handled but
+	ctx = withTurnUsage(ctx)
+	// Check for slash commands first. Empty reply means "handled but"
 	// intentionally silent" — /goal foo and /goal resume both fall
 	// through to a streaming continuation that IS the response, so
 	// emitting a separate content event would just clutter the chat
@@ -2300,7 +2302,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		if result.continuationQueued {
 			emitEvent(ctx, ChatEvent{Type: "turn_pending"})
 		} else {
-			emitEvent(ctx, ChatEvent{Type: "done"})
+			emitDone(ctx)
 		}
 		return result.reply
 	}
@@ -2310,7 +2312,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// the main ReAct loop so no LLM tokens are burned.
 	if rejection := a.checkQuota(ctx); rejection != "" {
 		emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{"content": rejection}})
-		emitEvent(ctx, ChatEvent{Type: "done"})
+		emitDone(ctx)
 		return rejection
 	}
 
@@ -2514,7 +2516,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			slog.Error("agent has no provider configured", "agent", a.name, "model", a.model)
 			noProviderMsg := noProviderConfiguredMsg(a.model)
 			emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": noProviderMsg}})
-			emitEvent(ctx, ChatEvent{Type: "done"})
+			emitDone(ctx)
 			return noProviderMsg
 		}
 		// After enough consecutive rounds where every tool came back
@@ -2566,7 +2568,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			// arrive after the UI has already rendered "(Stopped)".
 			if errors.Is(err, context.Canceled) {
 				slog.Info("LLM chat canceled", "agent", a.name)
-				emitEvent(ctx, ChatEvent{Type: "done"})
+				emitDone(ctx)
 				return ""
 			}
 			if !overflowRetried && isContextOverflowError(err) {
@@ -2584,7 +2586,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			slog.Error("LLM chat failed after retries", "agent", a.name, "error", err)
 			fallback := buildFallbackReply(err, replyParts, streakState.lastFailedTool, streakState.lastFailureText)
 			emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": err.Error()}})
-			emitEvent(ctx, ChatEvent{Type: "done"})
+			emitDone(ctx)
 			return fallback
 		}
 		a.meterTokens(ctx, sess.Key(), resp.Usage, 0)
@@ -2594,7 +2596,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			if strings.TrimSpace(resp.Content) == "" {
 				emptyMsg := "model returned an empty response"
 				emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": emptyMsg}})
-				emitEvent(ctx, ChatEvent{Type: "done"})
+				emitDone(ctx)
 				return emptyMsg
 			}
 			asst := provider.Message{Role: "assistant", Content: resp.Content, Thinking: resp.Thinking, Metadata: knowledgeMeta, Timestamp: time.Now().UnixMilli(), RawAssistant: resp.RawAssistant}
@@ -2633,7 +2635,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				messages = a.appendSteer(ctx, sess, messages, steer)
 				continue
 			}
-			emitEvent(ctx, ChatEvent{Type: "done"})
+			emitDone(ctx)
 			a.runPostTurn(ctx, msg, messages, totalToolCalls, chatterMem)
 			return joinReplyParts(replyParts)
 		}
@@ -2911,7 +2913,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	if finalContent != "" {
 		replyParts = append(replyParts, finalContent)
 	}
-	emitEvent(ctx, ChatEvent{Type: "done"})
+	emitDone(ctx)
 	a.runPostTurn(ctx, msg, messages, totalToolCalls, chatterMem)
 	return joinReplyParts(replyParts)
 }

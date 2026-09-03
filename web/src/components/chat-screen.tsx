@@ -18,6 +18,14 @@ import {
   type FollowupBehavior,
   type QueuedFollowup,
 } from "@/lib/followup";
+import {
+  formatTurnUsageHint,
+  formatTurnUsageLine,
+  loadLastTurnUsage,
+  parseTurnUsage,
+  saveLastTurnUsage,
+  type TurnUsage,
+} from "@/lib/turn-usage";
 import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, Folder, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal, ExternalLink, MoreHorizontal, PanelLeftClose, PanelLeftOpen, BookOpen, Upload } from "lucide-react";
 import Link from "next/link";
 import { ChatMarkdown } from "@/components/chat-markdown";
@@ -606,6 +614,7 @@ export function ChatScreen() {
   // boundary. Persisted so the composer matches last session's choice.
   const [followupBehavior, setFollowupBehavior] = useState<FollowupBehavior>(loadFollowupBehavior);
   const [queuedFollowups, setQueuedFollowups] = useState<QueuedFollowup[]>([]);
+  const [lastTurnUsage, setLastTurnUsage] = useState<TurnUsage | null>(null);
   // todo.md state for the current session — agent maintains the file,
   // we re-fetch on every write_file/edit_file event that touches
   // todo.md plus once at mount. Empty `items` hides the panel.
@@ -1139,6 +1148,11 @@ export function ChatScreen() {
           }
           case "done": {
             claim();
+            const usage = parseTurnUsage(data.data);
+            if (usage) {
+              setLastTurnUsage(usage);
+              saveLastTurnUsage(selectedAgent, sessionId, usage);
+            }
             // Defensive clear — content events should already have
             // sealed the streaming bubble, but a turn that errors out
             // before the trailing `content` event lands would leave
@@ -1445,6 +1459,7 @@ export function ChatScreen() {
     // Same for the subagent progress indicator — never carry it across
     // sessions; a fresh load means no in-flight delegate_task to track.
     setSubagentProgress(null);
+    setLastTurnUsage(loadLastTurnUsage(selectedAgent, sessionId));
     // Refresh todo.md alongside the history fetch. We don't gate the
     // rest of the load on it — a 404 (no todo.md yet) is the normal
     // empty-session case.
@@ -1998,6 +2013,16 @@ export function ChatScreen() {
             // running turn server-side. Render it as a user bubble
             // (reconciled against the optimistic pendingSteer bubble).
             applySteerEvent(evt.data?.content || "", turnAgent, turnSessionId);
+            break;
+          }
+          case "done": {
+            const usage = parseTurnUsage(evt.data);
+            if (usage) {
+              if (sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+                setLastTurnUsage(usage);
+              }
+              saveLastTurnUsage(turnAgent, turnSessionId, usage);
+            }
             break;
           }
           case "error": {
@@ -3250,6 +3275,14 @@ export function ChatScreen() {
                 >
                   插入
                 </button>
+                {lastTurnUsage && (
+                  <span
+                    className="ml-auto font-mono tabular-nums"
+                    title={formatTurnUsageHint(lastTurnUsage)}
+                  >
+                    {formatTurnUsageLine(lastTurnUsage)}
+                  </span>
+                )}
               </div>
             )}
           </div>
