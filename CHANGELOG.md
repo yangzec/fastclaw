@@ -5,6 +5,20 @@ action on upgrade — read those notes before deploying.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Chat replies no longer leak literal ` ``` `.** Models often open
+  a fence and never close it, wrap the whole answer in ` ```markdown `,
+  or glue ` ``` ` onto the next sentence. The previous repair broke
+  those markers with a zero-width space, so Streamdown stopped
+  swallowing the bubble — but the backticks still rendered. The
+  repair now unwraps a whole-message prose fence and *strips*
+  stray openers / mid-line fences when the body looks like chat
+  prose. Real language fences (` ```js `) and plain log dumps stay.
+  WeCom's classic markdown does not render fences or GFM tables, so
+  outbound WeCom text now drops fence markers and flattens tables
+  the same way other IM channels already do.
+
 ### Changed
 
 - **Guests cannot inventory an agent's config.** Non-owner chatters

@@ -13,6 +13,20 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func TestWecomSanitizeMarkdown(t *testing.T) {
+	in := "```markdown\n# 结论\n\n| 项 | 值 |\n|---|---|\n| agent | `agt_1` |\n```\n"
+	got := wecomSanitizeMarkdown(in)
+	if strings.Contains(got, "```") {
+		t.Fatalf("fence leaked: %q", got)
+	}
+	if strings.Contains(got, "|---|") {
+		t.Fatalf("table separator leaked: %q", got)
+	}
+	if !strings.Contains(got, "# 结论") || !strings.Contains(got, "agent: `agt_1`") {
+		t.Fatalf("lost rendered content: %q", got)
+	}
+}
+
 func TestWeComOfficialSubscribeFrame(t *testing.T) {
 	raw, err := wecomFrameJSON(wecomCmdSubscribe, "req-1", wecomSubscribeBody("botA", "secB"))
 	if err != nil {

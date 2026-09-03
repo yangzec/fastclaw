@@ -26,7 +26,7 @@ const SplitMessageMarker = "<|split|>"
 // FlattenMarkdownTables converts every GFM-style table block in `text`
 // into a flat, no-syntax form that IM channels actually render. None of
 // the IM platforms we support (Discord, Telegram, LINE, Slack, Feishu,
-// WeChat) render markdown tables — they ship them as raw `|cell|cell|`
+// WeChat, WeCom) render markdown tables — they ship them as raw `|cell|cell|`
 // rows with a `|---|---|` separator line right in the middle, which
 // looks like a malfunction to the chatter.
 //
@@ -39,13 +39,13 @@ const SplitMessageMarker = "<|split|>"
 //
 // Output shape:
 //
-//   2-column tables  → "header1: header2" line, then one
-//                      "cell1: cell2" line per row. This is the most
-//                      common shape LLMs emit (label / value lists)
-//                      and reads cleanly as plain text.
-//   3+ column tables → cells joined with " · " (middle dot) per row,
-//                      no separator. Loses alignment but stays on one
-//                      line per row and scans as tabular at a glance.
+//	2-column tables  → "header1: header2" line, then one
+//	                   "cell1: cell2" line per row. This is the most
+//	                   common shape LLMs emit (label / value lists)
+//	                   and reads cleanly as plain text.
+//	3+ column tables → cells joined with " · " (middle dot) per row,
+//	                   no separator. Loses alignment but stays on one
+//	                   line per row and scans as tabular at a glance.
 //
 // Cells are trimmed; the GFM escape `\|` round-trips back to a literal
 // `|` inside a cell. The separator row is dropped in every shape.
@@ -203,6 +203,81 @@ func renderFlatTable(rows [][]string) string {
 		b.WriteString(strings.Join(padded, " · "))
 	}
 	return b.String()
+}
+
+// StripMarkdownFences removes CommonMark fence marker lines (``` / ~~~)
+// and splits mid-line fence runs into a newline. Used by channels whose
+// markdown subset does not render fenced code blocks — those clients
+// otherwise show the backticks as literal text. Inner code is kept.
+func StripMarkdownFences(text string) string {
+	if text == "" || (!strings.Contains(text, "```") && !strings.Contains(text, "~~~")) {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if isFenceMarkerLine(line) {
+			continue
+		}
+		out = append(out, splitMidlineFences(line))
+	}
+	return collapseBlankLines(strings.Join(out, "\n"))
+}
+
+func isFenceMarkerLine(line string) bool {
+	indent := 0
+	for indent < len(line) && indent < 3 && (line[indent] == ' ' || line[indent] == '\t') {
+		indent++
+	}
+	rest := line[indent:]
+	return fencePrefixLen(rest) >= 3
+}
+
+func fencePrefixLen(s string) int {
+	if s == "" {
+		return 0
+	}
+	ch := s[0]
+	if ch != '`' && ch != '~' {
+		return 0
+	}
+	n := 0
+	for n < len(s) && s[n] == ch {
+		n++
+	}
+	return n
+}
+
+func splitMidlineFences(line string) string {
+	if !strings.Contains(line, "```") && !strings.Contains(line, "~~~") {
+		return line
+	}
+	var b strings.Builder
+	i := 0
+	for i < len(line) {
+		n := 0
+		if line[i] == '`' || line[i] == '~' {
+			ch := line[i]
+			for i+n < len(line) && line[i+n] == ch {
+				n++
+			}
+		}
+		if n >= 3 {
+			b.WriteByte('\n')
+			i += n
+			continue
+		}
+		b.WriteByte(line[i])
+		i++
+	}
+	return b.String()
+}
+
+func collapseBlankLines(text string) string {
+	for strings.Contains(text, "\n\n\n") {
+		text = strings.ReplaceAll(text, "\n\n\n", "\n\n")
+	}
+	return text
 }
 
 // SplitOutboundText splits a reply payload on SplitMessageMarker into
