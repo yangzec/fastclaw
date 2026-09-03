@@ -355,11 +355,8 @@ func runGateway(port int) error {
 			"templateDir", os.Getenv("FASTCLAW_SHIPANY_TEMPLATE_DIR"))
 	}
 
-	bindMode := gwCfg.Bind
-	if bindMode == "" {
-		bindMode = "loopback"
-	}
-	slog.Info("gateway starting", "port", port, "bind", bindMode)
+	bindMode := config.NormalizeBind(gwCfg.Bind)
+	slog.Info("gateway starting", "port", port, "bind", bindMode, "addr", config.ListenAddr(bindMode, port))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -371,6 +368,11 @@ func runGateway(port int) error {
 
 	url := fmt.Sprintf("http://localhost:%d", port)
 	slog.Info("web UI available", "url", url)
+	if bindMode == config.BindAll {
+		for _, u := range config.LANHTTPURLs(port) {
+			slog.Info("web UI LAN", "url", u)
+		}
+	}
 	// Auto-open the browser when this looks like a fresh install.
 	if n, _ := countUsersSafe(gw); n == 0 {
 		go openBrowser(url)

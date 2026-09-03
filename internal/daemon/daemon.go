@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/fastclaw-ai/fastclaw/internal/config"
 )
 
 // Paths returns the daemon directory paths under ~/.fastclaw.
@@ -120,7 +122,10 @@ func Start(port int) error {
 	lf.Close()
 
 	fmt.Printf("Daemon started (PID %d)\n", cmd.Process.Pid)
-	fmt.Printf("Web:  http://127.0.0.1:%d\n", port)
+	fmt.Printf("Web:  http://localhost:%d\n", port)
+	for _, u := range config.LANHTTPURLs(port) {
+		fmt.Printf("      %s\n", u)
+	}
 	fmt.Printf("Logs: %s\n", logFile)
 	return nil
 }
