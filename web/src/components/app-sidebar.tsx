@@ -129,6 +129,14 @@ const AGENT_NAV = (
       url: `${base}/`,
       icon: PlusIcon,
       active: onNewChatRoute && !hasSession,
+      // ChatScreen stays mounted across sidebar nav, so a second click
+      // on New chat (already on /chat/) does not change the URL. The
+      // event still puts the caret in the composer.
+      onClick: () => {
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new Event("fastclaw:focus-composer"));
+        }
+      },
     },
   ];
 };

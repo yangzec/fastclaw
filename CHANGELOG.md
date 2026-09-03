@@ -7,6 +7,10 @@ action on upgrade — read those notes before deploying.
 
 ### Added
 
+- **Composer autofocus on new and switched chats.** Opening a new
+  conversation or switching sessions (including project chats) puts
+  the caret in the message box. A second click on New chat does the
+  same even when the URL is already the empty-chat route.
 - **Configurable inherit scope for MCP, plugins, and skills.**
   Catalog items are no longer attached to every agent by default.
   MCP, plugins, and skills all use `inherit: "all" | "none"`
