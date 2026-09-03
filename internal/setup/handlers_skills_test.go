@@ -132,6 +132,71 @@ func TestListAgentSkillsIncludesInheritedGlobal(t *testing.T) {
 	}
 }
 
+func TestListAgentSkillsStaysCatalogOnlyUntilInheritAll(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, admin, _ := newAuthTestServer(t, ctx)
+	home := t.TempDir()
+	t.Setenv("FASTCLAW_HOME", home)
+
+	agentID := "agt_skill_optin"
+	if err := s.dataStore.SaveAgent(ctx, &store.AgentRecord{
+		ID: agentID, UserID: admin.ID, Name: "Opt-in Bot",
+	}); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+	root := filepath.Join(home, "skills", "reviewer")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "---\nname: reviewer\ndescription: review code\n---\n# reviewer\n"
+	if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	list := func() []string {
+		t.Helper()
+		req := authTestRequest(t, ctx, resolver, http.MethodGet, "/api/agents/"+agentID+"/skills", admin.ID)
+		req.SetPathValue("id", agentID)
+		rr := httptest.NewRecorder()
+		s.authMiddleware(s.handleListAgentSkills)(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("list status = %d body = %s", rr.Code, rr.Body.String())
+		}
+		var got []struct {
+			Name   string `json:"name"`
+			Source string `json:"source"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v body = %s", err, rr.Body.String())
+		}
+		names := make([]string, 0, len(got))
+		for _, e := range got {
+			names = append(names, e.Name+":"+e.Source)
+		}
+		return names
+	}
+
+	if names := list(); len(names) != 0 {
+		t.Fatalf("default must not inherit global skill, got %v", names)
+	}
+
+	post := httptest.NewRecorder()
+	s.authMiddleware(s.handleUpdateConfig)(post, configTestRequest(t, ctx, resolver, http.MethodPost, "/api/config", admin.ID, map[string]any{
+		"skills": map[string]any{
+			"entries": map[string]any{
+				"reviewer": map[string]any{"enabled": true, "inherit": "all"},
+			},
+		},
+	}))
+	if post.Code != http.StatusOK {
+		t.Fatalf("POST /api/config status = %d body = %s", post.Code, post.Body.String())
+	}
+
+	if names := list(); len(names) != 1 || names[0] != "reviewer:inherited" {
+		t.Fatalf("after inherit=all want reviewer:inherited, got %v", names)
+	}
+}
+
 func TestMergeAgentSkillList(t *testing.T) {
 	out := mergeAgentSkillList(
 		[]map[string]any{{"name": "local", "description": "a"}},
