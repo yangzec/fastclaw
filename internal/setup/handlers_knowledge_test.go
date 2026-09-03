@@ -123,6 +123,139 @@ func TestKnowledgeUploadSearchDeleteEndToEnd(t *testing.T) {
 	}
 }
 
+func TestSanitizeKnowledgeFilenameKeepsUnicode(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"faq.md", "faq.md"},
+		{"产品说明.md", "产品说明.md"},
+		{"产品说明（最终版）.md", "产品说明（最终版）.md"},
+		{"日本語テスト.txt", "日本語テスト.txt"},
+		{"한글메모.log", "한글메모.log"},
+		{"notes 退款政策.md", "notes 退款政策.md"},
+		{"hello/../etc.md", "etc.md"},
+		{"../../../etc/passwd.md", "passwd.md"},
+		{"bad:name?.md", "badname.md"},
+		{".", ""},
+		{"..", ""},
+		{"   ", ""},
+	}
+	for _, tc := range cases {
+		if got := sanitizeKnowledgeFilename(tc.in); got != tc.want {
+			t.Errorf("sanitizeKnowledgeFilename(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	longStem := strings.Repeat("中", 200)
+	got := sanitizeKnowledgeFilename(longStem + ".md")
+	if !strings.HasSuffix(got, ".md") {
+		t.Fatalf("truncated name lost extension: %q", got)
+	}
+	if n := len([]rune(got)); n > maxKnowledgeFilenameRunes {
+		t.Fatalf("truncated name has %d runes, want <= %d", n, maxKnowledgeFilenameRunes)
+	}
+}
+
+func TestKnowledgeUploadPreservesChineseFilename(t *testing.T) {
+	ctx := context.Background()
+	s, resolver, _, owner := newAuthTestServer(t, ctx)
+
+	const agentID = "agt_kb_cjk"
+	now := time.Now().UTC()
+	if err := s.dataStore.SaveAgent(ctx, &store.AgentRecord{
+		ID: agentID, UserID: owner.ID, Name: "kb cjk",
+		Config: map[string]any{}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("save agent: %v", err)
+	}
+
+	do := func(handler http.HandlerFunc, req *http.Request, pathValues map[string]string) *httptest.ResponseRecorder {
+		t.Helper()
+		cookie, err := resolver.IssueSession(ctx, owner.ID)
+		if err != nil {
+			t.Fatalf("IssueSession: %v", err)
+		}
+		req.AddCookie(cookie)
+		for k, v := range pathValues {
+			req.SetPathValue(k, v)
+		}
+		rr := httptest.NewRecorder()
+		s.authMiddleware(handler)(rr, req)
+		return rr
+	}
+	upload := func(filename string, content []byte) *httptest.ResponseRecorder {
+		t.Helper()
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		fw, err := mw.CreateFormFile("file", filename)
+		if err != nil {
+			t.Fatalf("CreateFormFile: %v", err)
+		}
+		if _, err := fw.Write(content); err != nil {
+			t.Fatalf("write form file: %v", err)
+		}
+		mw.Close()
+		req := httptest.NewRequest(http.MethodPost, "/api/agents/"+agentID+"/knowledge-files", &buf)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		return do(s.handleUploadAgentKnowledgeFile, req, map[string]string{"id": agentID})
+	}
+
+	content := []byte("# 产品说明\n\n支持中文文件名与检索。")
+	rr := upload("产品说明.md", content)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("upload = %d: %s", rr.Code, rr.Body.String())
+	}
+	var uploadResp struct {
+		OK   bool `json:"ok"`
+		File struct {
+			Name       string `json:"name"`
+			StoredName string `json:"storedName"`
+		} `json:"file"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &uploadResp); err != nil {
+		t.Fatalf("parse upload: %v", err)
+	}
+	if !uploadResp.OK || uploadResp.File.Name != "产品说明.md" {
+		t.Fatalf("upload resp = %+v, want display name 产品说明.md", uploadResp)
+	}
+	if !strings.HasSuffix(uploadResp.File.StoredName, "-产品说明.md") {
+		t.Fatalf("storedName = %q, want hash prefix + 产品说明.md", uploadResp.File.StoredName)
+	}
+
+	rr = do(s.handleListAgentKnowledgeFiles,
+		httptest.NewRequest(http.MethodGet, "/api/agents/"+agentID+"/knowledge-files", nil),
+		map[string]string{"id": agentID})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list = %d: %s", rr.Code, rr.Body.String())
+	}
+	var listResp struct {
+		Files []struct {
+			Name       string `json:"name"`
+			StoredName string `json:"storedName"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &listResp); err != nil {
+		t.Fatalf("parse list: %v", err)
+	}
+	if len(listResp.Files) != 1 || listResp.Files[0].Name != "产品说明.md" {
+		t.Fatalf("list = %+v, want 产品说明.md", listResp.Files)
+	}
+
+	rr = do(s.handleGetAgentKnowledgeFile,
+		httptest.NewRequest(http.MethodGet, "/api/agents/"+agentID+"/knowledge-files/"+listResp.Files[0].StoredName, nil),
+		map[string]string{"id": agentID, "name": listResp.Files[0].StoredName})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get = %d: %s", rr.Code, rr.Body.String())
+	}
+
+	rr = do(s.handleDeleteAgentKnowledgeFile,
+		httptest.NewRequest(http.MethodDelete, "/api/agents/"+agentID+"/knowledge-files/"+listResp.Files[0].StoredName, nil),
+		map[string]string{"id": agentID, "name": listResp.Files[0].StoredName})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete = %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestKnowledgeFileHashStable(t *testing.T) {
 	h1 := knowledgeFileHash([]byte("same content"))
 	h2 := knowledgeFileHash([]byte("same content"))
