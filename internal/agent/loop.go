@@ -1044,6 +1044,37 @@ func (a *Agent) Sessions() *session.Manager {
 // WebChatTurnActive reports whether HandleMessage is currently running
 // for this session. A page reload uses this so in-progress tool calls
 // stay "running" instead of being painted as stopped.
+// WebChatContext is the composer meter: working-set tokens (what the
+// next LLM call will send), the configured context window, and the
+// compact threshold. sessionId empty → tokens=0 without minting a row.
+func (a *Agent) WebChatContext(sessionId, chatterUID string) map[string]any {
+	tokens := 0
+	msgCount := 0
+	if a != nil && a.sessions != nil && sessionId != "" {
+		resolved := a.sessions.ResolveSessionKey(sessionId)
+		if resolved != "" && a.sessions.SessionExists(resolved) {
+			msgs := a.sessions.GetByKey(resolved).GetMessages()
+			tokens = EstimateTokens(msgs)
+			msgCount = len(msgs)
+		}
+	}
+	window := 0
+	threshold := 0
+	model := ""
+	if a != nil {
+		model = a.model
+		window = a.effectiveContextWindow(chatterUID)
+		threshold = a.compactTokenThreshold(chatterUID)
+	}
+	return map[string]any{
+		"model":         model,
+		"contextWindow": window,
+		"tokens":        tokens,
+		"threshold":     threshold,
+		"messageCount":  msgCount,
+	}
+}
+
 func (a *Agent) WebChatTurnActive(sessionId string) bool {
 	if a == nil || a.sessions == nil {
 		return false

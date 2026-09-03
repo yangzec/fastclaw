@@ -929,6 +929,40 @@ export async function getChatHistoryWithCursor(agentId: string, sessionId: strin
   return { history, latestEventSeq, turnActive: data?.turnActive === true };
 }
 
+export interface ChatContextUsage {
+  model: string;
+  contextWindow: number;
+  tokens: number;
+  threshold: number;
+  messageCount: number;
+}
+
+export async function getChatContext(
+  agentId: string,
+  sessionId?: string,
+): Promise<ChatContextUsage> {
+  const empty: ChatContextUsage = {
+    model: "",
+    contextWindow: 0,
+    tokens: 0,
+    threshold: 0,
+    messageCount: 0,
+  };
+  if (!agentId) return empty;
+  const params = new URLSearchParams({ agentId });
+  if (sessionId) params.set("sessionId", sessionId);
+  const res = await apiFetch(`/api/chat/context?${params}`);
+  if (!res.ok) return empty;
+  const data = await res.json().catch(() => empty);
+  return {
+    model: typeof data?.model === "string" ? data.model : "",
+    contextWindow: Number(data?.contextWindow) || 0,
+    tokens: Number(data?.tokens) || 0,
+    threshold: Number(data?.threshold) || 0,
+    messageCount: Number(data?.messageCount) || 0,
+  };
+}
+
 export interface ChatSessionEntry {
   id: string;
   // channel/accountId/chatId let the sidebar render a per-channel icon

@@ -100,6 +100,31 @@ func TestCompactThresholdAgentScopeBeatsStaleCatalog(t *testing.T) {
 	}
 }
 
+func TestWebChatContextReportsWorkingSet(t *testing.T) {
+	ag := compactTestAgent(t, nil)
+	empty := ag.WebChatContext("", "user-a")
+	if empty["tokens"] != 0 {
+		t.Fatalf("empty session tokens = %v, want 0", empty["tokens"])
+	}
+	if empty["contextWindow"] != 8000 {
+		t.Fatalf("window = %v, want 8000", empty["contextWindow"])
+	}
+	if empty["model"] != "openai/tiny" {
+		t.Fatalf("model = %v, want openai/tiny", empty["model"])
+	}
+
+	sess := ag.sessions.Get("web", "", "s-ctx", "")
+	blob := strings.Repeat("n", 400) // 100 tokens at chars/4
+	sess.Append(provider.Message{Role: "user", Content: blob, Origin: provider.OriginUser})
+	got := ag.WebChatContext("s-ctx", "user-a")
+	if got["tokens"] != 100 {
+		t.Fatalf("tokens = %v, want 100", got["tokens"])
+	}
+	if got["messageCount"] != 1 {
+		t.Fatalf("messageCount = %v, want 1", got["messageCount"])
+	}
+}
+
 func compactTestAgent(t *testing.T, prov provider.Provider) *Agent {
 	t.Helper()
 	return &Agent{

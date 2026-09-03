@@ -21,6 +21,8 @@ import {
 import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, Folder, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal, ExternalLink, MoreHorizontal, PanelLeftClose, PanelLeftOpen, BookOpen, Upload } from "lucide-react";
 import Link from "next/link";
 import { ChatMarkdown } from "@/components/chat-markdown";
+import { ComposerContextMeter } from "@/components/composer-context-meter";
+import { ComposerModelPicker } from "@/components/composer-model-picker";
 import { applyToolCallEvent, applyToolResultEvent } from "@/lib/resume-tool-events";
 
 // Split a string on `![alt](data:image/...;base64,...)` markdown.
@@ -583,6 +585,8 @@ export function ChatScreen() {
   // panel showed stale history under the new URL.
   const selectedAgent = useAgentIdFromURL();
   const [agentName, setAgentName] = useState<string>("");
+  const [agentRole, setAgentRole] = useState<"owner" | "viewer" | "">("");
+  const [composerRev, setComposerRev] = useState(0);
   // Resolved metadata for `urlProjectId`, surfaced as the
   // empty-state info card on /agents/<aid>/project/<pid>. Null until
   // the fetch lands; the card hides while loading rather than
@@ -809,6 +813,7 @@ export function ChatScreen() {
     setSessions([]);
     setSessionTitle("");
     setAgentName("");
+    setAgentRole("");
     setAttachments([]);
     setSending(false);
     setQueuedFollowups([]);
@@ -867,9 +872,13 @@ export function ChatScreen() {
       .then((a) => {
         if (aborted) return;
         setAgentName(a?.name || a?.id || selectedAgent);
+        setAgentRole(a?.role === "viewer" ? "viewer" : a ? "owner" : "");
       })
       .catch(() => {
-        if (!aborted) setAgentName(selectedAgent);
+        if (!aborted) {
+          setAgentName(selectedAgent);
+          setAgentRole("");
+        }
       });
     return () => {
       aborted = true;
@@ -3108,45 +3117,54 @@ export function ChatScreen() {
                         </div>
                       )}
                     </div>
-                    {sending ? (
-                      <div className="flex items-center gap-1.5">
-                        {input.trim() ? (
+                    <div className="flex items-center gap-1.5">
+                      {selectedAgent ? (
+                        <ComposerModelPicker
+                          agentId={selectedAgent}
+                          canSwitch={agentRole === "owner" && !isActAsView}
+                          onChanged={() => setComposerRev((n) => n + 1)}
+                        />
+                      ) : null}
+                      {sending ? (
+                        <>
+                          {input.trim() ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="h-9 rounded-full px-3 text-xs"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => void submitFollowup(false)}
+                            >
+                              {followupBehavior === "queue" ? "排队" : "插入"}
+                            </Button>
+                          ) : null}
                           <Button
-                            type="button"
-                            variant="outline"
-                            className="h-9 rounded-full px-3 text-xs"
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => void submitFollowup(false)}
+                            onClick={handleStop}
+                            size="icon"
+                            className="h-9 w-9 shrink-0 rounded-full"
+                            aria-label="Stop generating"
                           >
-                            {followupBehavior === "queue" ? "排队" : "插入"}
+                            <Square className="h-3.5 w-3.5 fill-current" />
                           </Button>
-                        ) : null}
+                        </>
+                      ) : (
                         <Button
-                          onClick={handleStop}
+                          type="button"
+                          // Keep the textarea focused, but send on click — not
+                          // mousedown. Send immediately swaps this slot to Stop;
+                          // a mousedown send lets the leftover click hit Stop
+                          // and abort the turn as "(Stopped)".
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => handleSend()}
+                          disabled={(!input.trim() && attachments.length === 0) || !canSendComposer}
                           size="icon"
                           className="h-9 w-9 shrink-0 rounded-full"
-                          aria-label="Stop generating"
+                          aria-label="Send message"
                         >
-                          <Square className="h-3.5 w-3.5 fill-current" />
+                          <Send className="h-4 w-4" />
                         </Button>
-                      </div>
-                    ) : (
-                      <Button
-                        type="button"
-                        // Keep the textarea focused, but send on click — not
-                        // mousedown. Send immediately swaps this slot to Stop;
-                        // a mousedown send lets the leftover click hit Stop
-                        // and abort the turn as "(Stopped)".
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => handleSend()}
-                        disabled={(!input.trim() && attachments.length === 0) || !canSendComposer}
-                        size="icon"
-                        className="h-9 w-9 shrink-0 rounded-full"
-                        aria-label="Send message"
-                      >
-                        <Send className="h-4 w-4" />
-                      </Button>
-                    )}
+                      )}
+                    </div>
                   </div>
                 </>
               ) : (
@@ -3194,62 +3212,86 @@ export function ChatScreen() {
                     className="flex-1 resize-none bg-transparent text-base leading-8 placeholder:text-muted-foreground/50 outline-none disabled:opacity-50 md:text-[15px]"
                     style={{ maxHeight: 200, minHeight: 32 }}
                   />
-                  {sending ? (
-                    <div className="flex items-center gap-1.5">
-                      {input.trim() ? (
+                  <div className="flex items-center gap-1">
+                    {selectedAgent ? (
+                      <ComposerModelPicker
+                        agentId={selectedAgent}
+                        canSwitch={agentRole === "owner" && !isActAsView}
+                        compact
+                        onChanged={() => setComposerRev((n) => n + 1)}
+                      />
+                    ) : null}
+                    {sending ? (
+                      <>
+                        {input.trim() ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-10 rounded-lg px-2.5 text-xs md:h-8"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => void submitFollowup(false)}
+                          >
+                            {followupBehavior === "queue" ? "排队" : "插入"}
+                          </Button>
+                        ) : null}
                         <Button
-                          type="button"
-                          variant="outline"
-                          className="h-10 rounded-lg px-2.5 text-xs md:h-8"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => void submitFollowup(false)}
+                          onClick={handleStop}
+                          size="icon"
+                          className="h-10 w-10 shrink-0 rounded-lg md:h-8 md:w-8"
+                          aria-label="Stop generating"
                         >
-                          {followupBehavior === "queue" ? "排队" : "插入"}
+                          <Square className="h-3.5 w-3.5 fill-current" />
                         </Button>
-                      ) : null}
+                      </>
+                    ) : (
                       <Button
-                        onClick={handleStop}
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => handleSend()}
+                        disabled={(!input.trim() && attachments.length === 0) || !canSendComposer}
                         size="icon"
                         className="h-10 w-10 shrink-0 rounded-lg md:h-8 md:w-8"
-                        aria-label="Stop generating"
+                        aria-label="Send message"
                       >
-                        <Square className="h-3.5 w-3.5 fill-current" />
+                        <Send className="h-4 w-4" />
                       </Button>
-                    </div>
-                  ) : (
-                    <Button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => handleSend()}
-                      disabled={(!input.trim() && attachments.length === 0) || !canSendComposer}
-                      size="icon"
-                      className="h-10 w-10 shrink-0 rounded-lg md:h-8 md:w-8"
-                      aria-label="Send message"
-                    >
-                      <Send className="h-4 w-4" />
-                    </Button>
-                  )}
+                    )}
+                  </div>
                 </div>
               )}
             </div>
-            {canUseComposer && (
-              <div className="mt-1.5 flex items-center gap-2 px-1 text-[11px] text-muted-foreground">
-                <span>回复时</span>
-                <button
-                  type="button"
-                  className={followupBehavior === "queue" ? "font-medium text-foreground" : "hover:text-foreground"}
-                  onClick={() => setFollowupMode("queue")}
-                >
-                  排队
-                </button>
-                <span>·</span>
-                <button
-                  type="button"
-                  className={followupBehavior === "steer" ? "font-medium text-foreground" : "hover:text-foreground"}
-                  onClick={() => setFollowupMode("steer")}
-                >
-                  插入
-                </button>
+            {(selectedAgent || canUseComposer) && (
+              <div className="mt-1.5 flex items-center justify-between gap-3 px-1 text-[11px] text-muted-foreground">
+                {selectedAgent ? (
+                  <ComposerContextMeter
+                    agentId={selectedAgent}
+                    sessionId={sessionId}
+                    draftText={input}
+                    refreshKey={`${sessionId}:${messages.length}:${sending ? 1 : 0}:${composerRev}`}
+                  />
+                ) : (
+                  <span />
+                )}
+                {canUseComposer ? (
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span>回复时</span>
+                    <button
+                      type="button"
+                      className={followupBehavior === "queue" ? "font-medium text-foreground" : "hover:text-foreground"}
+                      onClick={() => setFollowupMode("queue")}
+                    >
+                      排队
+                    </button>
+                    <span>·</span>
+                    <button
+                      type="button"
+                      className={followupBehavior === "steer" ? "font-medium text-foreground" : "hover:text-foreground"}
+                      onClick={() => setFollowupMode("steer")}
+                    >
+                      插入
+                    </button>
+                  </div>
+                ) : null}
               </div>
             )}
           </div>

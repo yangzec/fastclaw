@@ -37,6 +37,9 @@ type AgentHandle interface {
 	// normal send).
 	SteerWeb(sessionId, projectIDHint, text string) bool
 	WebChatHistory(sessionId string) []map[string]any
+	// WebChatContext is the composer usage meter: working-set tokens,
+	// configured window, and compact threshold.
+	WebChatContext(sessionId, chatterUID string) map[string]any
 	// WebChatTurnActive is true while HandleMessage is running for
 	// this session. The history endpoint uses it so a page reload
 	// can keep in-progress tools spinning instead of marking them
@@ -275,6 +278,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("POST /api/chat/stop", auth(s.handleChatStop))
 	mux.HandleFunc("GET /api/chats", auth(s.handleChats))
 	mux.HandleFunc("GET /api/chat/history", auth(s.handleChatHistory))
+	mux.HandleFunc("GET /api/chat/context", auth(s.handleChatContext))
 	mux.HandleFunc("GET /api/chat/todo", auth(s.handleChatTodo))
 	mux.HandleFunc("GET /api/chat/sessions", auth(s.handleChatSessions))
 	mux.HandleFunc("PUT /api/chat/sessions/{key}", auth(s.handleRenameSession))

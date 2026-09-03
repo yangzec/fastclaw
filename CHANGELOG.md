@@ -39,6 +39,11 @@ action on upgrade — read those notes before deploying.
 
 ### Added
 
+- **Composer context meter and model switcher.** The chat input shows
+  working-set tokens vs the model's context window (same estimate
+  compaction uses), and a model button next to Send lists configured
+  provider models. Switching writes the agent's model; viewers see
+  the name only.
 - **Codex-style follow-up queue.** Sending while a turn is running now
   queues by default (composer tray + TUI list) and runs after `done`,
   instead of always inserting into the current turn. Switch the
