@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -32,6 +33,8 @@ export function ModelLimitsFields({
   const outSelected = maxTokens > 0 ? maxTokens : rec.maxTokens;
   const onDefaults =
     ctxSelected === rec.contextWindow && outSelected === rec.maxTokens;
+  const [open, setOpen] = useState(!onDefaults);
+  const expanded = open || !onDefaults;
   const ctxOptions = contextWindowOptionsFor(modelId);
   const outOptions = maxTokenOptionsFor(modelId);
   const tip = modelLimitsTip(modelId);
@@ -39,6 +42,7 @@ export function ModelLimitsFields({
   const applyRecommended = () => {
     onContextWindowChange(rec.contextWindow);
     onMaxTokensChange(rec.maxTokens);
+    setOpen(false);
   };
 
   return (
@@ -61,7 +65,17 @@ export function ModelLimitsFields({
             </>
           )}
         </p>
-        {!onDefaults ? (
+        {onDefaults ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-6 px-1.5 text-[11px] text-muted-foreground"
+            onClick={() => setOpen((v) => !v)}
+          >
+            {open ? "收起" : "调整"}
+          </Button>
+        ) : (
           <Button
             type="button"
             variant="ghost"
@@ -71,54 +85,58 @@ export function ModelLimitsFields({
           >
             套用推荐
           </Button>
-        ) : null}
+        )}
       </div>
 
-      <div className="space-y-1.5">
-        <Label className="text-xs">Context window</Label>
-        <LimitOptionChips
-          options={ctxOptions}
-          selected={ctxSelected}
-          onChange={onContextWindowChange}
-        />
-        {!ctxOptions.some((o) => o.value === ctxSelected) && contextWindow > 0 ? (
-          <Input
-            type="number"
-            min={1}
-            value={contextWindow}
-            onChange={(e) => {
-              const raw = e.target.value.trim();
-              onContextWindowChange(raw === "" ? 0 : Number(raw) || 0);
-            }}
-            className="font-mono text-xs h-8 max-w-40"
-          />
-        ) : null}
-      </div>
+      {expanded ? (
+        <>
+          <div className="space-y-1.5">
+            <Label className="text-xs">上下文</Label>
+            <LimitOptionChips
+              options={ctxOptions}
+              selected={ctxSelected}
+              onChange={onContextWindowChange}
+            />
+            {!ctxOptions.some((o) => o.value === ctxSelected) && contextWindow > 0 ? (
+              <Input
+                type="number"
+                min={1}
+                value={contextWindow}
+                onChange={(e) => {
+                  const raw = e.target.value.trim();
+                  onContextWindowChange(raw === "" ? 0 : Number(raw) || 0);
+                }}
+                className="font-mono text-xs h-8 max-w-40"
+              />
+            ) : null}
+          </div>
 
-      <div className="space-y-1.5">
-        <Label className="text-xs">Max output</Label>
-        <LimitOptionChips
-          options={outOptions}
-          selected={outSelected}
-          onChange={onMaxTokensChange}
-        />
-        {!outOptions.some((o) => o.value === outSelected) && maxTokens > 0 ? (
-          <Input
-            type="number"
-            min={1}
-            value={maxTokens}
-            onChange={(e) => {
-              const raw = e.target.value.trim();
-              onMaxTokensChange(raw === "" ? 0 : Number(raw) || 0);
-            }}
-            className="font-mono text-xs h-8 max-w-40"
-          />
-        ) : null}
-      </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">最大输出</Label>
+            <LimitOptionChips
+              options={outOptions}
+              selected={outSelected}
+              onChange={onMaxTokensChange}
+            />
+            {!outOptions.some((o) => o.value === outSelected) && maxTokens > 0 ? (
+              <Input
+                type="number"
+                min={1}
+                value={maxTokens}
+                onChange={(e) => {
+                  const raw = e.target.value.trim();
+                  onMaxTokensChange(raw === "" ? 0 : Number(raw) || 0);
+                }}
+                className="font-mono text-xs h-8 max-w-40"
+              />
+            ) : null}
+          </div>
+        </>
+      ) : null}
 
       <p className="text-[11px] leading-relaxed text-muted-foreground">
         <span className="font-medium text-foreground/75">{tip.headline}</span>
-        <span className="mt-0.5 block">{tip.body}</span>
+        {expanded ? <span className="mt-0.5 block">{tip.body}</span> : null}
       </p>
     </div>
   );
