@@ -47,6 +47,9 @@ test("contextWindowOptionsFor marks suggested and 5.5 legacy 400k", () => {
   const kimi = contextWindowOptionsFor("kimi-k3");
   assert.ok(kimi.some((o) => o.value === 1_048_576 && o.tag === "suggested"));
   assert.equal(kimi.some((o) => o.value === 1_050_000), false);
+  const qwen = contextWindowOptionsFor("qwen3.5:35b-a3b-int4");
+  assert.equal(qwen.filter((o) => o.label === "256k").length, 1);
+  assert.equal(qwen.find((o) => o.label === "256k")?.tag, "suggested");
 });
 
 test("contextWindowTip calls out 5.5 vs 5.6", () => {

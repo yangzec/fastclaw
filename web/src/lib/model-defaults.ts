@@ -120,8 +120,15 @@ export function contextWindowOptionsFor(modelId: string): LimitOption[] {
   const official = presetContextWindow(modelId);
   const values = new Set<number>(CONTEXT_WINDOW_OPTIONS.map((o) => o.value));
   if (official > 0) values.add(official);
-  // Kimi's 1,048,576 and GPT's 1,050,000 both read as 1.05M — keep one chip.
-  if (values.has(1_048_576)) values.delete(1_050_000);
+  // Same display label (Kimi 1,048,576 vs 1.05M, Qwen 262,144 vs 256k).
+  if (official > 0) {
+    const officialLabel = compactLimitLabel(official);
+    for (const value of [...values]) {
+      if (value !== official && compactLimitLabel(value) === officialLabel) {
+        values.delete(value);
+      }
+    }
+  }
   const family = modelLimitFamily(modelId);
   return [...values]
     .sort((a, b) => a - b)
