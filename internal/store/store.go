@@ -296,6 +296,17 @@ type Store interface {
 	UpdateGoal(ctx context.Context, g *GoalRecord) error
 	DeleteGoal(ctx context.Context, goalID string) error
 
+	// --- SSH hosts (per-user saved connections) ---
+	//
+	// Named remote targets the owner saved so the agent can ssh_exec
+	// without seeing a password or private key. SecretEnc is the
+	// encrypted credential blob; API handlers must never serialize it.
+	ListSSHHosts(ctx context.Context, userID string) ([]SSHHostRecord, error)
+	GetSSHHost(ctx context.Context, id string) (*SSHHostRecord, error)
+	GetSSHHostByName(ctx context.Context, userID, name string) (*SSHHostRecord, error)
+	SaveSSHHost(ctx context.Context, h *SSHHostRecord) error
+	DeleteSSHHost(ctx context.Context, id string) error
+
 	Close() error
 }
 
@@ -303,6 +314,35 @@ type Store interface {
 // (agent_id, session_key) UNIQUE constraint trips. Callers translate
 // this to a user-visible "clear the existing goal first" error.
 var ErrGoalAlreadyExists = errors.New("goal already exists for this session")
+
+// SSH auth types stored on SSHHostRecord.AuthType.
+const (
+	SSHAuthKey      = "key"
+	SSHAuthPassword = "password"
+)
+
+// ErrSSHHostNameTaken is returned when SaveSSHHost would collide on
+// the per-user unique name.
+var ErrSSHHostNameTaken = errors.New("ssh host name already exists")
+
+// SSHHostRecord is one saved SSH connection owned by a FastClaw user.
+// SecretEnc and HostKey stay off the public JSON surface; handlers
+// return a sanitized view with hasSecret / hasHostKey flags.
+type SSHHostRecord struct {
+	ID         string    `json:"id"`
+	UserID     string    `json:"userId"`
+	Name       string    `json:"name"`
+	Host       string    `json:"host"`
+	Port       int       `json:"port"`
+	Username   string    `json:"username"`
+	AuthType   string    `json:"authType"`
+	SecretEnc  string    `json:"-"`
+	HostKey    string    `json:"-"`
+	DefaultCWD string    `json:"defaultCwd,omitempty"`
+	Enabled    bool      `json:"enabled"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+}
 
 // UserRecord is one row of the users table.
 //

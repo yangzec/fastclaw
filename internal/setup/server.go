@@ -429,6 +429,13 @@ func (s *Server) Run(ctx context.Context) error {
 	// Tasks
 	mux.HandleFunc("GET /api/tasks", admin(s.handleListTasks))
 
+	// Saved SSH hosts (per-user address book for ssh_exec).
+	mux.HandleFunc("GET /api/ssh-hosts", auth(s.handleListSSHHosts))
+	mux.HandleFunc("POST /api/ssh-hosts", auth(s.handleCreateSSHHost))
+	mux.HandleFunc("PUT /api/ssh-hosts/{id}", auth(s.handleUpdateSSHHost))
+	mux.HandleFunc("DELETE /api/ssh-hosts/{id}", auth(s.handleDeleteSSHHost))
+	mux.HandleFunc("POST /api/ssh-hosts/{id}/test", auth(s.handleTestSSHHost))
+
 	// Apikeys (per-user, with agent multi-select).
 	mux.HandleFunc("GET /api/apikeys", auth(s.handleListAPIKeys))
 	mux.HandleFunc("POST /api/apikeys", auth(s.handleCreateAPIKey))

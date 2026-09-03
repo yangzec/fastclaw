@@ -841,7 +841,7 @@ func (d *DBStore) migrateCronJobsAddUserID(ctx context.Context) error {
 // migrateCronJobsAddChatterID retrofits chatter_id onto cron_jobs so a
 // job created by one chatter of a public agent is invisible to the
 // others (the list_cron_jobs tool filters on it). Legacy rows default to
-// '' — they predate per-chatter attribution, so they're treated as
+// ” — they predate per-chatter attribution, so they're treated as
 // owner/system-owned and only surface in the owner's web dashboard / CLI
 // (the agent tool layer hides empty-chatter rows from any chatter). A
 // partial index keeps the lookup cheap and legacy rows out of it.
@@ -1990,6 +1990,29 @@ func (d *DBStore) migrationSQL() []string {
 			UNIQUE (type, account_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_channels_user ON channels (user_id, agent_id)`,
+		// ssh_hosts is the owner's saved SSH address book. The agent
+		// calls ssh_exec with the alias (name); FastClaw injects the
+		// encrypted credential so passwords and private keys never
+		// enter the chat. UNIQUE(user_id, name) keeps aliases stable
+		// per account. secret_enc is an opaque ciphertext blob from
+		// internal/sshhosts — never returned by the HTTP API.
+		`CREATE TABLE IF NOT EXISTS ssh_hosts (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			host TEXT NOT NULL,
+			port INTEGER NOT NULL DEFAULT 22,
+			username TEXT NOT NULL,
+			auth_type TEXT NOT NULL,
+			secret_enc TEXT NOT NULL DEFAULT '',
+			host_key TEXT NOT NULL DEFAULT '',
+			default_cwd TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE (user_id, name)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_ssh_hosts_user ON ssh_hosts (user_id)`,
 	}
 }
 
@@ -2177,7 +2200,7 @@ func (d *DBStore) DeleteUser(ctx context.Context, id string) error {
 		return err
 	}
 	// Per-user state that's not agent-scoped (agent_files is now agent-only).
-	for _, t := range []string{"web_sessions", "apikeys", "sessions", "session_messages", "session_events"} {
+	for _, t := range []string{"web_sessions", "apikeys", "sessions", "session_messages", "session_events", "ssh_hosts"} {
 		if _, err := tx.ExecContext(ctx,
 			fmt.Sprintf("DELETE FROM %s WHERE user_id = %s", t, d.ph(1)), id); err != nil {
 			return err
