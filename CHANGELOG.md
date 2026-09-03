@@ -48,9 +48,9 @@ action on upgrade — read those notes before deploying.
   model row applies a recommended pair automatically (banner:
   「推荐已套用」). GPT-5.6 = 1.05M / 64k, GPT-5.5 = 1.05M / 32k,
   GLM = 1M / 64k, Kimi = 1.05M / 131k, Grok = 500k / 32k. Chips
-  stay available; 「套用推荐」 restores the pair. Old 200k / 8k
-  rows pick up the new defaults when you open the dialog. `gpt-5.6-luna`
-  context default is 1.05M.
+  stay collapsed until 「调整」; 「套用推荐」 restores the pair.
+  Old 200k / 8k rows pick up the new defaults when you open the
+  dialog. `gpt-5.6-luna` context default is 1.05M.
 - **Codex-style follow-up queue.** Sending while a turn is running now
   queues by default (composer tray + TUI list) and runs after `done`,
   instead of always inserting into the current turn. Switch the

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -35,6 +35,10 @@ export function ModelLimitsFields({
     ctxSelected === rec.contextWindow && outSelected === rec.maxTokens;
   const [open, setOpen] = useState(!onDefaults);
   const expanded = open || !onDefaults;
+
+  useEffect(() => {
+    setOpen(false);
+  }, [modelId]);
   const ctxOptions = contextWindowOptionsFor(modelId);
   const outOptions = maxTokenOptionsFor(modelId);
   const tip = modelLimitsTip(modelId);
@@ -46,7 +50,13 @@ export function ModelLimitsFields({
   };
 
   return (
-    <div className="space-y-3 rounded-lg border border-border/70 bg-muted/20 p-3">
+    <div
+      className={
+        expanded
+          ? "space-y-3 rounded-lg border border-border/70 bg-muted/20 p-3"
+          : "rounded-lg border border-border/70 bg-muted/20 px-3 py-2"
+      }
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-foreground/80">
           {onDefaults ? (
@@ -134,10 +144,12 @@ export function ModelLimitsFields({
         </>
       ) : null}
 
-      <p className="text-[11px] leading-relaxed text-muted-foreground">
-        <span className="font-medium text-foreground/75">{tip.headline}</span>
-        {expanded ? <span className="mt-0.5 block">{tip.body}</span> : null}
-      </p>
+      {expanded ? (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          <span className="font-medium text-foreground/75">{tip.headline}</span>
+          <span className="mt-0.5 block">{tip.body}</span>
+        </p>
+      ) : null}
     </div>
   );
 }
