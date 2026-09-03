@@ -109,6 +109,12 @@ action on upgrade — read those notes before deploying.
 
 ### Fixed
 
+- **`make build` works with pnpm 11.** Overrides live in
+  `web/pnpm-workspace.yaml` so `pnpm install --frozen-lockfile` no
+  longer fails with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`. The same
+  pins stay in `package.json` for pnpm 9/10. Native install scripts
+  for `sharp` / `msw` / `unrs-resolver` are allowed so pnpm 11 does
+  not abort on `ERR_PNPM_IGNORED_BUILDS`.
 - **Follow-up Stop is per conversation.** Stopping chat B no longer
   prevents chat A's queued follow-ups from sending when A's turn
   finishes. Coming back to an idle chat whose turn ended while you
