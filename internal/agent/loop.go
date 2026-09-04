@@ -468,10 +468,11 @@ func NewAgentWithSkillsCfg(rc config.ResolvedAgent, prov provider.Provider, mb *
 
 		for _, td := range mcpMgr.ToolDefs() {
 			toolName := td.Name
-			ag.registry.Register(toolName, td.Description, td.InputSchema,
+			ag.registry.RegisterFrom(toolName, td.Description, td.InputSchema,
 				func(ctx context.Context, args json.RawMessage) (string, error) {
 					return mcpMgr.CallTool(ctx, toolName, args)
 				},
+				tools.SourceMCP,
 			)
 		}
 
@@ -1038,6 +1039,37 @@ func (a *Agent) RegisterTTSChain(chain *toolproviders.Chain) {
 // Sessions returns the session manager for this agent.
 func (a *Agent) Sessions() *session.Manager {
 	return a.sessions
+}
+
+// WebChatContext is the composer meter: working-set tokens (what the
+// next LLM call will send), the configured context window, and the
+// compact threshold. sessionId empty → tokens=0 without minting a row.
+func (a *Agent) WebChatContext(sessionId, chatterUID string) map[string]any {
+	tokens := 0
+	msgCount := 0
+	if a != nil && a.sessions != nil && sessionId != "" {
+		resolved := a.sessions.ResolveSessionKey(sessionId)
+		if resolved != "" && a.sessions.SessionExists(resolved) {
+			msgs := a.sessions.GetByKey(resolved).GetMessages()
+			tokens = EstimateTokens(msgs)
+			msgCount = len(msgs)
+		}
+	}
+	window := 0
+	threshold := 0
+	model := ""
+	if a != nil {
+		model = a.model
+		window = a.effectiveContextWindow(chatterUID)
+		threshold = a.compactTokenThreshold(chatterUID)
+	}
+	return map[string]any{
+		"model":         model,
+		"contextWindow": window,
+		"tokens":        tokens,
+		"threshold":     threshold,
+		"messageCount":  msgCount,
+	}
 }
 
 // WebChatTurnActive reports whether HandleMessage is currently running
@@ -1783,6 +1815,7 @@ func buildToolCatalogForPlan(toolDefs []provider.Tool) string {
 // against the full session including this plan.
 func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) string {
 	chatterUID := a.chatterUserID(msg)
+	a.applyLiveMaxTokens(chatterUID)
 	ctx = sandbox.WithUserID(ctx, chatterUID)
 	ctx = store.WithChatterUserID(ctx, chatterUID)
 	ctx = store.WithChannel(ctx, msg.Channel)
@@ -1818,7 +1851,7 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 		return noProviderMsg
 	}
 
-	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, a.memory.WithUserID(chatterUID), a.isTrustedTurn(msg))
+	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, a.memory.WithUserID(chatterUID), a.turnAccessFor(msg))
 	knowledgeMeta := knowledgeMetadata(extractKnowledgeCitationSources(systemPrompt))
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 	// Tool catalog injection: plan mode passes tools=nil to the LLM so
@@ -2357,6 +2390,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	slog.Info("turn: refreshing skills",
 		"agent", a.name, "channel", msg.Channel, "chat_id", msg.ChatID, "user", chatterUID)
 	a.refreshSkillsFromStore(chatterUID)
+	a.applyLiveMaxTokens(chatterUID)
 	sess := a.sessions.Get(sessionTriple(msg, msg.ProjectID))
 	// Bind chatter onto sess. Session.ctx() builds its own
 	// context.Background-rooted ctx for store calls, so the
@@ -2373,11 +2407,10 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// wired) the executor used by exec/read_file/list_dir is tied to a
 	// session-private container.
 	a.bindSession(ctx, msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
-	// Flag whether this turn's chatter is the agent owner / channel
-	// admin. File tools use this to refuse identity-file reads from
-	// regular chatters (SOUL/IDENTITY/BOOTSTRAP/... leak as verbatim
-	// chat replies otherwise).
-	a.registry.SetCallerIsAdmin(a.isTrustedTurn(msg))
+	// Split per-turn privileges: agent-admin (persona / provisioning)
+	// vs host (exec on the gateway). Owning the agent is not a host
+	// grant — see Agent.chatterCanHost.
+	a.applyTurnAccess(msg)
 	// Plumb the persistent session_key for goal-scoped tools.
 	// SetSessionID above uses msg.ChatID (the channel-level chat
 	// identifier); goal tools need the durable session.Session.SessionKey
@@ -2418,7 +2451,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: BeforeSystemPrompt, UserID: a.ownerUserID})
 
 	chatterMem := a.memory.WithUserID(chatterUID)
-	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem, a.isTrustedTurn(msg))
+	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem, a.turnAccessFor(msg))
 	knowledgeMeta := knowledgeMetadata(extractKnowledgeCitationSources(systemPrompt))
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 
@@ -3280,6 +3313,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	slog.Info("turn: refreshing skills",
 		"agent", a.name, "channel", msg.Channel, "chat_id", msg.ChatID, "user", chatterUID)
 	a.refreshSkillsFromStore(chatterUID)
+	a.applyLiveMaxTokens(chatterUID)
 	sess := a.sessions.Get(sessionTriple(msg, msg.ProjectID))
 	// Bind chatter onto sess so its ctx() embeds WithChatterUserID
 	// for DBStore session writes — Session.ctx() rebuilds ctx from its
@@ -3290,7 +3324,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		sess.SetProviderModel(prov, mdl)
 	}
 	a.bindSession(ctx, msg.Channel, msg.AccountID, msg.ChatID, msg.ProjectID)
-	a.registry.SetCallerIsAdmin(a.isTrustedTurn(msg))
+	a.applyTurnAccess(msg)
 	a.registry.SetGoalSessionKey(sess.SessionKey())
 	// Per-user file writes (USER.md / MEMORY.md) need to land in the
 	// per-turn chatter's row, not the UserSpace owner — see
@@ -3309,7 +3343,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: BeforeSystemPrompt, UserID: a.ownerUserID})
 	chatterMem := a.memory.WithUserID(chatterUID)
-	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem, a.isTrustedTurn(msg))
+	systemPrompt := a.ctxBuilder.BuildSystemPromptAs(chatterUID, chatterMem, a.turnAccessFor(msg))
 	knowledgeMeta := knowledgeMetadata(extractKnowledgeCitationSources(systemPrompt))
 	a.logSystemPromptFingerprint(msg.Channel, msg.ChatID, chatterUID, systemPrompt)
 	a.hooks.Run(ctx, &HookContext{AgentName: a.name, Point: AfterSystemPrompt, UserID: a.ownerUserID})
@@ -3960,7 +3994,29 @@ func copyProviders(src map[string]config.ProviderConfig) map[string]config.Provi
 }
 
 func (a *Agent) compactTokenThreshold(chatterUID string) int {
-	return CompactThreshold(lookupContextWindow(a.liveProviders(chatterUID), a.model), a.maxTokens)
+	return CompactThreshold(lookupContextWindow(a.liveProviders(chatterUID), a.model), a.effectiveMaxTokens(chatterUID))
+}
+
+func (a *Agent) effectiveMaxTokens(chatterUID string) int {
+	if n := lookupMaxTokens(a.liveProviders(chatterUID), a.model); n > 0 {
+		return n
+	}
+	if a != nil && a.maxTokens > 0 {
+		return a.maxTokens
+	}
+	return 8192
+}
+
+// applyLiveMaxTokens refreshes the request completion budget from the
+// Models catalog so a maxTokens save applies on the next message
+// without waiting for UserSpace eviction.
+func (a *Agent) applyLiveMaxTokens(chatterUID string) {
+	if a == nil {
+		return
+	}
+	if n := a.effectiveMaxTokens(chatterUID); n > 0 {
+		a.maxTokens = n
+	}
 }
 
 func (a *Agent) effectiveContextWindow(chatterUID string) int {

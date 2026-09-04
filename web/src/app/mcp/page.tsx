@@ -66,16 +66,16 @@ export default function GlobalMCPPage() {
     setServers(next);
   };
 
-  const handleSaveEntry = async (entry: MCPEntry) => {
-    const { name, ...cfg } = entry;
-    if (editEntry && editEntry.name !== name) {
-      const next = { ...servers };
+  const handleSaveEntries = async (entries: MCPEntry[]) => {
+    const next = { ...servers };
+    if (editEntry && entries.length === 1 && editEntry.name !== entries[0].name) {
       delete next[editEntry.name];
-      next[name] = cfg;
-      await saveServers(next);
-    } else {
-      await saveServers({ ...servers, [name]: cfg });
     }
+    for (const entry of entries) {
+      const { name, ...cfg } = entry;
+      next[name] = cfg;
+    }
+    await saveServers(next);
     setEditOpen(false);
     setEditEntry(null);
   };
@@ -106,9 +106,14 @@ export default function GlobalMCPPage() {
     }
   };
 
+  const openAdd = () => {
+    setEditEntry(null);
+    setEditOpen(true);
+  };
+
   if (loading) {
     return (
-      <div className="p-6 space-y-6 max-w-5xl mx-auto">
+      <div className="mx-auto max-w-5xl space-y-6 p-4 sm:p-6">
         <Skeleton className="h-10 w-48" />
         <Skeleton className="h-48 w-full" />
       </div>
@@ -119,7 +124,7 @@ export default function GlobalMCPPage() {
   const hasStdio = entries.some(([, cfg]) => cfg.type === "stdio");
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl mx-auto">
+    <div className="mx-auto max-w-5xl space-y-6 p-4 sm:p-6">
       {isHosted && hasStdio && (
         <div className="flex items-start gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-3 text-sm">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-yellow-500" />
@@ -130,22 +135,16 @@ export default function GlobalMCPPage() {
           </div>
         </div>
       )}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">MCP Servers</h2>
           <p className="text-sm text-muted-foreground mt-1">
             {isAdmin
-              ? "Platform catalog. Share with agents attaches a server to every tenant. Off keeps it catalog-only — other tenants never see the definition or its secrets."
-              : "Your catalog. Share with agents attaches a server to your agents only. Off keeps it here until an agent adds it itself."}
+              ? "Platform catalog. Add opens a dialog — paste mcp.json, save, and servers become cards. Share with agents attaches a card to every tenant. Off keeps it catalog-only."
+              : "Your catalog. Add opens a dialog — paste mcp.json, save, and servers become cards. Share with agents attaches a card to your agents. Off keeps it here until an agent adds it itself."}
           </p>
         </div>
-        <Button
-          size="sm"
-          onClick={() => {
-            setEditEntry(null);
-            setEditOpen(true);
-          }}
-        >
+        <Button size="sm" onClick={openAdd}>
           <Plus className="w-4 h-4 mr-1" /> Add Server
         </Button>
       </div>
@@ -153,10 +152,15 @@ export default function GlobalMCPPage() {
       {entries.length === 0 ? (
         <div className="rounded-lg border border-dashed p-12 text-center text-muted-foreground">
           <Server className="w-10 h-10 mx-auto mb-3 opacity-40" />
-          <p>No global MCP servers configured.</p>
+          <p>No MCP servers in this catalog.</p>
           <p className="text-xs mt-1">
-            New servers stay catalog-only until you turn on Share with agents.
+            Add a server and paste a Cursor-style mcp.json. After save
+            it shows as a card. New ones stay catalog-only until you
+            turn on Share with agents.
           </p>
+          <Button size="sm" className="mt-4" onClick={openAdd}>
+            <Plus className="w-4 h-4 mr-1" /> Add Server
+          </Button>
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -232,7 +236,7 @@ export default function GlobalMCPPage() {
         initial={editEntry}
         existingNames={Object.keys(servers)}
         showInherit
-        onSave={handleSaveEntry}
+        onSave={handleSaveEntries}
       />
 
       <AlertDialog
@@ -245,7 +249,7 @@ export default function GlobalMCPPage() {
             <AlertDialogDescription>
               Remove <strong>{deleteTarget}</strong> from this catalog?
               Agents that inherited it will lose its tools unless they
-              have their own overlay.
+              have their own copy.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

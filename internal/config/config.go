@@ -72,6 +72,26 @@ type MCPServerConfig struct {
 	Inherit string `json:"inherit,omitempty"`
 }
 
+// ResolvedTransport maps a stored MCP entry onto the two transports
+// the manager understands. Cursor / Claude Desktop snippets often omit
+// `type` or use sse / streamable-http — url means http, command means
+// stdio.
+func (c MCPServerConfig) ResolvedTransport() string {
+	switch strings.ToLower(strings.TrimSpace(c.Type)) {
+	case "http", "sse", "streamable-http", "streamable_http":
+		return "http"
+	case "stdio", "command":
+		return "stdio"
+	}
+	if strings.TrimSpace(c.URL) != "" {
+		return "http"
+	}
+	if strings.TrimSpace(c.Command) != "" {
+		return "stdio"
+	}
+	return c.Type
+}
+
 // InheritNone / InheritAll are the persistable inherit values.
 const (
 	InheritNone = "none"
@@ -367,7 +387,11 @@ type ModelEntry struct {
 	// UI; official preset sizes are defaults only. 0 means "unset" —
 	// compaction then falls back to KnownContextWindow, then 200000.
 	ContextWindow int `json:"contextWindow"`
-	MaxTokens     int `json:"maxTokens"`
+	// MaxTokens is the completion budget sent as max_tokens /
+	// max_completion_tokens. Operators set it on the Models page;
+	// official preset sizes are defaults only. 0 means "unset" —
+	// the agent loop then falls back to KnownMaxTokens, then 8192.
+	MaxTokens int `json:"maxTokens"`
 }
 
 // ProviderConfig holds API credentials for an LLM provider — used both as

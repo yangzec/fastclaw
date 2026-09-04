@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Save, Check, Loader2, RotateCcw } from "lucide-react";
@@ -33,9 +33,36 @@ const CUSTOMIZE_FILES = [
 //   - "fs":      legacy filesystem default. Kept for back-compat.
 //   - "default": neither caller nor owner row exists; tab is empty.
 type FileSource = "db" | "owner" | "fs" | "default";
-type FileState = { content: string; source: FileSource; baseContent?: string };
+type FileState = {
+  content: string;
+  savedContent: string;
+  source: FileSource;
+  baseContent?: string;
+};
 
-export default function AgentCustomizePage() {
+function isDirty(f?: FileState): boolean {
+  return !!f && f.content !== f.savedContent;
+}
+
+function fileStateFromResponse(data: {
+  content?: string;
+  source?: string;
+  baseContent?: string;
+}): FileState {
+  const content = data.content || "";
+  return {
+    content,
+    savedContent: content,
+    source: (data.source || "default") as FileSource,
+    baseContent: data.baseContent,
+  };
+}
+
+export default function AgentCustomizePage({
+  onDirtyChange,
+}: {
+  onDirtyChange?: (dirty: boolean) => void;
+} = {}) {
   const agentId = useAgentIdFromURL();
   const agentName = useAgentName(agentId);
   const [activeTab, setActiveTab] = useState("SOUL.md");
@@ -43,6 +70,7 @@ export default function AgentCustomizePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const loadAll = async () => {
     const entries = await Promise.all(
@@ -51,17 +79,10 @@ export default function AgentCustomizePage() {
           const res = await apiFetch(`/api/agents/${agentId}/system-files/${f.name}`);
           if (res.ok) {
             const data = await res.json();
-            return [
-              f.name,
-              {
-                content: data.content || "",
-                source: (data.source || "default") as FileSource,
-                baseContent: data.baseContent,
-              },
-            ] as [string, FileState];
+            return [f.name, fileStateFromResponse(data)] as [string, FileState];
           }
         } catch {}
-        return [f.name, { content: "", source: "default" as FileSource }] as [string, FileState];
+        return [f.name, fileStateFromResponse({})] as [string, FileState];
       })
     );
     setFiles(Object.fromEntries(entries));
@@ -73,20 +94,64 @@ export default function AgentCustomizePage() {
   }, [agentId]);
 
   const active = files[activeTab];
+  const filesRef = useRef(files);
+  filesRef.current = files;
+  const dirtyNames = CUSTOMIZE_FILES.map((f) => f.name).filter((n) => isDirty(files[n]));
+
+  useEffect(() => {
+    onDirtyChange?.(dirtyNames.length > 0);
+  }, [dirtyNames.length, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   const handleSave = async () => {
+    const snapshot = filesRef.current;
+    const dirty = CUSTOMIZE_FILES.map((f) => f.name).filter((n) => isDirty(snapshot[n]));
+    const toWrite = dirty.length > 0 ? dirty : [activeTab];
+    const payloads: Record<string, string> = {};
+    for (const name of toWrite) payloads[name] = snapshot[name]?.content ?? "";
     setSaving(true);
-    try {
-      await apiFetch(`/api/agents/${agentId}/system-files/${activeTab}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: active?.content || "" }),
+    setError(null);
+    const succeeded: string[] = [];
+    const failures: string[] = [];
+    await Promise.all(
+      toWrite.map(async (name) => {
+        const label = CUSTOMIZE_FILES.find((f) => f.name === name)?.label || name;
+        try {
+          const res = await apiFetch(`/api/agents/${agentId}/system-files/${name}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: payloads[name] }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data?.ok === false) {
+            failures.push(`${label}: ${data?.error || `save failed (${res.status})`}`);
+            return;
+          }
+          succeeded.push(name);
+        } catch (e) {
+          failures.push(`${label}: ${e instanceof Error ? e.message : "save failed"}`);
+        }
+      }),
+    );
+    // Mark written tabs clean locally. A follow-up GET can 404/fail
+    // after invalidateUser and would blank Bootstrap on screen even
+    // though the PUT landed — that looked like "some files vanished".
+    if (succeeded.length > 0) {
+      setFiles((prev) => {
+        const next = { ...prev };
+        for (const name of succeeded) {
+          if (!next[name]) continue;
+          next[name] = { ...next[name], savedContent: payloads[name] };
+        }
+        return next;
       });
+    }
+    if (failures.length > 0) {
+      setError(failures.join(" · "));
+    } else {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-      // Reload so source/baseContent stay accurate after save.
-      loadAll();
-    } catch {}
+    }
     setSaving(false);
   };
 
@@ -139,7 +204,8 @@ export default function AgentCustomizePage() {
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Customize</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            Personality, memory, and behavior files for <strong>{agentName}</strong>
+            Personality, memory, and behavior files for <strong>{agentName}</strong>.
+            Save writes every tab you edited, not only the one on screen.
           </p>
         </div>
         <div className="flex gap-2">
@@ -167,6 +233,8 @@ export default function AgentCustomizePage() {
               <><Check className="h-4 w-4 mr-2" /> Saved</>
             ) : saving ? (
               <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Saving...</>
+            ) : dirtyNames.length > 1 ? (
+              <><Save className="h-4 w-4 mr-2" /> Save {dirtyNames.length} files</>
             ) : (
               <><Save className="h-4 w-4 mr-2" /> Save</>
             )}
@@ -187,9 +255,11 @@ export default function AgentCustomizePage() {
             }`}
           >
             {f.label}
-            {files[f.name]?.source === "db" && (
+            {isDirty(files[f.name]) ? (
+              <span className="size-1.5 rounded-full bg-orange-500" title="Unsaved" />
+            ) : files[f.name]?.source === "db" ? (
               <span className="size-1.5 rounded-full bg-amber-500" />
-            )}
+            ) : null}
           </button>
         ))}
       </div>
@@ -197,6 +267,10 @@ export default function AgentCustomizePage() {
       {/* Active-tab status line — only shows when there's something
           actionable to say (override active / loaded from repo). The
           "default" case (empty + no repo base) is silent. */}
+      {error && (
+        <p className="mb-2 text-sm text-destructive">{error}</p>
+      )}
+
       {(active?.source === "db" || active?.source === "fs") && (
         <div className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
           {sourceBadge(active?.source)}
@@ -212,10 +286,14 @@ export default function AgentCustomizePage() {
       {/* Editor */}
       <textarea
         value={active?.content || ""}
+        readOnly={saving}
         onChange={(e) =>
           setFiles((prev) => ({
             ...prev,
-            [activeTab]: { ...(prev[activeTab] || { source: "default" }), content: e.target.value },
+            [activeTab]: {
+              ...(prev[activeTab] || { source: "default", savedContent: "" }),
+              content: e.target.value,
+            },
           }))
         }
         spellCheck={false}

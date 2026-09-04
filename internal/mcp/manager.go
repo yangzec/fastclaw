@@ -36,7 +36,7 @@ func NewManager(servers map[string]config.MCPServerConfig) *Manager {
 			continue
 		}
 		var client Client
-		switch cfg.Type {
+		switch cfg.ResolvedTransport() {
 		case "http":
 			client = NewHTTPClient(cfg.URL, cfg.Headers)
 		case "stdio":

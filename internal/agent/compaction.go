@@ -135,6 +135,47 @@ func lookupContextWindow(providers map[string]config.ProviderConfig, model strin
 	return config.KnownContextWindow(model)
 }
 
+// lookupMaxTokens finds the current model's completion budget in the
+// agent's provider catalog. Same resolution as lookupContextWindow.
+// 0 means not configured.
+func lookupMaxTokens(providers map[string]config.ProviderConfig, model string) int {
+	if model == "" {
+		return 0
+	}
+	provKey, modelID := provider.SplitProviderModel(model)
+	if provKey != "" {
+		if pc, ok := providers[provKey]; ok {
+			if n := modelMaxTokens(pc.Models, modelID); n > 0 {
+				return n
+			}
+		}
+	}
+	for _, pc := range providers {
+		if n := modelMaxTokens(pc.Models, modelID); n > 0 {
+			return n
+		}
+		if modelID != model {
+			if n := modelMaxTokens(pc.Models, model); n > 0 {
+				return n
+			}
+		}
+	}
+	// Unlike contextWindow, an unset maxTokens must not jump to the
+	// official capability (often 128k). That number is a form
+	// prefill; the request budget stays agents.defaults (8192)
+	// until the operator saves a value on the Models page.
+	return 0
+}
+
+func modelMaxTokens(models []config.ModelEntry, id string) int {
+	for _, m := range models {
+		if m.ID == id && m.MaxTokens > 0 {
+			return m.MaxTokens
+		}
+	}
+	return 0
+}
+
 func modelContextWindow(models []config.ModelEntry, id string) int {
 	for _, m := range models {
 		if m.ID == id && m.ContextWindow > 0 {

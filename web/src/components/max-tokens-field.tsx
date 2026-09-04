@@ -5,12 +5,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { LimitOptionChips } from "@/components/limit-option-chips";
 import {
-  contextWindowOptionsFor,
-  contextWindowTip,
-  presetContextWindow,
+  maxOutputTip,
+  maxTokenOptionsFor,
+  presetMaxTokens,
 } from "@/lib/model-defaults";
 
-export function ContextWindowField({
+export function MaxTokensField({
   modelId,
   value,
   onChange,
@@ -23,18 +23,18 @@ export function ContextWindowField({
   id?: string;
   className?: string;
 }) {
-  const fallback = presetContextWindow(modelId);
-  const options = contextWindowOptionsFor(modelId);
+  const fallback = presetMaxTokens(modelId);
+  const options = maxTokenOptionsFor(modelId);
   const selected = value > 0 ? value : fallback;
   const inList = options.some((o) => o.value === selected);
   const customized = value > 0 && value !== fallback;
-  const tip = contextWindowTip(modelId);
+  const tip = maxOutputTip(modelId);
 
   return (
     <div className={className ?? "space-y-1.5"}>
       <div className="flex items-center justify-between gap-2">
         <Label htmlFor={id} className="text-xs">
-          Context window (tokens)
+          Max output (tokens)
         </Label>
         {customized && (
           <Button

@@ -5,8 +5,67 @@ action on upgrade — read those notes before deploying.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Chat replies no longer leak literal ` ``` `.** Models often open
+  a fence and never close it, wrap the whole answer in ` ```markdown `,
+  or glue ` ``` ` onto the next sentence. The previous repair broke
+  those markers with a zero-width space, so Streamdown stopped
+  swallowing the bubble — but the backticks still rendered. The
+  repair now unwraps a whole-message prose fence and *strips*
+  stray openers / mid-line fences when the body looks like chat
+  prose. Real language fences (` ```js `) and plain log dumps stay.
+  WeCom's classic markdown does not render fences or GFM tables, so
+  outbound WeCom text now drops fence markers and flattens tables
+  the same way other IM channels already do.
+
+### Changed
+
+- **Guests cannot inventory an agent's config.** Non-owner chatters
+  can no longer `exec` `cat` persona files or `SKILL.md`, see those
+  names in `list_dir`, or receive `create_agent` / `configure_agent` /
+  `install_skill` / `host_exec` in the tool catalog. The
+  confidentiality prompt also forbids dumping tool schemas.
+
+- **Host shell is super_admin-only.** On a shared/self-hosted gateway,
+  owning an agent no longer grants host `exec`, `host_exec`, or
+  absolute host-path file tools. Those require a resolved FastClaw
+  account with role `super_admin`. Agent owners can still edit persona
+  files, provision sibling agents, and use write-mode slash commands.
+  Cron / subagent / shared-identity group turns never get a host
+  shell. `/whoami` now prints `Agent admin` and `Host access`
+  separately. **BREAKING** for multi-tenant installs where a regular
+  `user` previously ran host commands from web chat.
+
 ### Added
 
+- **Composer context meter and model switcher.** The chat input shows
+  working-set tokens vs the model's context window (same estimate
+  compaction uses), and a model button next to Send lists configured
+  provider models. Switching writes the agent's model; viewers see
+  the name only.
+- **Per-model context and max output on the Models page.** Each
+  model row applies a recommended pair automatically (banner:
+  「推荐已套用」). GPT-5.6 = 1.05M / 64k, GPT-5.5 = 1.05M / 32k,
+  GLM = 1M / 64k, Kimi = 1.05M / 131k, Grok = 500k / 32k. Chips
+  stay collapsed until 「调整」; 「套用推荐」 restores the pair.
+  Old 200k / 8k rows pick up the new defaults when you open the
+  dialog. `gpt-5.6-luna` context default is 1.05M. Claude / DeepSeek /
+  Gemini / Qwen get a matching tip instead of “没认到 200k”.
+- **Codex-style follow-up queue.** Sending while a turn is running now
+  queues by default (composer tray + TUI list) and runs after `done`,
+  instead of always inserting into the current turn. Switch the
+  composer to **插入** (or press ⌘/Ctrl+Enter / TUI Ctrl+S) to steer
+  the in-flight turn. Per-item **插入** promotes a queued line; Stop
+  still aborts and leaves the queue intact.
+- **MCP JSON configuration.** Add Server opens a dialog (JSON by
+  default, form as the other tab). Paste Cursor or Claude Desktop
+  `mcp.json` (or a name→config map) and save — servers become
+  cards on the page. `type` is optional — `url` means http,
+  `command` means stdio. Agent-page cards also list tools that
+  attached after save; no FastClaw process restart. On phones,
+  Settings lists MCP in a wrapping grid so it is not hidden
+  behind a sideways swipe.
 - **Composer autofocus on new and switched chats.** Opening a new
   conversation or switching sessions (including project chats) puts
   the caret in the message box. A second click on New chat does the
@@ -113,8 +172,28 @@ action on upgrade — read those notes before deploying.
   Kimi / GPT default of 1,000,000 sets the compact threshold near
   900k, so a 203k request that already 502'd never hard-trimmed.
   Force-compact after overflow now aims at half the rejected size.
-
-
+- **Settings → Customize Save is clickable.** The dialog close
+  control sat on top of the page Save button, so a click closed
+  the sheet instead of writing SOUL.md / IDENTITY.md. The panel
+  now clears the close button, and a failed PUT shows an error
+  instead of a false Saved state.
+- **Customize Save writes every edited tab.** One Save used to
+  PUT only the visible file, then reload wiped in-memory edits
+  on Soul / Bootstrap / the rest. Dirty tabs get a dot; the
+  button says how many files will be written. Switching to
+  Profile / MCP no longer unmounts those edits, Close asks
+  before discarding them, and a failed GET after PUT no longer
+  blanks a tab that just saved.
+- **`make build` works with pnpm 11.** Overrides live in
+  `web/pnpm-workspace.yaml` so `pnpm install --frozen-lockfile` no
+  longer fails with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`. The same
+  pins stay in `package.json` for pnpm 9/10. Native install scripts
+  for `sharp` / `msw` / `unrs-resolver` are allowed so pnpm 11 does
+  not abort on `ERR_PNPM_IGNORED_BUILDS`.
+- **Follow-up Stop is per conversation.** Stopping chat B no longer
+  prevents chat A's queued follow-ups from sending when A's turn
+  finishes. Coming back to an idle chat whose turn ended while you
+  were elsewhere now sends the next queued item.
 - **Compaction follows Pi's working-set shrink.** Auto-compact and
   `/compact [focus…]` now keep a ~20k-token verbatim hot tail (not
   the last 20 messages), ask the model for a structured Goal /

@@ -57,3 +57,22 @@ func TestSkillInheritsToAgents(t *testing.T) {
 		t.Fatal("inherit=none must stay catalog-only")
 	}
 }
+
+func TestResolvedTransportInfersCursorMCPJSON(t *testing.T) {
+	cases := []struct {
+		in   MCPServerConfig
+		want string
+	}{
+		{MCPServerConfig{Command: "npx"}, "stdio"},
+		{MCPServerConfig{URL: "https://example.com/mcp"}, "http"},
+		{MCPServerConfig{Type: "sse", URL: "https://example.com/mcp"}, "http"},
+		{MCPServerConfig{Type: "streamable-http", URL: "https://example.com/mcp"}, "http"},
+		{MCPServerConfig{Type: "command", Command: "uvx"}, "stdio"},
+		{MCPServerConfig{Type: "stdio", Command: "npx"}, "stdio"},
+	}
+	for _, tc := range cases {
+		if got := tc.in.ResolvedTransport(); got != tc.want {
+			t.Fatalf("ResolvedTransport(%+v)=%q want %q", tc.in, got, tc.want)
+		}
+	}
+}

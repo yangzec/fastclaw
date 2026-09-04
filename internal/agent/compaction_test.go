@@ -343,6 +343,45 @@ func TestLookupContextWindowFallsBackToKnownPreset(t *testing.T) {
 	}
 }
 
+func TestEffectiveMaxTokensPrefersCatalog(t *testing.T) {
+	ag := &Agent{
+		model:     "openai/gpt-5.5",
+		maxTokens: 8192,
+		providers: map[string]config.ProviderConfig{
+			"openai": {Models: []config.ModelEntry{{ID: "gpt-5.5", MaxTokens: 32000}}},
+		},
+	}
+	if got := ag.effectiveMaxTokens(""); got != 32000 {
+		t.Fatalf("catalog maxTokens = %d, want 32000", got)
+	}
+	ag.providers = map[string]config.ProviderConfig{
+		"openai": {Models: []config.ModelEntry{{ID: "gpt-5.5"}}},
+	}
+	if got := ag.effectiveMaxTokens(""); got != 8192 {
+		t.Fatalf("unset catalog should keep agent default, got %d", got)
+	}
+	ag.model = "custom/unknown"
+	ag.providers = nil
+	if got := ag.effectiveMaxTokens(""); got != 8192 {
+		t.Fatalf("agent default = %d, want 8192", got)
+	}
+}
+
+func TestLookupMaxTokensUsesSavedOnly(t *testing.T) {
+	provs := map[string]config.ProviderConfig{
+		"openai": {Models: []config.ModelEntry{{ID: "gpt-5.5"}}},
+	}
+	if n := lookupMaxTokens(provs, "openai/gpt-5.5"); n != 0 {
+		t.Fatalf("zero-saved maxTokens = %d, want 0 (do not use official cap)", n)
+	}
+	saved := map[string]config.ProviderConfig{
+		"openai": {Models: []config.ModelEntry{{ID: "gpt-5.5", MaxTokens: 32000}}},
+	}
+	if n := lookupMaxTokens(saved, "openai/gpt-5.5"); n != 32000 {
+		t.Fatalf("saved maxTokens = %d, want 32000", n)
+	}
+}
+
 func TestLookupContextWindowPrefersProviderPrefix(t *testing.T) {
 	provs := map[string]config.ProviderConfig{
 		"openai": {Models: []config.ModelEntry{{ID: "gpt-4o", ContextWindow: 128000}}},

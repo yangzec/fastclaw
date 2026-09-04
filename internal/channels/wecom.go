@@ -198,7 +198,11 @@ func (w *WeCom) SendMessage(msg bus.OutboundMessage) error {
 	if strings.TrimSpace(msg.Text) == "" && len(msg.MediaItems) == 0 {
 		return nil
 	}
-	text := strings.TrimSpace(msg.Text)
+	// Classic WeCom `msgtype: markdown` (and stream content) does not
+	// render GFM tables or fenced ``` blocks — those leak as raw
+	// syntax. Flatten tables and drop fence markers; keep bold /
+	// inline code / links that WeCom does render.
+	text := wecomSanitizeMarkdown(msg.Text)
 	w.mu.Lock()
 	reqID := w.lastReq[msg.ChatID]
 	streamID := w.streamID[msg.ChatID]
@@ -283,6 +287,10 @@ func (w *WeCom) rememberInbound(chatID, reqID string, group bool) {
 		w.chatType[chatID] = 1
 	}
 	w.mu.Unlock()
+}
+
+func wecomSanitizeMarkdown(text string) string {
+	return strings.TrimSpace(StripMarkdownFences(FlattenMarkdownTables(text)))
 }
 
 func (w *WeCom) respondStream(reqID, streamID, content string, finish bool) error {

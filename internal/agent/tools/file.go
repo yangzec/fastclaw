@@ -482,15 +482,14 @@ func (r *Registry) effectiveSandboxRoot(root string) string {
 	if root == r.systemRoot && r.systemRoot != "" {
 		return r.systemRoot
 	}
-	if r.sandboxRoot == "" && !r.callerIsAdmin {
+	if r.sandboxRoot == "" && !r.callerCanHost {
 		// Guest confinement on self-hosted installs (no hosted path
-		// sandbox configured): non-admin chatters must not roam the
-		// host filesystem. Relative paths stay bounded to the root
+		// sandbox configured): non-super_admin chatters must not roam
+		// the host filesystem. Relative paths stay bounded to the root
 		// they resolve against; absolute paths (root == "") are
 		// bounded to the user workspace — so "<workspace>/report.md"
 		// still works while "/Users/<op>/.ssh/id_rsa" is rejected.
-		// Admin chatters keep unrestricted host access: on a
-		// self-hosted install the operator's machine is theirs.
+		// Super_admin chatters keep unrestricted host access.
 		if root == "" {
 			return r.userRoot
 		}
@@ -899,7 +898,7 @@ func makeListDir(r *Registry) ToolFunc {
 				}
 				fmt.Fprintf(&sb, "f %s (%d bytes)\n", rel, o.Size)
 			}
-			return sb.String(), nil
+			return r.filterGuestDirListing(sb.String()), nil
 		}
 
 		root := r.rootForPath(args.Path)
@@ -924,7 +923,7 @@ func makeListDir(r *Registry) ToolFunc {
 			}
 		}
 
-		return sb.String(), nil
+		return r.filterGuestDirListing(sb.String()), nil
 	}
 }
 
@@ -1211,12 +1210,12 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 					}
 					fmt.Fprintf(&sb, "f %s (%d bytes)\n", rel, o.Size)
 				}
-				return sb.String(), nil
+				return r.filterGuestDirListing(sb.String()), nil
 			}
 			// Store error → fall through to sandbox so a freshly-written
 			// sandbox-only dir is still listable.
 			out, err := ex.ListDir(ctx, args.Path)
-			return MetaSandboxPrefix + out, err
+			return MetaSandboxPrefix + r.filterGuestDirListing(out), err
 		case RouteHostFS:
 			full, ok := hostHomePath(args.Path)
 			if !ok {
@@ -1239,12 +1238,12 @@ func registerSandboxedFile(r *Registry, ex sandbox.Executor) {
 				}
 				fmt.Fprintf(&sb, "f %s (%d bytes)\n", e.Name(), info.Size())
 			}
-			return sb.String(), nil
+			return r.filterGuestDirListing(sb.String()), nil
 		case RouteRefuseSuggestSandbox:
 			return "", fmt.Errorf("%s", errSandboxRequiredMessage)
 		default: // RouteSandbox / RouteSystemStore (no list semantics) / RouteSkillStore
 			out, err := ex.ListDir(ctx, args.Path)
-			return MetaSandboxPrefix + out, err
+			return MetaSandboxPrefix + r.filterGuestDirListing(out), err
 		}
 	})
 

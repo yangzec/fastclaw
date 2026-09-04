@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -322,6 +323,56 @@ func TestPickerFilterAndSelect(t *testing.T) {
 	chosen, done := p.Handle("enter")
 	if !done || chosen == nil || chosen.ID != "b" {
 		t.Fatalf("enter selection = %v %v", chosen, done)
+	}
+}
+
+func TestFinishTurnDrainsQueuedFollowupsOneAtATime(t *testing.T) {
+	m := newTestModel()
+	m.querying = true
+	m.queued = []string{"first", "second"}
+
+	next, cmd := m.finishTurn(nil)
+	nm, ok := next.(*Model)
+	if !ok {
+		t.Fatalf("finishTurn returned %T", next)
+	}
+	if cmd == nil {
+		t.Fatal("expected the first queued follow-up to start a turn")
+	}
+	if len(nm.queued) != 1 || nm.queued[0] != "second" {
+		t.Fatalf("remaining queue = %#v", nm.queued)
+	}
+}
+
+func TestFinishTurnLeavesQueueOnErrorOrCancel(t *testing.T) {
+	m := newTestModel()
+	m.querying = true
+	m.queued = []string{"keep me"}
+
+	_, cmd := m.finishTurn(errors.New("boom"))
+	if cmd != nil {
+		t.Fatal("error should not drain the follow-up queue")
+	}
+	if len(m.queued) != 1 || m.queued[0] != "keep me" {
+		t.Fatalf("queue after error = %#v", m.queued)
+	}
+
+	_, cmd = m.finishTurn(context.Canceled)
+	if cmd != nil {
+		t.Fatal("cancel/detach should not drain the follow-up queue")
+	}
+	if len(m.queued) != 1 || m.queued[0] != "keep me" {
+		t.Fatalf("queue after cancel = %#v", m.queued)
+	}
+}
+
+func TestRenderQueueListsPendingFollowups(t *testing.T) {
+	m := newTestModel()
+	m.querying = true
+	m.queued = []string{"add tests"}
+	got := plain(m.renderQueue())
+	if !strings.Contains(got, "queued") || !strings.Contains(got, "add tests") {
+		t.Fatalf("queue render = %q", got)
 	}
 }
 

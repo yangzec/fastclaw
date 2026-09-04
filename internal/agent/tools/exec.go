@@ -125,6 +125,12 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 				return "", fmt.Errorf("dangerous command blocked: %s", args.Command)
 			}
 		}
+		// Guests cannot cat persona / SKILL.md via the sandbox shell —
+		// file tools already refuse those paths; this closes the exec
+		// bypass. Owners (callerIsAdmin) may still inspect their files.
+		if r != nil && !r.callerIsAdmin && guestExecReadsConfig(args.Command, args.Stdin) {
+			return "", fmt.Errorf("%s", errGuestConfigExec)
+		}
 
 		timeout := 120
 		if args.Timeout > 0 {
@@ -149,13 +155,12 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 		// it, or admin flipped settings.sandbox.enabled mid-process).
 		useSandbox := args.Sandbox || (sbCfg != nil && sbCfg.Enabled) || (r != nil && r.sandboxRequired)
 
-		// Host shell is operator territory. When the current turn isn't
-		// admin-trusted (anonymous IM chatter, cron replay, subagent
-		// spawn — see Agent.isTrustedTurn), force the sandbox path: the
-		// command runs in the container when one is wired and is refused
-		// otherwise. This is what keeps "able to reach the agent" from
-		// meaning "able to run `fastclaw admin` on the operator's machine".
-		guest := r != nil && !r.callerIsAdmin
+		// Host shell is a platform privilege. When the current turn
+		// isn't host-trusted (non-super_admin, cron replay, subagent
+		// spawn — see Agent.chatterCanHost), force the sandbox path:
+		// the command runs in the container when one is wired and is
+		// refused otherwise. Owning the agent is not enough.
+		guest := r != nil && !r.callerCanHost
 		if guest {
 			useSandbox = true
 		}
@@ -212,7 +217,7 @@ func makeExecToolFull(r *Registry, sbCfg *SandboxConfig, envProvider SkillEnvPro
 		// the user seeing host-shell `command not found` mysteries.
 		if useSandbox {
 			if guest {
-				return "", fmt.Errorf("host execution is restricted to the agent operator, and no sandbox is configured for guest chatters — the command was NOT run. The operator can enable a sandbox in system settings, or add this chatter's platform ID to the agent's admins list to grant host access")
+				return "", fmt.Errorf("host execution is restricted to super_admin accounts, and no sandbox is configured — the command was NOT run")
 			}
 			return "", fmt.Errorf("sandbox required but no executor available — check that the sandbox backend (docker / e2b) is reachable and the configured image (%q) can start", sbCfgImage(sbCfg))
 		}
@@ -381,8 +386,8 @@ func registerHostExec(r *Registry, envProvider SkillEnvProvider, skillDirs []str
 			// Same trust boundary as the exec tool's host path: the
 			// escape hatch is for the operator, not for whoever manages
 			// to reach the agent on a public IM channel.
-			if !r.callerIsAdmin {
-				return "", fmt.Errorf("host_exec is restricted to the agent operator (admin chatters only)")
+			if !r.callerCanHost {
+				return "", fmt.Errorf("host_exec is restricted to super_admin accounts")
 			}
 			if args.Command == "" {
 				return "", fmt.Errorf("command is required")
@@ -457,6 +462,9 @@ func registerSandboxedExec(r *Registry, ex sandbox.Executor) {
 		}
 		if args.Command == "" {
 			return "", fmt.Errorf("command is required")
+		}
+		if r != nil && !r.callerIsAdmin && guestExecReadsConfig(args.Command, args.Stdin) {
+			return "", fmt.Errorf("%s", errGuestConfigExec)
 		}
 		if args.RunInBackground {
 			return "", fmt.Errorf("run_in_background is not yet supported in sandbox mode — use tmux inside the sandbox instead: exec({command: \"tmux new-session -d -s job '<your command>'\"}) to start, exec({command: \"tmux capture-pane -t job -p\"}) to read, exec({command: \"tmux kill-session -t job\"}) to stop")

@@ -88,9 +88,9 @@ const USER_TABS: Array<{ id: AgentSettingsTab; label: string; icon: TabIcon }> =
 // (Customize / Models / Skills / Channels / Scheduler) and the
 // per-user pages (Account / General / Runtime[admin-only]) so a
 // click on the sidebar Settings button covers everything the user
-// could want to change. Each tab mounts the existing page component
-// lazily — switching tabs unmounts the previous panel, which is fine
-// because the pages are self-contained and re-fetch on mount.
+// could want to change. Panels mount on first visit and stay mounted
+// (hidden) while the sheet is open so unsaved Customize / Profile
+// edits survive switching tabs. Closing the dialog unmounts them.
 //
 // role="viewer" hides the owner-only Agent tabs (Profile, Customize,
 // Skills, Scheduler, Usage) and only exposes Models + Channels under
@@ -132,15 +132,48 @@ export function AgentSettingsDialog({
     defaultTab ??
     (userOnly ? "general" : role === "viewer" ? "models" : "profile");
   const [tab, setTab] = React.useState<AgentSettingsTab>(initialTab);
+  const [visited, setVisited] = React.useState<Set<AgentSettingsTab>>(() => new Set([initialTab]));
+  const [customizeDirty, setCustomizeDirty] = React.useState(false);
+  const [profileDirty, setProfileDirty] = React.useState(false);
+  const wasOpen = React.useRef(open);
 
-  // Reset to the requested tab whenever the dialog re-opens, so a fresh
-  // click on the sidebar Settings button always lands on the same place.
-  React.useEffect(() => {
-    if (open) setTab(initialTab);
-  }, [open, initialTab]);
+  // Adjust tab + mount set during render when the sheet opens/closes so
+  // we do not paint a blank pane or remount last session's Customize.
+  if (open !== wasOpen.current) {
+    wasOpen.current = open;
+    if (open) {
+      setTab(initialTab);
+      setVisited(new Set([initialTab]));
+    } else {
+      setVisited(new Set());
+      setCustomizeDirty(false);
+      setProfileDirty(false);
+    }
+  }
+
+  const selectTab = (id: AgentSettingsTab) => {
+    setTab(id);
+    setVisited((prev) => {
+      if (prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+  };
+
+  const handleOpenChange = (next: boolean) => {
+    if (!next && (customizeDirty || profileDirty)) {
+      if (!window.confirm("You have unsaved changes. Close Settings anyway?")) {
+        return;
+      }
+    }
+    onOpenChange(next);
+  };
+
+  const show = (id: AgentSettingsTab) => open && visited.has(id);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className={cn(
           "p-0 gap-0 overflow-hidden",
@@ -149,7 +182,7 @@ export function AgentSettingsDialog({
           "max-md:inset-0 max-md:top-0 max-md:left-0 max-md:h-[100dvh] max-md:w-full max-md:max-w-none max-md:translate-x-0 max-md:translate-y-0 max-md:rounded-none",
         )}
       >
-        <aside className="flex shrink-0 flex-row gap-1 overflow-x-auto border-b bg-muted/40 p-2 pr-14 pt-[max(0.5rem,env(safe-area-inset-top,0px))] md:flex-col md:overflow-y-auto md:border-b-0 md:border-r md:p-3 md:pt-3 md:pr-3">
+        <aside className="grid shrink-0 grid-cols-3 gap-1 border-b bg-muted/40 p-2 pr-14 pt-[max(0.5rem,env(safe-area-inset-top,0px))] md:flex md:flex-col md:overflow-y-auto md:border-b-0 md:border-r md:p-3 md:pt-3 md:pr-3">
           {agentTabs.length > 0 && (
             <>
               <SectionLabel>Agent</SectionLabel>
@@ -158,7 +191,7 @@ export function AgentSettingsDialog({
                   key={t.id}
                   tab={t}
                   active={tab === t.id}
-                  onSelect={setTab}
+                  onSelect={selectTab}
                 />
               ))}
             </>
@@ -171,40 +204,86 @@ export function AgentSettingsDialog({
               key={t.id}
               tab={t}
               active={tab === t.id}
-              onSelect={setTab}
+              onSelect={selectTab}
             />
           ))}
         </aside>
-        <div className="min-h-0 flex-1 overflow-y-auto max-md:pb-[env(safe-area-inset-bottom,0px)]">
-          {tab === "profile" && <AgentProfilePanel />}
-          {tab === "customize" && <AgentCustomizePage />}
-          {tab === "models" &&
-            (role === "viewer" ? <UserModelsPage /> : <AgentModelsPage />)}
-          {tab === "context" && <AgentContextPage />}
-          {tab === "knowledge" && <AgentKnowledgePage />}
-          {tab === "skills" && <AgentSkillsPage />}
-          {tab === "mcp" && <AgentMCPPage />}
-          {tab === "plugins" && <AgentPluginsPage />}
-          {tab === "channels" && <AgentChannelsPage />}
-          {tab === "scheduler" && <AgentSchedulerPage />}
-          {tab === "usage" && <AgentUsagePage />}
-          {tab === "account" && (
-            <div className="p-6 max-w-3xl">
+        {/* md:pr-12 keeps Customize / Profile Save out from under the
+            dialog close control (absolute top-2 right-2). Without it a
+            click on Save hits Close and the sheet dismisses unsaved. */}
+        <div className="min-h-0 flex-1 overflow-y-auto max-md:pb-[env(safe-area-inset-bottom,0px)] md:pr-12">
+          {show("profile") && (
+            <div hidden={tab !== "profile"}>
+              <AgentProfilePanel onDirtyChange={setProfileDirty} />
+            </div>
+          )}
+          {show("customize") && (
+            <div hidden={tab !== "customize"}>
+              <AgentCustomizePage onDirtyChange={setCustomizeDirty} />
+            </div>
+          )}
+          {show("models") && (
+            <div hidden={tab !== "models"}>
+              {role === "viewer" ? <UserModelsPage /> : <AgentModelsPage />}
+            </div>
+          )}
+          {show("context") && (
+            <div hidden={tab !== "context"}>
+              <AgentContextPage />
+            </div>
+          )}
+          {show("knowledge") && (
+            <div hidden={tab !== "knowledge"}>
+              <AgentKnowledgePage />
+            </div>
+          )}
+          {show("skills") && (
+            <div hidden={tab !== "skills"}>
+              <AgentSkillsPage />
+            </div>
+          )}
+          {show("mcp") && (
+            <div hidden={tab !== "mcp"}>
+              <AgentMCPPage />
+            </div>
+          )}
+          {show("plugins") && (
+            <div hidden={tab !== "plugins"}>
+              <AgentPluginsPage />
+            </div>
+          )}
+          {show("scheduler") && (
+            <div hidden={tab !== "scheduler"}>
+              <AgentSchedulerPage />
+            </div>
+          )}
+          {show("channels") && (
+            <div hidden={tab !== "channels"}>
+              <AgentChannelsPage />
+            </div>
+          )}
+          {show("usage") && (
+            <div hidden={tab !== "usage"}>
+              <AgentUsagePage />
+            </div>
+          )}
+          {show("account") && (
+            <div hidden={tab !== "account"} className="p-6 max-w-3xl">
               <AccountSettingsPage />
             </div>
           )}
-          {tab === "general" && (
-            <div className="p-6 max-w-3xl">
+          {show("general") && (
+            <div hidden={tab !== "general"} className="p-6 max-w-3xl">
               <GeneralSettingsPage />
             </div>
           )}
-          {tab === "ssh" && (
-            <div className="p-6 max-w-3xl">
+          {show("ssh") && (
+            <div hidden={tab !== "ssh"} className="p-6 max-w-3xl">
               <SSHHostsPage />
             </div>
           )}
-          {tab === "about" && (
-            <div className="p-6 max-w-3xl">
+          {show("about") && (
+            <div hidden={tab !== "about"} className="p-6 max-w-3xl">
               <AboutSettingsPage />
             </div>
           )}
@@ -249,7 +328,7 @@ function TabButton({
       onClick={() => onSelect(tab.id)}
       className={cn(
         "flex shrink-0 items-center gap-2 rounded-md px-2.5 py-2 text-sm text-left transition-colors",
-        "max-md:px-3 max-md:py-2.5",
+        "max-md:flex-col max-md:justify-center max-md:gap-1 max-md:px-1 max-md:py-2 max-md:text-center max-md:text-[11px] max-md:leading-tight",
         active
           ? "bg-accent text-accent-foreground font-medium"
           : "text-foreground/80 hover:bg-accent/50",
