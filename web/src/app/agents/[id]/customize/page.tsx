@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Save, Check, Loader2, RotateCcw } from "lucide-react";
@@ -94,6 +94,8 @@ export default function AgentCustomizePage({
   }, [agentId]);
 
   const active = files[activeTab];
+  const filesRef = useRef(files);
+  filesRef.current = files;
   const dirtyNames = CUSTOMIZE_FILES.map((f) => f.name).filter((n) => isDirty(files[n]));
 
   useEffect(() => {
@@ -102,9 +104,11 @@ export default function AgentCustomizePage({
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   const handleSave = async () => {
-    const toWrite = dirtyNames.length > 0 ? dirtyNames : [activeTab];
+    const snapshot = filesRef.current;
+    const dirty = CUSTOMIZE_FILES.map((f) => f.name).filter((n) => isDirty(snapshot[n]));
+    const toWrite = dirty.length > 0 ? dirty : [activeTab];
     const payloads: Record<string, string> = {};
-    for (const name of toWrite) payloads[name] = files[name]?.content ?? "";
+    for (const name of toWrite) payloads[name] = snapshot[name]?.content ?? "";
     setSaving(true);
     setError(null);
     const succeeded: string[] = [];
