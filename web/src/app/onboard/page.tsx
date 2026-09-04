@@ -38,8 +38,8 @@ import {
 import { getStatus, onboard, testProvider } from "@/lib/api";
 import { MIN_PASSWORD_LENGTH } from "@/lib/password";
 import { PROVIDER_PRESETS, PROVIDER_LABELS } from "@/lib/provider-presets";
-import { nextContextWindowOnIdChange, presetContextWindow } from "@/lib/model-defaults";
-import { ContextWindowField } from "@/components/context-window-field";
+import { nextContextWindowOnIdChange, nextMaxTokensOnIdChange, presetContextWindow, presetMaxTokens } from "@/lib/model-defaults";
+import { ModelLimitsFields } from "@/components/model-limits-fields";
 
 const STEPS = [
   { id: "welcome", label: "Welcome", icon: PartyPopper },
@@ -107,6 +107,9 @@ export default function OnboardPage() {
   const [contextWindow, setContextWindow] = useState(
     presetContextWindow(PROVIDER_PRESETS.openai.models[0]),
   );
+  const [maxTokens, setMaxTokens] = useState(
+    presetMaxTokens(PROVIDER_PRESETS.openai.models[0]),
+  );
   const [testStatus, setTestStatus] = useState<"" | "ok" | "fail" | "running">(
     "",
   );
@@ -139,6 +142,7 @@ export default function OnboardPage() {
       if (preset.models[0]) {
         setModel(preset.models[0]);
         setContextWindow(presetContextWindow(preset.models[0]));
+        setMaxTokens(presetMaxTokens(preset.models[0]));
       }
     }
     // Provider name auto-fills with the preset key — user can still
@@ -188,6 +192,7 @@ export default function OnboardPage() {
       authType: providerEnabled ? authType : "",
       model: providerEnabled ? model : "",
       contextWindow: providerEnabled ? contextWindow : undefined,
+      maxTokens: providerEnabled ? maxTokens : undefined,
       agentName,
       sandboxEnabled,
       sandboxBackend: sandboxEnabled ? sandboxBackend : undefined,
@@ -280,10 +285,13 @@ export default function OnboardPage() {
             model={model}
             setModel={(next) => {
               setContextWindow((prev) => nextContextWindowOnIdChange(next, model, prev));
+              setMaxTokens((prev) => nextMaxTokensOnIdChange(next, model, prev));
               setModel(next);
             }}
             contextWindow={contextWindow}
             setContextWindow={setContextWindow}
+            maxTokens={maxTokens}
+            setMaxTokens={setMaxTokens}
             onTest={handleTest}
             testStatus={testStatus}
             testError={testError}
@@ -553,6 +561,8 @@ function ProviderStep(props: {
   setModel: (v: string) => void;
   contextWindow: number;
   setContextWindow: (v: number) => void;
+  maxTokens: number;
+  setMaxTokens: (v: number) => void;
   onTest: () => void;
   testStatus: "" | "ok" | "fail" | "running";
   testError: string;
@@ -632,10 +642,12 @@ function ProviderStep(props: {
             className="font-mono text-sm"
           />
         </div>
-        <ContextWindowField
+        <ModelLimitsFields
           modelId={props.model}
-          value={props.contextWindow}
-          onChange={props.setContextWindow}
+          contextWindow={props.contextWindow}
+          maxTokens={props.maxTokens}
+          onContextWindowChange={props.setContextWindow}
+          onMaxTokensChange={props.setMaxTokens}
         />
         <div className="space-y-1.5">
           <Label>API Base URL</Label>

@@ -39,6 +39,19 @@ action on upgrade — read those notes before deploying.
 
 ### Added
 
+- **Composer context meter and model switcher.** The chat input shows
+  working-set tokens vs the model's context window (same estimate
+  compaction uses), and a model button next to Send lists configured
+  provider models. Switching writes the agent's model; viewers see
+  the name only.
+- **Per-model context and max output on the Models page.** Each
+  model row applies a recommended pair automatically (banner:
+  「推荐已套用」). GPT-5.6 = 1.05M / 64k, GPT-5.5 = 1.05M / 32k,
+  GLM = 1M / 64k, Kimi = 1.05M / 131k, Grok = 500k / 32k. Chips
+  stay collapsed until 「调整」; 「套用推荐」 restores the pair.
+  Old 200k / 8k rows pick up the new defaults when you open the
+  dialog. `gpt-5.6-luna` context default is 1.05M. Claude / DeepSeek /
+  Gemini / Qwen get a matching tip instead of “没认到 200k”.
 - **Codex-style follow-up queue.** Sending while a turn is running now
   queues by default (composer tray + TUI list) and runs after `done`,
   instead of always inserting into the current turn. Switch the

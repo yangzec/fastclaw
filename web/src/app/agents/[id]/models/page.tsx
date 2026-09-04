@@ -46,9 +46,9 @@ import {
 } from "@/lib/api";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { useAgentName } from "@/hooks/use-agent-name";
-import { DEFAULT_CONTEXT_WINDOW, nextContextWindowOnIdChange, presetContextWindow } from "@/lib/model-defaults";
+import { DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, formContextWindow, formMaxTokens, nextContextWindowOnIdChange, nextMaxTokensOnIdChange, presetContextWindow, presetMaxTokens } from "@/lib/model-defaults";
 import { PROVIDER_PRESETS, PROVIDER_LABELS } from "@/lib/provider-presets";
-import { ContextWindowField } from "@/components/context-window-field";
+import { ModelLimitsFields } from "@/components/model-limits-fields";
 
 // Per-agent Models page — same UI/UX as the admin /models page, but
 // scoped to a single agent. Reads/writes agent-scoped provider rows
@@ -94,7 +94,7 @@ function emptyModel(): ModelEntry {
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: 8192,
+    maxTokens: DEFAULT_MAX_TOKENS,
   };
 }
 
@@ -108,6 +108,7 @@ function presetModelRows(preset: string): ModelEntry[] {
     id,
     name: id,
     contextWindow: presetContextWindow(id),
+    maxTokens: presetMaxTokens(id),
   }));
 }
 
@@ -278,8 +279,8 @@ export default function AgentModelsPage() {
           ...m,
           cost: { ...base.cost, ...(m.cost || {}) },
           input: m.input && m.input.length > 0 ? [...m.input] : base.input,
-          contextWindow:
-            m.contextWindow > 0 ? m.contextWindow : presetContextWindow(m.id || ""),
+          contextWindow: formContextWindow(m.id || "", m.contextWindow),
+          maxTokens: formMaxTokens(m.id || "", m.maxTokens),
         };
       }),
     );
@@ -371,6 +372,7 @@ export default function AgentModelsPage() {
         const prevID = m.id;
         m.id = value as string;
         m.contextWindow = nextContextWindowOnIdChange(m.id, prevID, m.contextWindow);
+        m.maxTokens = nextMaxTokensOnIdChange(m.id, prevID, m.maxTokens);
       }
       else if (field === "name") m.name = value as string;
       else if (field === "reasoning") m.reasoning = value as boolean;
@@ -949,10 +951,12 @@ export default function AgentModelsPage() {
                       />
                     </div>
                   </div>
-                  <ContextWindowField
+                  <ModelLimitsFields
                     modelId={m.id}
-                    value={m.contextWindow}
-                    onChange={(next) => handleUpdateModel(idx, "contextWindow", next)}
+                    contextWindow={m.contextWindow}
+                    maxTokens={m.maxTokens}
+                    onContextWindowChange={(next) => handleUpdateModel(idx, "contextWindow", next)}
+                    onMaxTokensChange={(next) => handleUpdateModel(idx, "maxTokens", next)}
                   />
                 </div>
                 );

@@ -603,4 +603,10 @@ func TestAppendModelFillsKnownContextWindow(t *testing.T) {
 	if got[2].ContextWindow != 1_048_576 {
 		t.Fatalf("kimi-k3 window = %d, want 1048576", got[2].ContextWindow)
 	}
+	if got[0].MaxTokens != 128_000 {
+		t.Fatalf("glm-5.3 maxTokens = %d, want 128000", got[0].MaxTokens)
+	}
+	if got[2].MaxTokens != 131_072 {
+		t.Fatalf("kimi-k3 maxTokens = %d, want 131072", got[2].MaxTokens)
+	}
 }
