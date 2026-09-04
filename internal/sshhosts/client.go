@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -73,9 +74,12 @@ func Run(ctx context.Context, host store.SSHHostRecord, creds Creds, command str
 		command = "cd " + shellQuote(cwd) + " && " + command
 	}
 
-	var buf bytes.Buffer
-	session.Stdout = &buf
-	session.Stderr = &buf
+	// crypto/ssh copies stdout and stderr from different goroutines.
+	// bytes.Buffer is not safe for concurrent writes, so a mutex is
+	// required or remote output is silently dropped.
+	var out combinedStream
+	session.Stdout = &out
+	session.Stderr = &out
 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -90,11 +94,11 @@ func Run(ctx context.Context, host store.SSHHostRecord, creds Creds, command str
 	case runErr = <-errCh:
 	}
 
-	out := buf.String()
-	if len(out) > maxOutputBytes {
-		out = out[:maxOutputBytes] + "\n…(output truncated)"
+	outStr := out.String()
+	if len(outStr) > maxOutputBytes {
+		outStr = outStr[:maxOutputBytes] + "\n…(output truncated)"
 	}
-	res := Result{Output: out, PinnedHostKey: pinned}
+	res := Result{Output: outStr, PinnedHostKey: pinned}
 	if runErr == nil {
 		return res, nil
 	}
@@ -169,4 +173,23 @@ func ValidateCreds(authType string, creds Creds) error {
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// combinedStream merges stdout and stderr. crypto/ssh copies those
+// streams from different goroutines, so writes must be serialized.
+type combinedStream struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (c *combinedStream) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+
+func (c *combinedStream) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
 }
