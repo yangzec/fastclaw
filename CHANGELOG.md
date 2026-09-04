@@ -143,6 +143,11 @@ action on upgrade — read those notes before deploying.
 
 ### Fixed
 
+- **Settings → Customize Save is clickable.** The dialog close
+  control sat on top of the page Save button, so a click closed
+  the sheet instead of writing SOUL.md / IDENTITY.md. The panel
+  now clears the close button, and a failed PUT shows an error
+  instead of a false Saved state.
 - **`make build` works with pnpm 11.** Overrides live in
   `web/pnpm-workspace.yaml` so `pnpm install --frozen-lockfile` no
   longer fails with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`. The same

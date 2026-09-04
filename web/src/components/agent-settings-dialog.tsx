@@ -175,7 +175,10 @@ export function AgentSettingsDialog({
             />
           ))}
         </aside>
-        <div className="min-h-0 flex-1 overflow-y-auto max-md:pb-[env(safe-area-inset-bottom,0px)]">
+        {/* md:pr-12 keeps Customize / Profile Save out from under the
+            dialog close control (absolute top-2 right-2). Without it a
+            click on Save hits Close and the sheet dismisses unsaved. */}
+        <div className="min-h-0 flex-1 overflow-y-auto max-md:pb-[env(safe-area-inset-bottom,0px)] md:pr-12">
           {tab === "profile" && <AgentProfilePanel />}
           {tab === "customize" && <AgentCustomizePage />}
           {tab === "models" &&

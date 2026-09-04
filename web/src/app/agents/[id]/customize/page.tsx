@@ -43,6 +43,7 @@ export default function AgentCustomizePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const loadAll = async () => {
     const entries = await Promise.all(
@@ -76,17 +77,24 @@ export default function AgentCustomizePage() {
 
   const handleSave = async () => {
     setSaving(true);
+    setError(null);
     try {
-      await apiFetch(`/api/agents/${agentId}/system-files/${activeTab}`, {
+      const res = await apiFetch(`/api/agents/${agentId}/system-files/${activeTab}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: active?.content || "" }),
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok === false) {
+        throw new Error(data?.error || `Save failed (${res.status})`);
+      }
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
       // Reload so source/baseContent stay accurate after save.
-      loadAll();
-    } catch {}
+      await loadAll();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Save failed");
+    }
     setSaving(false);
   };
 
@@ -197,6 +205,10 @@ export default function AgentCustomizePage() {
       {/* Active-tab status line — only shows when there's something
           actionable to say (override active / loaded from repo). The
           "default" case (empty + no repo base) is silent. */}
+      {error && (
+        <p className="mb-2 text-sm text-destructive">{error}</p>
+      )}
+
       {(active?.source === "db" || active?.source === "fs") && (
         <div className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
           {sourceBadge(active?.source)}
