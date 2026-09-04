@@ -58,7 +58,11 @@ function fileStateFromResponse(data: {
   };
 }
 
-export default function AgentCustomizePage() {
+export default function AgentCustomizePage({
+  onDirtyChange,
+}: {
+  onDirtyChange?: (dirty: boolean) => void;
+} = {}) {
   const agentId = useAgentIdFromURL();
   const agentName = useAgentName(agentId);
   const [activeTab, setActiveTab] = useState("SOUL.md");
@@ -92,30 +96,57 @@ export default function AgentCustomizePage() {
   const active = files[activeTab];
   const dirtyNames = CUSTOMIZE_FILES.map((f) => f.name).filter((n) => isDirty(files[n]));
 
+  useEffect(() => {
+    onDirtyChange?.(dirtyNames.length > 0);
+  }, [dirtyNames.length, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+
   const handleSave = async () => {
     const toWrite = dirtyNames.length > 0 ? dirtyNames : [activeTab];
+    const payloads: Record<string, string> = {};
+    for (const name of toWrite) payloads[name] = files[name]?.content ?? "";
     setSaving(true);
     setError(null);
-    try {
-      await Promise.all(
-        toWrite.map(async (name) => {
+    const succeeded: string[] = [];
+    const failures: string[] = [];
+    await Promise.all(
+      toWrite.map(async (name) => {
+        const label = CUSTOMIZE_FILES.find((f) => f.name === name)?.label || name;
+        try {
           const res = await apiFetch(`/api/agents/${agentId}/system-files/${name}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: files[name]?.content || "" }),
+            body: JSON.stringify({ content: payloads[name] }),
           });
           const data = await res.json().catch(() => ({}));
           if (!res.ok || data?.ok === false) {
-            const label = CUSTOMIZE_FILES.find((f) => f.name === name)?.label || name;
-            throw new Error(`${label}: ${data?.error || `save failed (${res.status})`}`);
+            failures.push(`${label}: ${data?.error || `save failed (${res.status})`}`);
+            return;
           }
-        }),
-      );
+          succeeded.push(name);
+        } catch (e) {
+          failures.push(`${label}: ${e instanceof Error ? e.message : "save failed"}`);
+        }
+      }),
+    );
+    // Mark written tabs clean locally. A follow-up GET can 404/fail
+    // after invalidateUser and would blank Bootstrap on screen even
+    // though the PUT landed — that looked like "some files vanished".
+    if (succeeded.length > 0) {
+      setFiles((prev) => {
+        const next = { ...prev };
+        for (const name of succeeded) {
+          if (!next[name]) continue;
+          next[name] = { ...next[name], savedContent: payloads[name] };
+        }
+        return next;
+      });
+    }
+    if (failures.length > 0) {
+      setError(failures.join(" · "));
+    } else {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
-      await loadAll();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Save failed");
     }
     setSaving(false);
   };
@@ -251,6 +282,7 @@ export default function AgentCustomizePage() {
       {/* Editor */}
       <textarea
         value={active?.content || ""}
+        readOnly={saving}
         onChange={(e) =>
           setFiles((prev) => ({
             ...prev,

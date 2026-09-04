@@ -151,7 +151,10 @@ action on upgrade — read those notes before deploying.
 - **Customize Save writes every edited tab.** One Save used to
   PUT only the visible file, then reload wiped in-memory edits
   on Soul / Bootstrap / the rest. Dirty tabs get a dot; the
-  button says how many files will be written.
+  button says how many files will be written. Switching to
+  Profile / MCP no longer unmounts those edits, Close asks
+  before discarding them, and a failed GET after PUT no longer
+  blanks a tab that just saved.
 - **`make build` works with pnpm 11.** Overrides live in
   `web/pnpm-workspace.yaml` so `pnpm install --frozen-lockfile` no
   longer fails with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`. The same

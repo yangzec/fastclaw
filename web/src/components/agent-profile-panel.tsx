@@ -19,7 +19,11 @@ import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 // useAgentIdFromURL so the dialog component doesn't have to thread
 // it through.
 
-export default function AgentProfilePanel() {
+export default function AgentProfilePanel({
+  onDirtyChange,
+}: {
+  onDirtyChange?: (dirty: boolean) => void;
+} = {}) {
   const agentId = useAgentIdFromURL();
   const [agent, setAgent] = React.useState<AgentDetail | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -76,6 +80,11 @@ export default function AgentProfilePanel() {
       description.trim() !== (agent.description || "") ||
       isPublic !== !!agent.isPublic ||
       avatar !== null);
+
+  React.useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+  React.useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   const onPickAvatar = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0] ?? null;
