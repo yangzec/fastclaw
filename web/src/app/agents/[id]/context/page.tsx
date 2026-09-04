@@ -306,7 +306,11 @@ export default function AgentContextPage() {
                 available in Chatbot mode too) — this toggle just
                 makes sure something still gets persisted when the
                 model forgets to. Off by default to preserve the
-                stateless-across-sessions behavior.
+                stateless-across-sessions behavior. Leave this off on
+                public / website template agents — API chats share one
+                chatter identity, so USER.md / MEMORY.md would mix
+                visitors. Use session keys plus per-turn params
+                instead.
               </p>
             </div>
           </div>

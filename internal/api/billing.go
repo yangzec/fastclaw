@@ -11,17 +11,11 @@ import (
 
 // HandleGetUsage handles GET /v1/usage.
 //
-// Returns per-day, per-agent token consumption for the authenticated
-// user (or the user specified by the `user_id` query param when the
-// caller owns that app_user). Upstream SaaS apps poll this to populate
-// their billing dashboards.
-//
-// Query params:
-//
-//	days   — lookback window (default 30, max 90)
-//	user_id — optional; when set, returns usage for that specific
-//	          app_user instead of the apikey owner. The caller must
-//	          own the apikey that minted that user (enforced below).
+// Returns per-day, per-agent token consumption for the API-key owner
+// (the website FastClaw account). `user_id` and X-Fastclaw-End-User do
+// not change the bucket — tokens are recorded on the agent owner, and
+// upstream apps roll up by `daily[].agentId` or by their own session
+// keys. Query `days` is the lookback window (default 30, max 90).
 func (s *Server) HandleGetUsage(w http.ResponseWriter, r *http.Request) {
 	if s.meter == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
@@ -36,10 +30,10 @@ func (s *Server) HandleGetUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine target user_id.
-	targetUser := ident.UserID
-	if quid := r.URL.Query().Get("user_id"); quid != "" {
-		targetUser = quid
+	targetUser := ident.BillingUserID()
+	if targetUser == "" {
+		writeUnauth(w, "authentication required")
+		return
 	}
 
 	days := 30
@@ -75,11 +69,34 @@ func (s *Server) HandleGetUsage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func billingOwner(r *http.Request) (auth.Identity, string, bool) {
+	ident, ok := auth.FromContext(r.Context())
+	if !ok {
+		return ident, "", false
+	}
+	owner := ident.BillingUserID()
+	return ident, owner, owner != ""
+}
+
+func rejectForeignQuotaUser(w http.ResponseWriter, owner, requested string) bool {
+	if requested == "" || requested == owner {
+		return false
+	}
+	writeJSON(w, http.StatusForbidden, map[string]any{
+		"error": map[string]string{
+			"message": "quota applies to the API-key owner account only",
+			"type":    "authorization_error",
+		},
+	})
+	return true
+}
+
 // HandleSetQuota handles PUT /v1/quota.
 //
-// Sets the monthly token/request ceiling for a user. Called by upstream
-// SaaS apps when a user subscribes/upgrades/downgrades. The agent loop
-// checks this before every LLM call.
+// Sets the monthly token/request ceiling for the API-key owner. The
+// agent loop checks this before every LLM call. `user_id` is optional
+// and must match the owner when set — quotas are a site-wide kill
+// switch, not a per-app-user entitlement.
 //
 // Request body:
 //
@@ -97,7 +114,7 @@ func (s *Server) HandleSetQuota(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, ok := auth.FromContext(r.Context())
+	_, owner, ok := billingOwner(r)
 	if !ok {
 		writeUnauth(w, "authentication required")
 		return
@@ -115,10 +132,7 @@ func (s *Server) HandleSetQuota(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if req.UserID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": map[string]string{"message": "user_id is required", "type": "invalid_request_error"},
-		})
+	if rejectForeignQuotaUser(w, owner, req.UserID) {
 		return
 	}
 	if req.ResetDay < 1 || req.ResetDay > 28 {
@@ -126,7 +140,7 @@ func (s *Server) HandleSetQuota(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := &usage.Quota{
-		UserID:              req.UserID,
+		UserID:              owner,
 		MonthlyTokenLimit:   req.MonthlyTokenLimit,
 		MonthlyRequestLimit: req.MonthlyRequestLimit,
 		ResetDay:            req.ResetDay,
@@ -146,8 +160,8 @@ func (s *Server) HandleSetQuota(w http.ResponseWriter, r *http.Request) {
 
 // HandleGetQuota handles GET /v1/quota.
 //
-// Returns the current quota for a user.
-// Query params: user_id (required).
+// Returns the current quota for the API-key owner. Query `user_id` is
+// optional and must match the owner when set.
 func (s *Server) HandleGetQuota(w http.ResponseWriter, r *http.Request) {
 	if s.quotaStore == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
@@ -156,21 +170,16 @@ func (s *Server) HandleGetQuota(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, ok := auth.FromContext(r.Context())
+	_, owner, ok := billingOwner(r)
 	if !ok {
 		writeUnauth(w, "authentication required")
 		return
 	}
-
-	userID := r.URL.Query().Get("user_id")
-	if userID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": map[string]string{"message": "user_id query param is required", "type": "invalid_request_error"},
-		})
+	if rejectForeignQuotaUser(w, owner, r.URL.Query().Get("user_id")) {
 		return
 	}
 
-	q, err := s.quotaStore.GetQuota(r.Context(), userID)
+	q, err := s.quotaStore.GetQuota(r.Context(), owner)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{
 			"error": map[string]string{"message": "no quota configured for this user", "type": "not_found_error"},
@@ -180,7 +189,7 @@ func (s *Server) HandleGetQuota(w http.ResponseWriter, r *http.Request) {
 
 	// Also return current usage status.
 	if s.meter != nil {
-		status, err := usage.CheckQuota(r.Context(), s.quotaStore, s.meter, userID)
+		status, err := usage.CheckQuota(r.Context(), s.quotaStore, s.meter, owner)
 		if err == nil {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"quota":  q,
@@ -197,8 +206,8 @@ func (s *Server) HandleGetQuota(w http.ResponseWriter, r *http.Request) {
 
 // HandleDeleteQuota handles DELETE /v1/quota.
 //
-// Removes the quota for a user (reverts to unlimited).
-// Query params: user_id (required).
+// Removes the quota for the API-key owner (reverts to unlimited).
+// Query `user_id` is optional and must match the owner when set.
 func (s *Server) HandleDeleteQuota(w http.ResponseWriter, r *http.Request) {
 	if s.quotaStore == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
@@ -207,21 +216,16 @@ func (s *Server) HandleDeleteQuota(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, ok := auth.FromContext(r.Context())
+	_, owner, ok := billingOwner(r)
 	if !ok {
 		writeUnauth(w, "authentication required")
 		return
 	}
-
-	userID := r.URL.Query().Get("user_id")
-	if userID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error": map[string]string{"message": "user_id query param is required", "type": "invalid_request_error"},
-		})
+	if rejectForeignQuotaUser(w, owner, r.URL.Query().Get("user_id")) {
 		return
 	}
 
-	if err := s.quotaStore.DeleteQuota(r.Context(), userID); err != nil {
+	if err := s.quotaStore.DeleteQuota(r.Context(), owner); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"error": map[string]string{"message": err.Error(), "type": "server_error"},
 		})

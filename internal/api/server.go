@@ -85,9 +85,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/users",
 		s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleProvisionAppUser)))
 
-	// Billing: usage query + quota management. Available to any
-	// authenticated api_key caller so upstream SaaS apps (weclaw etc.)
-	// can pull consumption data and set per-user ceilings.
+	// Billing: owner-account usage + site-wide quota. Any authenticated
+	// api_key caller reads/writes the key owner's bucket.
 	mux.HandleFunc("GET /v1/usage",
 		s.authMiddleware(rateLimitMiddleware(s.limiter, getUserID, s.HandleGetUsage)))
 	mux.HandleFunc("PUT /v1/quota",

@@ -13,9 +13,9 @@ metering, quota checks, and optional channels to FastClaw.
 |---|---|---|
 | End-user chat with an agent | `/v1/chat/completions` | OpenAI-compatible, plus FastClaw extensions. This is the primary upstream app API. |
 | List callable agents for an API key | `GET /v1/agents` | Respects API-key scope. |
-| Provision one upstream end-user | `POST /v1/users` | Optional. Chat can lazy-provision via `user` or `X-Fastclaw-End-User`. |
-| Query usage / token spend | `GET /v1/usage` | For upstream billing dashboards. |
-| Set paid-plan limits | `/v1/quota` | For subscription and entitlement enforcement. |
+| Provision one upstream end-user | `POST /v1/users` | Optional. Not used for billing. Prefer session keys for isolation. |
+| Query usage / token spend | `GET /v1/usage` | Owner-account totals. Roll up by `daily[].agentId`. |
+| Set a site-wide cost cap | `/v1/quota` | Monthly token/request ceiling on the API-key owner. |
 | List/download files from a chat | `GET /api/agents/{id}/files` | Same API key as `/v1`. Pass `?sessionId=` = `X-Fastclaw-Session-Key` or the returned `session_id`. |
 | Admin/dashboard automation | `/api/*` or `fastclaw ...` CLI | Cookie/admin oriented, broader surface, not the minimal upstream app contract. |
 | Coding-agent live preview runtime | `docs/coding-agent-runtime.md` | Project/runtime endpoints are documented separately. |
@@ -39,50 +39,41 @@ API key types:
 | `user` | App backend acting as one FastClaw owner account. Can use that owner's agents. |
 | `agent` | App backend scoped to explicit agent IDs. Recommended for single-agent integrations. |
 
-Do not expose FastClaw API keys in browsers or mobile apps. The upstream app
-backend should call FastClaw and map its own auth/session model to FastClaw
-`user` or `X-Fastclaw-End-User`.
+Do not expose FastClaw API keys in browsers or mobile apps. The upstream
+backend calls FastClaw. Map your product user to a deterministic
+`X-Fastclaw-Session-Key`, not to a FastClaw `user` / app_user.
 
-## Identity Model
+## Recommended model (one website, one FastClaw account)
 
-FastClaw has its own `user_id` because memory, sessions, usage, quotas, and
-per-user preferences need a stable isolation key.
+Use **one FastClaw user** (the website account) and **one server-side API
+key**. Create **a few template agents** (support, writing, …) — one agent
+per *product capability*, not one agent per registered user.
 
-For upstream apps, there are two supported patterns:
+| Concern | How to do it |
+|---|---|
+| Which product | `agent_id` on each chat |
+| Which registered user / conversation | `X-Fastclaw-Session-Key: <app>:<user-id>:<conversation-id>` |
+| Who the model should treat as the speaker | `params` this turn (name, plan, locale). Not persisted. |
+| Token totals per agent | `GET /v1/usage` → sum `daily[]` by `agentId` |
+| Token totals per registered user | Your DB, keyed by the session-key prefix. FastClaw does not bill per app_user. |
+| Site-wide cost cap | `PUT /v1/quota` on the API-key owner |
+| Cross-session FastClaw MEMORY.md / USER.md | Leave **Auto-remember chatter** off (default). API chats share chatter `api-user`; those files are not per website user. |
 
-1. Explicit provisioning:
+Do **not** send `user` or `X-Fastclaw-End-User` on the default path. That
+rebinds the request to an app_user: session rows move, `/v1/usage` used
+to look empty, and owner quota did not apply. Usage and quota APIs now
+always use the API-key owner, but chat isolation still depends on the
+session key.
 
-   ```http
-   POST /v1/users
-   Authorization: Bearer fcak_...
-   Content-Type: application/json
+`POST /v1/users` remains for callers that need an app_user row. It is
+not required for chat, files, usage, or quota.
 
-   {
-     "external_id": "upstream-user-123",
-     "display_name": "Alice"
-   }
-   ```
+Keep public template agents on the default **Auto-remember chatter =
+off**. Turn it on only for a private / seat agent that should distill
+into USER.md / MEMORY.md.
 
-   Response:
-
-   ```json
-   {
-     "user_id": "u_...",
-     "external_id": "upstream-user-123"
-   }
-   ```
-
-2. Lazy provisioning on chat:
-
-   Pass either:
-
-   - body field: `"user": "upstream-user-123"`
-   - header: `X-Fastclaw-End-User: upstream-user-123`
-
-   FastClaw will create or reuse the app-user row for that API key.
-
-Use the upstream user's stable internal ID, not email or display name. That
-keeps identity stable if the user changes their profile.
+Do not create one FastClaw agent per registered user. A UserSpace loads
+every agent owned by that account into memory.
 
 ## Chat API
 
@@ -117,11 +108,12 @@ X-Fastclaw-Session-Key: chat-upstream-user-123-default
   "agent_id": "agt_...",
   "model": "ignored-by-fastclaw-agent-config",
   "stream": true,
-  "user": "upstream-user-123",
   "messages": [
     { "role": "user", "content": "帮我总结今天的订单异常" }
   ],
   "params": {
+    "user_id": "upstream-user-123",
+    "display_name": "Alice",
     "tenant_id": "tenant_1",
     "locale": "zh-CN"
   }
@@ -132,9 +124,9 @@ FastClaw extensions:
 
 | Field | Type | Purpose |
 |---|---|---|
-| `agent_id` | string | Agent to call. Body wins over header. |
-| `user` | string | Upstream end-user ID. Body wins over `X-Fastclaw-End-User`. |
-| `params` | object | Per-turn structured context shown to the agent. Not persisted. |
+| `agent_id` | string | Agent to call. Body wins over header. Always send this when the account has more than one agent. |
+| `user` | string | Optional. Rebinds the request to an app_user. **Do not send** on the default website path. Isolation is the session key. |
+| `params` | object | Per-turn structured context shown to the agent (identity, plan, locale). Not persisted. |
 | `images` | string[] | Image URLs/data URLs shown to vision models and materialized into workspace. |
 | `imageUrls` | string[] | Alias for `images`. |
 | `attachments` | array | General files materialized into workspace. Use for PDFs, docs, zips, etc. |
@@ -204,6 +196,13 @@ Streaming and non-streaming responses also set:
 `session_key` is your conversation address (ChatID). `session_id` is the
 stored session row. File APIs accept either as `?sessionId=`.
 
+The `usage` object on the completion is currently zeros. Do not bill from
+it. Poll `GET /v1/usage` for owner totals.
+
+Send **only this turn's user text** in `messages`. FastClaw already stores
+the session transcript. Replaying the full OpenAI history duplicates
+context.
+
 ### Session Key Guidance
 
 Choose a deterministic session key from your product model:
@@ -212,8 +211,10 @@ Choose a deterministic session key from your product model:
 <app-name>:<upstream-user-id>:<conversation-id>
 ```
 
-Do not reuse one session key for unrelated conversations. Session keys control
-chat history, memory extraction context, and usage grouping.
+Reuse the same key to continue a conversation (that is the session
+memory). Mint a new conversation-id for a new thread. Do not reuse one
+key across users. Session keys control chat history, workspace files,
+and how you group usage on your side.
 
 ### Session files
 
@@ -231,8 +232,9 @@ Authorization: Bearer fcak_...
 
 `/workspace/report.md` in the model reply is the same file as `report.md`.
 
-If chat used `user` or `X-Fastclaw-End-User`, send the same header on file
-requests so the lookup stays in that end-user's session row.
+Always pass that user's `sessionId`. The API key can list every file on
+the agent if `sessionId` is omitted — isolation is your backend's job.
+Do not put `?token=` file URLs on a public page.
 
 ## Agents
 
@@ -265,20 +267,22 @@ operator/admin workflows, not the minimal end-user chat API.
 
 ## Usage And Quotas
 
-### `GET /v1/usage`
+Usage and quota are the **API-key owner** bucket (the website FastClaw
+account). `user_id` and `X-Fastclaw-End-User` do not select another
+person's ledger. Per registered-user billing belongs in the upstream app
+(session-key prefix). Per-agent rollup is `daily[].agentId`.
 
-Returns token usage for the authenticated FastClaw user, or for a specific
-app-user when `user_id` is provided.
+### `GET /v1/usage`
 
 Query params:
 
 | Param | Required | Notes |
 |---|---|---|
 | `days` | no | Default `30`, max `90`. |
-| `user_id` | no | FastClaw user ID returned by `/v1/users`. |
+| `user_id` | no | Ignored. Kept so old clients do not break. |
 
 ```http
-GET /v1/usage?user_id=u_...&days=30
+GET /v1/usage?days=30
 Authorization: Bearer fcak_...
 ```
 
@@ -312,7 +316,8 @@ Response:
 
 ### `PUT /v1/quota`
 
-Sets paid-plan limits for a FastClaw user.
+Sets the monthly ceiling for the API-key owner (site-wide kill switch).
+`user_id` is optional; when present it must be the owner.
 
 ```http
 PUT /v1/quota
@@ -320,7 +325,6 @@ Authorization: Bearer fcak_...
 Content-Type: application/json
 
 {
-  "user_id": "u_...",
   "monthly_token_limit": 5000000,
   "monthly_request_limit": 10000,
   "reset_day": 1
@@ -333,7 +337,7 @@ invalid values are normalized to `1`.
 ### `GET /v1/quota`
 
 ```http
-GET /v1/quota?user_id=u_...
+GET /v1/quota
 Authorization: Bearer fcak_...
 ```
 
@@ -343,32 +347,28 @@ status.
 ### `DELETE /v1/quota`
 
 ```http
-DELETE /v1/quota?user_id=u_...
+DELETE /v1/quota
 Authorization: Bearer fcak_...
 ```
 
-Removes explicit quota and reverts the user to unlimited FastClaw-side quota.
+Removes explicit quota and reverts the owner to unlimited FastClaw-side quota.
 
 ## Recommended Upstream Flow
 
-1. Operator creates/configures an agent in FastClaw.
-2. Operator creates an `agent` API key scoped to that agent.
-3. Upstream backend stores the API key server-side.
-4. When a product user starts:
-   - call `POST /v1/users`, or use lazy provisioning via chat `user`
-   - store the returned `user_id` if you need usage/quota lookups
-5. For each conversation:
-   - send `POST /v1/chat/completions`
-   - set `agent_id`
-   - set a deterministic `X-Fastclaw-Session-Key`
-   - set `user` to the upstream stable user ID
-   - read `session_id` from `X-Fastclaw-Session-Id` (or the non-stream JSON)
-   - list/download files with `GET /api/agents/{id}/files?sessionId=` using
-     either the header you sent or that `session_id`
-6. On subscription changes:
-   - call `PUT /v1/quota`
-7. For billing dashboards:
-   - call `GET /v1/usage`
+1. Operator creates one FastClaw account for the website and a few
+   template agents (keep **Auto-remember chatter** off).
+2. Operator creates an `agent` or `user` API key. Store it server-side.
+3. For each product conversation:
+   - `POST /v1/chat/completions` with `agent_id`
+   - `X-Fastclaw-Session-Key: <app>:<your-user-id>:<conversation-id>`
+   - `messages` = this turn only
+   - `params` = who the speaker is (optional)
+   - do not send `user` / `X-Fastclaw-End-User`
+   - persist `session_id` if you want dashboard-style ids
+   - list/download files with `?sessionId=` = that key or `session_id`
+4. Site-wide cap: `PUT /v1/quota` (owner bucket).
+5. Agent totals: `GET /v1/usage` and sum by `agentId`. Per registered
+   user: sum your own session keys.
 
 ## Error Shape
 
@@ -387,7 +387,8 @@ Common statuses:
 
 | Status | Meaning |
 |---|---|
-| `400` | Bad request body, missing messages, missing user_id, etc. |
+| `400` | Bad request body, missing messages, etc. |
+| `403` | Quota `user_id` is not the API-key owner. |
 | `401` | Missing/invalid API key. |
 | `404` | Agent not found or not accessible by this API key. |
 | `429` | Rate limited or quota exceeded. |
@@ -402,9 +403,9 @@ give it:
 2. The FastClaw base URL.
 3. API key type and scope.
 4. Agent ID.
-5. Your upstream user ID field.
-6. Your conversation/session ID field.
-7. Whether you need usage/quota billing integration.
+5. Your product user-id field (goes in the session key and optional `params`).
+6. Your conversation/session ID field (session-key suffix).
+7. Whether you need owner-level usage/quota.
 
 If the agent supports Skills, install or load:
 

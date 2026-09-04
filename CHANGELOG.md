@@ -21,6 +21,17 @@ action on upgrade — read those notes before deploying.
 
 ### Changed
 
+- **Upstream website integration is owner-bucket + session key.**
+  One FastClaw account per website; template agents for product
+  lines; end users isolated with `X-Fastclaw-Session-Key`.
+  `GET /v1/usage` always returns the API-key owner (ignores
+  `user_id` / End-User). `/v1/quota` is a site-wide cap on that
+  same owner (`user_id` optional, must match). Docs and
+  `skills/fastclaw-api-integration` no longer tell callers to
+  bill per app_user. Public template agents should keep
+  Auto-remember chatter off (still the default). **BREAKING** for
+  clients that set quota or expected usage on an app_user id.
+
 - **Guests cannot inventory an agent's config.** Non-owner chatters
   can no longer `exec` `cat` persona files or `SKILL.md`, see those
   names in `list_dir`, or receive `create_agent` / `configure_agent` /
