@@ -250,6 +250,74 @@ func TestCompactThresholdFallsBackToDefaultWindow(t *testing.T) {
 	}
 }
 
+func TestCompactThresholdMillionWindowLeaves203kUncompacted(t *testing.T) {
+	// Official Zhipu/Kimi/GPT defaults after #20. Auto-compact at
+	// window-10% never fires on the 14:27 session (~203k tokens).
+	got := CompactThreshold(1_000_000, 8192)
+	if got != 900_000 {
+		t.Fatalf("CompactThreshold(1_000_000, 8192) = %d, want 900000", got)
+	}
+	if 203_000 >= got {
+		t.Fatal("a 203k overflow session would have auto-compacted; the incident did not")
+	}
+}
+
+func TestOverflowHardTrimBudgetUsesRejectedSize(t *testing.T) {
+	got := overflowHardTrimBudget(900_000, 203_000, 20_000)
+	if got != 101_500 {
+		t.Fatalf("overflowHardTrimBudget(900k, 203k, 20k) = %d, want 101500", got)
+	}
+	if got := overflowHardTrimBudget(8_000, 203_000, 4_000); got != 8_000 {
+		t.Fatalf("tighter configured window should win, got %d", got)
+	}
+	// Rejected/2 below compactMinThreshold; keep/2 is the floor.
+	if got := overflowHardTrimBudget(900_000, 100, 20_000); got != 10_000 {
+		t.Fatalf("keep/2 floor = %d, want 10000", got)
+	}
+}
+
+func TestForceCompactMillionWindowUsesOverflowBudget(t *testing.T) {
+	// Models default 1M → threshold ~900k. Provider already 502'd this
+	// ~80k request. No summarizer (nil provider) + prune cannot shrink
+	// user/assistant text, so without OverflowTokens the retry is a no-op.
+	blob := strings.Repeat("overflow-body-", 80)
+	var msgs []provider.Message
+	for i := 0; i < 80; i++ {
+		msgs = append(msgs,
+			provider.Message{Role: "user", Content: blob + fmt.Sprintf("%d", i), Origin: provider.OriginUser},
+			provider.Message{Role: "assistant", Content: blob, Origin: provider.OriginUser},
+		)
+	}
+	before := EstimateTokens(msgs)
+	threshold := CompactThreshold(1_000_000, 8192)
+	if before >= threshold {
+		t.Fatalf("fixture should sit under the 1M threshold: tokens=%d thresh=%d", before, threshold)
+	}
+	if before < 20_000 {
+		t.Fatalf("fixture too small to exercise overflow trim: tokens=%d", before)
+	}
+
+	res, err := CompactMessagesWith(context.Background(), msgs, t.TempDir(), nil, "m", threshold, CompactOptions{
+		Force:            true,
+		OverflowTokens:   before,
+		KeepRecentTokens: 20_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := EstimateTokens(res.Messages)
+	budget := overflowHardTrimBudget(threshold, before, 20_000)
+	if after > budget {
+		t.Fatalf("working set still over overflow budget: after=%d budget=%d threshold=%d", after, budget, threshold)
+	}
+	if after >= before {
+		t.Fatalf("overflow force-compact did not shrink: before=%d after=%d", before, after)
+	}
+	if res.Method != compactMethodHardTrim {
+		t.Fatalf("method = %q, want %s", res.Method, compactMethodHardTrim)
+	}
+}
+
 func TestCompactThresholdSmallWindowStillCompacts(t *testing.T) {
 	got := CompactThreshold(32000, 8192)
 	if got <= 0 || got >= 32000 {
@@ -594,6 +662,36 @@ func TestCompactMessagesForceSummarizesUnderThreshold(t *testing.T) {
 	}
 	if !res.Pruned {
 		t.Fatal("force summarize should report pruned")
+	}
+}
+
+func TestCompactGiantHotTailToolIsCapped(t *testing.T) {
+	// The 14:27 MCP session: one exec dump (~500KB) sat in the
+	// keep-recent window, so summarize left tokens_before≈tokens_after.
+	// FastClaw's configured window was larger than the upstream 502
+	// limit, so hard-trim never ran.
+	huge := strings.Repeat("X", 200_000) // ~50k tokens
+	msgs := []provider.Message{
+		{Role: "user", Content: "add 9 mcp servers", Origin: provider.OriginUser},
+		{Role: "assistant", Content: "looking", Origin: provider.OriginUser, ToolCalls: []provider.ToolCall{
+			{ID: "t1", Function: provider.FunctionCall{Name: "exec", Arguments: `{"command":"fastclaw agents config --help"}`}},
+		}},
+		{Role: "tool", Name: "exec", ToolCallID: "t1", Content: huge, Origin: provider.OriginUser},
+	}
+	before := EstimateTokens(msgs)
+	f := &fakeSummarizer{}
+	res, err := CompactMessagesWith(context.Background(), msgs, t.TempDir(), f, "m", 1_000_000, CompactOptions{Force: true, KeepRecentTokens: 20_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := EstimateTokens(res.Messages)
+	if after >= before*9/10 {
+		t.Fatalf("giant hot-tail tool must shrink: before=%d after=%d", before, after)
+	}
+	for _, m := range res.Messages {
+		if m.Role == "tool" && len([]rune(m.Content)) > maxHotTailToolRunes+80 {
+			t.Fatalf("hot-tail tool still %d runes", len([]rune(m.Content)))
+		}
 	}
 }
 

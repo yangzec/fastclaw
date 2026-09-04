@@ -359,6 +359,25 @@ Some prose that is not a checkbox.
 	}
 }
 
+func TestFailedToolSummaryNilErrDoesNotPanic(t *testing.T) {
+	// Content-only failure (HTTP 5xx body, no Go error) used to call
+	// r.err.Error() and crash the gateway. See loop.go:2792.
+	if !isFailedToolResult(nil, "HTTP 502: Your input exceeds the context window of this model") {
+		t.Fatal("HTTP 502 body should classify as a failed tool result")
+	}
+	got := failedToolSummary(nil, "HTTP 502: Your input exceeds the context window of this model\nmore")
+	if got == "" {
+		t.Fatal("expected a summary from the result body")
+	}
+	if !strings.HasPrefix(got, "HTTP 502") {
+		t.Fatalf("summary = %q", got)
+	}
+	got = failedToolSummary(errors.New("exec: exit 1"), "ignored")
+	if got != "exec: exit 1" {
+		t.Fatalf("err.Error() should win, got %q", got)
+	}
+}
+
 func TestTodoReconcileNudgeAllowsHonestIncompleteness(t *testing.T) {
 	msg := todoReconcileNudge([]string{"2. configure model", "5. verify"})
 	if msg.Role != "system" {

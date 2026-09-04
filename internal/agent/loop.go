@@ -2822,10 +2822,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			// Registry.PriorFailure / web_fetch).
 			thisFailed := isFailedToolResult(r.err, resultContent)
 			if thisFailed {
-				summary := r.err.Error()
-				if summary == "" || summary == "<nil>" {
-					summary = firstNonEmptyLine(resultContent)
-				}
+				summary := failedToolSummary(r.err, resultContent)
 				a.registry.RecordToolFailure(r.toolName, tc.Function.Arguments, summary)
 				// Same-tool-fail-streak tracking (P0.1): counts
 				// consecutive failures of THIS tool regardless of
@@ -3041,7 +3038,11 @@ func (a *Agent) maybeCompactMidTurn(ctx context.Context, sess *session.Session, 
 }
 
 func (a *Agent) retryAfterOverflow(ctx context.Context, sess *session.Session, chatterUID, systemPrompt string, msg bus.InboundMessage, chatterMem *Memory) (messages []provider.Message, hint, notice string, ok bool) {
-	sessionMsgs, notice, hint, did := a.compactSession(ctx, sess, chatterUID, CompactOptions{Force: true})
+	rejected := EstimateTokens(sess.GetMessages())
+	sessionMsgs, notice, hint, did := a.compactSession(ctx, sess, chatterUID, CompactOptions{
+		Force:          true,
+		OverflowTokens: rejected,
+	})
 	if !did {
 		return nil, "", "", false
 	}
@@ -3069,6 +3070,20 @@ func isFailedToolResult(err error, content string) bool {
 		return true
 	}
 	return false
+}
+
+// failedToolSummary is the one-line stash for RecordToolFailure /
+// updateSameToolFailStreak. isFailedToolResult can be true from the
+// result body alone (HTTP 4xx/5xx text, analyze-error marker) while
+// r.err is nil — calling err.Error() in that case panics and takes
+// the whole gateway down.
+func failedToolSummary(err error, content string) string {
+	if err != nil {
+		if summary := err.Error(); summary != "" && summary != "<nil>" {
+			return summary
+		}
+	}
+	return firstNonEmptyLine(content)
 }
 
 // firstNonEmptyLine returns the first non-empty line of s, trimmed
@@ -3548,13 +3563,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			// is the same helper HandleMessage already uses. See
 			// updateSameToolFailStreak for the tested counting rules.
 			if isFailedToolResult(r.err, resultContent) {
-				summary := ""
-				if r.err != nil {
-					summary = r.err.Error()
-				}
-				if summary == "" || summary == "<nil>" {
-					summary = firstNonEmptyLine(resultContent)
-				}
+				summary := failedToolSummary(r.err, resultContent)
 				streakState = updateSameToolFailStreak(streakState, r.toolName, true, summary)
 			} else {
 				streakState = updateSameToolFailStreak(streakState, r.toolName, false, "")

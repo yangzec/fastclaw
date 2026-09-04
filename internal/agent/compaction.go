@@ -40,6 +40,10 @@ const (
 	// summarizeToolMaxRunes matches Pi's serializeConversation cap so
 	// one exec/read dump cannot blow the summarizer prompt.
 	summarizeToolMaxRunes = 2000
+	// maxHotTailToolRunes caps a single tool result that landed in the
+	// verbatim keep-recent window. Without this, one 500KB exec dump is
+	// "recent" and summarize leaves ~200k tokens untouched.
+	maxHotTailToolRunes = 8000
 	// compactSummaryMaxTokens is the structured-handoff budget.
 	compactSummaryMaxTokens = 4096
 	droppedHistoryNotice    = "[Earlier turns were dropped to fit the model context window. Full history is in memory logs.]"
@@ -78,6 +82,29 @@ func CompactThreshold(contextWindow, maxTokens int) int {
 		}
 	}
 	return thresh
+}
+
+// overflowHardTrimBudget is the hard-trim target after a provider
+// rejected the request. The Models contextWindow (often a 1M vendor
+// default) can be far above what the gateway actually accepts; using
+// that threshold here is why 203k-token overflow retries did nothing.
+func overflowHardTrimBudget(configuredThreshold, overflowTokens, keep int) int {
+	budget := configuredThreshold
+	if overflowTokens > 0 {
+		// Half of what just failed, so the retry plus system prompt /
+		// tool schemas can still fit a smaller real window.
+		rejected := overflowTokens / 2
+		if rejected < compactMinThreshold {
+			rejected = compactMinThreshold
+		}
+		if budget <= 0 || rejected < budget {
+			budget = rejected
+		}
+	}
+	if keep > 0 && budget < keep/2 {
+		budget = keep / 2
+	}
+	return budget
 }
 
 // lookupContextWindow finds the current model's contextWindow in the
@@ -229,6 +256,11 @@ type CompactOptions struct {
 	// Force compact even when the estimate is still under threshold
 	// (overflow recovery after a provider 400).
 	Force bool
+	// OverflowTokens is the estimated size of the request the provider
+	// just rejected. When set with Force, hard-trim aims under this
+	// size (not the configured-window threshold). A 1M Models default
+	// with a 128k/200k gateway would otherwise never hard-trim.
+	OverflowTokens int
 }
 
 // CompactMessages compresses the message history when it exceeds the
@@ -261,7 +293,12 @@ func CompactMessagesWith(ctx context.Context, messages []provider.Message, works
 		return &CompactResult{Messages: messages}, nil
 	}
 
-	slog.Info("context compaction triggered", "tokens", tokens, "threshold", threshold, "message_count", len(messages), "keep_recent", keep, "force", opts.Force)
+	trimAt := threshold
+	if opts.Force && opts.OverflowTokens > 0 {
+		trimAt = overflowHardTrimBudget(threshold, opts.OverflowTokens, keep)
+	}
+
+	slog.Info("context compaction triggered", "tokens", tokens, "threshold", threshold, "trim_at", trimAt, "overflow_tokens", opts.OverflowTokens, "message_count", len(messages), "keep_recent", keep, "force", opts.Force)
 
 	logFile, err := writeHistoryLog(messages, workspace)
 	if err != nil {
@@ -276,12 +313,17 @@ func CompactMessagesWith(ctx context.Context, messages []provider.Message, works
 			force:            opts.Force,
 		})
 		if err == nil {
+			compressed = capOversizedToolResults(compressed, maxHotTailToolRunes)
 			after := EstimateTokens(compressed)
 			slog.Info("after compression", "tokens_before", tokens, "tokens_after", after)
 			method := compactMethodSummarize
-			if after >= threshold {
-				slog.Warn("compression still over threshold, hard-trimming", "tokens", after, "threshold", threshold)
-				compressed = hardTrimMessages(compressed, threshold)
+			// Force + a giant hot-tail tool can leave after still huge
+			// while under a 1M-class threshold. Hard-trim if we barely
+			// shrunk or are still over the overflow budget.
+			barelyShrunk := after > tokens*9/10 && after > keep
+			if after >= trimAt || (opts.Force && barelyShrunk) {
+				slog.Warn("compression still over threshold, hard-trimming", "tokens", after, "threshold", trimAt, "configured_threshold", threshold, "force", opts.Force)
+				compressed = hardTrimMessages(compressed, trimAt)
 				method = compactMethodHardTrim
 			}
 			return &CompactResult{
@@ -294,10 +336,10 @@ func CompactMessagesWith(ctx context.Context, messages []provider.Message, works
 		slog.Warn("compression failed, falling back to local shrink", "error", err)
 	}
 
-	pruned := pruneToolResultsBefore(messages, keepRecentCutoff(messages, keep))
+	pruned := capOversizedToolResults(pruneToolResultsBefore(messages, keepRecentCutoff(messages, keep)), maxHotTailToolRunes)
 	prunedTokens := EstimateTokens(pruned)
-	slog.Info("after pruning", "tokens_before", tokens, "tokens_after", prunedTokens)
-	if prunedTokens < threshold {
+	slog.Info("after pruning", "tokens_before", tokens, "tokens_after", prunedTokens, "trim_at", trimAt)
+	if prunedTokens < trimAt {
 		if prunedTokens < tokens {
 			return &CompactResult{
 				Messages: pruned,
@@ -310,7 +352,7 @@ func CompactMessagesWith(ctx context.Context, messages []provider.Message, works
 	}
 
 	return &CompactResult{
-		Messages: hardTrimMessages(pruned, threshold),
+		Messages: hardTrimMessages(pruned, trimAt),
 		Pruned:   true,
 		Method:   compactMethodHardTrim,
 		LogFile:  logFile,
@@ -375,6 +417,27 @@ func pruneToolResultsBefore(messages []provider.Message, cutoff int) []provider.
 	}
 
 	return result
+}
+
+// capOversizedToolResults shrinks any single tool payload that would
+// otherwise occupy the entire keep-recent window by itself. Full
+// output stays in the JSONL archive written before compaction.
+func capOversizedToolResults(messages []provider.Message, maxRunes int) []provider.Message {
+	if maxRunes <= 0 {
+		maxRunes = maxHotTailToolRunes
+	}
+	out := make([]provider.Message, len(messages))
+	copy(out, messages)
+	for i := range out {
+		if out[i].Role != "tool" {
+			continue
+		}
+		if len([]rune(out[i].Content)) <= maxRunes {
+			continue
+		}
+		out[i].Content = capRunes(out[i].Content, maxRunes) + "\n" + truncatedPlaceholder
+	}
+	return out
 }
 
 // hardTrimMessages is the last-resort fit: truncate every oversized

@@ -175,6 +175,52 @@ func TestCompactSessionReplacesWorkingSet(t *testing.T) {
 	}
 }
 
+func TestRetryAfterOverflowMillionWindowStillShrinks(t *testing.T) {
+	// Same shape as the 14:27 incident: configured window 1M, real
+	// gateway already rejected ~80k tokens. Summarizer is nil so the
+	// only way retryAfterOverflow can succeed is OverflowTokens.
+	ag := compactTestAgent(t, nil)
+	ag.model = "zhipu/glm-5.3"
+	ag.maxTokens = 8192
+	ag.providers = map[string]config.ProviderConfig{
+		"zhipu": {Models: []config.ModelEntry{{ID: "glm-5.3", ContextWindow: 1_000_000}}},
+	}
+	thresh := ag.compactTokenThreshold("user-a")
+	if thresh != CompactThreshold(1_000_000, 8192) {
+		t.Fatalf("threshold = %d, want 1M-window compact threshold", thresh)
+	}
+
+	sess := ag.sessions.Get("web", "", "chat-million-overflow", "")
+	blob := strings.Repeat("overflow-body-", 80)
+	for i := 0; i < 80; i++ {
+		sess.Append(provider.Message{Role: "user", Content: blob + "u", Origin: provider.OriginUser})
+		sess.Append(provider.Message{Role: "assistant", Content: blob + "a", Origin: provider.OriginUser})
+	}
+	before := EstimateTokens(sess.GetMessages())
+	if before >= thresh {
+		t.Fatalf("fixture over configured threshold: tokens=%d thresh=%d", before, thresh)
+	}
+
+	msg := bus.InboundMessage{Channel: "web", ChatID: "chat-million-overflow"}
+	rebuilt, hint, notice, ok := ag.retryAfterOverflow(context.Background(), sess, "user-a", "SYSTEM_PROMPT", msg, nil)
+	if !ok {
+		t.Fatal("1M-window overflow retry must still compact using the rejected size")
+	}
+	after := EstimateTokens(sess.GetMessages())
+	if after >= before {
+		t.Fatalf("session did not shrink: %d → %d", before, after)
+	}
+	if after > overflowHardTrimBudget(thresh, before, KeepRecentTokens) {
+		t.Fatalf("session still over overflow budget: after=%d", after)
+	}
+	if notice == "" || hint == "" {
+		t.Fatalf("expected notice and hint, got notice=%q hint=%q", notice, hint)
+	}
+	if len(rebuilt) < 1 || rebuilt[0].Content != "SYSTEM_PROMPT" {
+		t.Fatalf("rebuilt turn should start with the system prompt, got %+v", rebuilt)
+	}
+}
+
 func TestRetryAfterOverflowRebuildsTurnPrefix(t *testing.T) {
 	f := &fakeSummarizer{}
 	ag := compactTestAgent(t, f)
