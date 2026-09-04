@@ -97,7 +97,7 @@ export default function AgentCustomizePage() {
     setSaving(true);
     setError(null);
     try {
-      const results = await Promise.all(
+      await Promise.all(
         toWrite.map(async (name) => {
           const res = await apiFetch(`/api/agents/${agentId}/system-files/${name}`, {
             method: "PUT",
@@ -109,7 +109,6 @@ export default function AgentCustomizePage() {
             const label = CUSTOMIZE_FILES.find((f) => f.name === name)?.label || name;
             throw new Error(`${label}: ${data?.error || `save failed (${res.status})`}`);
           }
-          return name;
         }),
       );
       setSaved(true);
