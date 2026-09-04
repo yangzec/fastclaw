@@ -148,6 +148,10 @@ action on upgrade — read those notes before deploying.
   the sheet instead of writing SOUL.md / IDENTITY.md. The panel
   now clears the close button, and a failed PUT shows an error
   instead of a false Saved state.
+- **Customize Save writes every edited tab.** One Save used to
+  PUT only the visible file, then reload wiped in-memory edits
+  on Soul / Bootstrap / the rest. Dirty tabs get a dot; the
+  button says how many files will be written.
 - **`make build` works with pnpm 11.** Overrides live in
   `web/pnpm-workspace.yaml` so `pnpm install --frozen-lockfile` no
   longer fails with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`. The same
