@@ -18,6 +18,7 @@ import (
 )
 
 func TestRunPasswordAndKey(t *testing.T) {
+	t.Cleanup(ResetPool)
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -107,6 +108,7 @@ func TestRunPasswordAndKey(t *testing.T) {
 }
 
 func TestRunMergesStdoutAndStderr(t *testing.T) {
+	t.Cleanup(ResetPool)
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)

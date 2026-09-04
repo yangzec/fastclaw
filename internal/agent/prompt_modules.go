@@ -759,7 +759,11 @@ func modSSHHosts(p *promptCtx) string {
 	return `# Saved SSH hosts
 You can run commands on the owner's saved servers with ssh_exec(host, command).
 Use the alias from Settings → SSH Hosts (for example gpu-box), not an IP or hostname.
-FastClaw injects the saved public key or password. Never ask the user for a password or private key, and never put credentials in exec() or in your reply.`
+FastClaw injects the saved public key or password. Never ask the user for a password or private key, and never put credentials in exec() or in your reply.
+Connections are reused: the next ssh_exec on the same alias does not log in again. Idle sessions disconnect after 2 hours (owner-configurable). Each command is still a fresh non-interactive shell (cwd resets to the host's default directory unless you cd in the same command).
+When tmux is installed on the server, FastClaw keeps a detached session named fastclaw-<alias>. For long jobs, start them there so they survive a disconnect:
+  tmux new-window -t fastclaw-gpu-box -d -- bash -lc 'your long command'
+The owner can also: ssh in themselves and run tmux attach -t fastclaw-gpu-box`
 }
 
 // modSandboxOptional briefs the model for self-hosted installs where a

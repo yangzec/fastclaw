@@ -2265,6 +2265,11 @@ export interface SSHHost {
   authType: SSHAuthType;
   defaultCwd?: string;
   enabled: boolean;
+  idleTimeoutSec?: number;
+  persistTmux?: boolean;
+  tmuxSession?: string;
+  connected?: boolean;
+  lastUsedAt?: string;
   hasSecret?: boolean;
   hasHostKey?: boolean;
   createdAt?: string;
@@ -2282,6 +2287,8 @@ export interface SSHHostWrite {
   passphrase?: string;
   defaultCwd?: string;
   enabled?: boolean;
+  idleTimeoutSec?: number;
+  persistTmux?: boolean;
 }
 
 export async function listSSHHosts(): Promise<{ hosts?: SSHHost[]; error?: string }> {
@@ -2319,8 +2326,15 @@ export async function deleteSSHHost(id: string): Promise<{ ok?: boolean; error?:
 
 export async function testSSHHost(
   id: string,
-): Promise<{ ok?: boolean; output?: string; error?: string }> {
+): Promise<{ ok?: boolean; output?: string; error?: string; tmuxSession?: string }> {
   const res = await apiFetch(`/api/ssh-hosts/${encodeURIComponent(id)}/test`, { method: "POST" });
+  return res.json();
+}
+
+export async function disconnectSSHHost(id: string): Promise<{ ok?: boolean; error?: string }> {
+  const res = await apiFetch(`/api/ssh-hosts/${encodeURIComponent(id)}/disconnect`, {
+    method: "POST",
+  });
   return res.json();
 }
 

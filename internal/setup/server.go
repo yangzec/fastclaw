@@ -439,6 +439,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("PUT /api/ssh-hosts/{id}", auth(s.handleUpdateSSHHost))
 	mux.HandleFunc("DELETE /api/ssh-hosts/{id}", auth(s.handleDeleteSSHHost))
 	mux.HandleFunc("POST /api/ssh-hosts/{id}/test", auth(s.handleTestSSHHost))
+	mux.HandleFunc("POST /api/ssh-hosts/{id}/disconnect", auth(s.handleDisconnectSSHHost))
 
 	// Apikeys (per-user, with agent multi-select).
 	mux.HandleFunc("GET /api/apikeys", auth(s.handleListAPIKeys))
