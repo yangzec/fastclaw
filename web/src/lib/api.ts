@@ -14,6 +14,7 @@ export interface StatusResponse {
   userId?: string;
   isAdmin?: boolean;
   users?: number;
+  envProvider?: { name: string; env: string; model?: string };
 }
 
 export interface RegisterRequest {

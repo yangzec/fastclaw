@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fastclaw-ai/fastclaw/internal/agentcli"
 	"github.com/fastclaw-ai/fastclaw/internal/cliclient"
 	"github.com/fastclaw-ai/fastclaw/internal/config"
 	"github.com/fastclaw-ai/fastclaw/internal/daemon"
@@ -194,9 +195,40 @@ func warnVersionSkew(ctx context.Context, baseURL string) {
 var errNeedsOnboard = errors.New("fastclaw is not set up yet")
 
 func promptOnboard(ctx context.Context, baseURL string) error {
+	if ok, err := tryAutoOnboard(ctx); err != nil {
+		return err
+	} else if ok {
+		fmt.Fprintln(os.Stderr, "Using the API key already on this machine. Starting chat.")
+		return nil
+	}
 	fmt.Fprintf(os.Stderr, "Open %s — create an account, paste an API key, then this terminal will start chatting.\n", baseURL)
 	openBrowser(baseURL)
 	return waitUntilConfigured(ctx, baseURL, 30*time.Minute)
+}
+
+func tryAutoOnboard(ctx context.Context) (bool, error) {
+	det, ok := config.DetectProviderFromEnv()
+	if !ok {
+		return false, nil
+	}
+	st, err := openStoreFromEnv()
+	if err != nil {
+		return false, err
+	}
+	defer st.Close()
+	res, err := agentcli.Init(ctx, st, "Assistant", agentcli.InitOptions{
+		Provider:  det.Name,
+		Model:     det.Model,
+		APIKeyEnv: det.Env,
+	})
+	if err != nil {
+		return false, err
+	}
+	if res.OwnerCreated && res.GeneratedPassword != "" {
+		fmt.Fprintf(os.Stderr, "Created user %q with password: %s (shown once)\n", res.OwnerUsername, res.GeneratedPassword)
+	}
+	notifyGatewayReload()
+	return true, nil
 }
 
 func waitUntilConfigured(ctx context.Context, baseURL string, timeout time.Duration) error {

@@ -545,6 +545,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"provider":         nil,
 		"uptime":           formatDuration(time.Since(s.startedAt)),
 	}
+	if det, ok := config.DetectProviderFromEnv(); ok {
+		resp["envProvider"] = det
+	}
 	ident, authed := auth.FromContext(r.Context())
 	if !authed {
 		jsonResponse(w, http.StatusOK, resp)

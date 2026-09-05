@@ -47,9 +47,9 @@ powershell -ExecutionPolicy Bypass -Command "iex(New-Object Net.WebClient).Downl
 
 ```bash
 fastclaw
-# Starts the gateway, opens the browser, and waits.
-# Create an account, paste an API key, start chatting.
-# Foreground chat in this terminal once setup finishes.
+# Starts the gateway. If OPENAI_API_KEY (or a sibling) is already
+# exported, FastClaw creates an agent and this terminal starts chatting.
+# Otherwise it opens the browser: account + API key, then chat.
 # Use `fastclaw daemon start` to run the gateway in the background,
 # or `fastclaw daemon install` for a launchd / systemd service.
 ```

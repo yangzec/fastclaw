@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -298,6 +299,22 @@ func (s *Server) handleOnboard(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		return
+	}
+	if req.APIKey == "" {
+		if req.Provider != "" {
+			req.APIKey = config.EnvAPIKeyFor(req.Provider)
+		}
+		if req.APIKey == "" {
+			if det, ok := config.DetectProviderFromEnv(); ok {
+				if req.Provider == "" || req.Provider == det.Name {
+					req.Provider = det.Name
+					req.APIKey = os.Getenv(det.Env)
+					if req.Model == "" {
+						req.Model = det.Model
+					}
+				}
+			}
+		}
 	}
 	if req.Provider != "" && req.APIKey != "" {
 		pcfg := config.ProviderConfig{
