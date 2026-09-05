@@ -62,6 +62,30 @@ type FeishuTask struct {
 	Assignees   []string // open_id
 }
 
+// FeishuTaskInfo is a task record returned by list/get.
+type FeishuTaskInfo struct {
+	GUID        string
+	Summary     string
+	Description string
+	Status      string
+	URL         string
+	DueUnix     int64 // seconds; 0 = none
+	WholeDay    bool
+	Completed   bool
+	Assignees   []string // open_id
+}
+
+// FeishuTaskPatch is a partial update. Nil / unset fields are left alone.
+type FeishuTaskPatch struct {
+	Summary     *string
+	Description *string
+	SetDue      bool
+	ClearDue    bool
+	DueUnix     int64
+	WholeDay    bool
+	Complete    *bool // true = done, false = reopen
+}
+
 // FeishuDoc is the subset we expose for docx create.
 type FeishuDoc struct {
 	Title   string
@@ -324,24 +348,249 @@ func (c *FeishuOpenAPI) CreateTask(ctx context.Context, t FeishuTask) (guid, lin
 	return parsed.Data.Task.GUID, parsed.Data.Task.URL, nil
 }
 
+// ListTasks returns tasks this app created. Official task v2 list
+// (type=my_tasks) requires a user_access_token and is empty for a
+// tenant / bot token — FastClaw only has the latter. Task v1 list
+// with tenant_access_token is the documented way to read todos the
+// bot created via feishu_create_task. v2 my_tasks is a fallback.
+func (c *FeishuOpenAPI) ListTasks(ctx context.Context, completed *bool, pageSize int) ([]FeishuTaskInfo, error) {
+	items, err := c.listTasksV1(ctx, completed, pageSize)
+	if err == nil {
+		return items, nil
+	}
+	v2, err2 := c.listTasksV2(ctx, completed, pageSize)
+	if err2 == nil && len(v2) > 0 {
+		return v2, nil
+	}
+	return nil, err
+}
+
+func (c *FeishuOpenAPI) listTasksV1(ctx context.Context, completed *bool, pageSize int) ([]FeishuTaskInfo, error) {
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 50
+	}
+	var out []FeishuTaskInfo
+	pageToken := ""
+	for pages := 0; pages < 5 && len(out) < pageSize; pages++ {
+		q := url.Values{}
+		q.Set("page_size", strconv.Itoa(pageSize))
+		q.Set("user_id_type", "open_id")
+		if pageToken != "" {
+			q.Set("page_token", pageToken)
+		}
+		if completed != nil {
+			if *completed {
+				q.Set("task_completed", "true")
+			} else {
+				q.Set("task_completed", "false")
+			}
+		}
+		var parsed struct {
+			Code int    `json:"code"`
+			Msg  string `json:"msg"`
+			Data struct {
+				Items     []feishuTaskV1JSON `json:"items"`
+				PageToken string             `json:"page_token"`
+				HasMore   bool               `json:"has_more"`
+			} `json:"data"`
+		}
+		if err := c.call(ctx, http.MethodGet, "/open-apis/task/v1/tasks?"+q.Encode(), nil, &parsed); err != nil {
+			return nil, err
+		}
+		if parsed.Code != 0 {
+			return nil, feishuAPIErr("task/v1/list", parsed.Code, parsed.Msg)
+		}
+		for _, raw := range parsed.Data.Items {
+			out = append(out, raw.info())
+			if len(out) >= pageSize {
+				break
+			}
+		}
+		if !parsed.Data.HasMore || parsed.Data.PageToken == "" {
+			break
+		}
+		pageToken = parsed.Data.PageToken
+	}
+	return out, nil
+}
+
+func (c *FeishuOpenAPI) listTasksV2(ctx context.Context, completed *bool, pageSize int) ([]FeishuTaskInfo, error) {
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 50
+	}
+	q := url.Values{}
+	q.Set("page_size", strconv.Itoa(pageSize))
+	q.Set("type", "my_tasks")
+	q.Set("user_id_type", "open_id")
+	if completed != nil {
+		if *completed {
+			q.Set("completed", "true")
+		} else {
+			q.Set("completed", "false")
+		}
+	}
+	var parsed struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			Items []feishuTaskJSON `json:"items"`
+		} `json:"data"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/open-apis/task/v2/tasks?"+q.Encode(), nil, &parsed); err != nil {
+		return nil, err
+	}
+	if parsed.Code != 0 {
+		return nil, feishuAPIErr("task/list", parsed.Code, parsed.Msg)
+	}
+	out := make([]FeishuTaskInfo, 0, len(parsed.Data.Items))
+	for _, raw := range parsed.Data.Items {
+		out = append(out, raw.info())
+	}
+	return out, nil
+}
+
+// GetTask fetches one task by guid (or a Feishu todo applink containing guid=).
+func (c *FeishuOpenAPI) GetTask(ctx context.Context, guid string) (FeishuTaskInfo, error) {
+	var zero FeishuTaskInfo
+	guid = feishuTaskGUID(guid)
+	if guid == "" {
+		return zero, fmt.Errorf("feishu api: task guid required")
+	}
+	info, err := c.getTaskV2(ctx, guid)
+	if err == nil {
+		return info, nil
+	}
+	info, err1 := c.getTaskV1(ctx, guid)
+	if err1 == nil {
+		return info, nil
+	}
+	return zero, err
+}
+
+func (c *FeishuOpenAPI) getTaskV2(ctx context.Context, guid string) (FeishuTaskInfo, error) {
+	var zero FeishuTaskInfo
+	var parsed struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			Task feishuTaskJSON `json:"task"`
+		} `json:"data"`
+	}
+	path := "/open-apis/task/v2/tasks/" + url.PathEscape(guid) + "?user_id_type=open_id"
+	if err := c.call(ctx, http.MethodGet, path, nil, &parsed); err != nil {
+		return zero, err
+	}
+	if parsed.Code != 0 {
+		return zero, feishuAPIErr("task/get", parsed.Code, parsed.Msg)
+	}
+	info := parsed.Data.Task.info()
+	if info.GUID == "" {
+		info.GUID = guid
+	}
+	return info, nil
+}
+
+func (c *FeishuOpenAPI) getTaskV1(ctx context.Context, guid string) (FeishuTaskInfo, error) {
+	var zero FeishuTaskInfo
+	var parsed struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			Task feishuTaskV1JSON `json:"task"`
+		} `json:"data"`
+	}
+	path := "/open-apis/task/v1/tasks/" + url.PathEscape(guid) + "?user_id_type=open_id"
+	if err := c.call(ctx, http.MethodGet, path, nil, &parsed); err != nil {
+		return zero, err
+	}
+	if parsed.Code != 0 {
+		return zero, feishuAPIErr("task/v1/get", parsed.Code, parsed.Msg)
+	}
+	info := parsed.Data.Task.info()
+	if info.GUID == "" {
+		info.GUID = guid
+	}
+	return info, nil
+}
+
+// FilterTasksByAssignee keeps tasks assigned to openID. Tasks with no
+// assignees stay (bot-created, not yet assigned). Empty openID = no filter.
+func FilterTasksByAssignee(items []FeishuTaskInfo, openID string) []FeishuTaskInfo {
+	openID = strings.TrimSpace(openID)
+	if openID == "" || len(items) == 0 {
+		return items
+	}
+	out := make([]FeishuTaskInfo, 0, len(items))
+	for _, t := range items {
+		if len(t.Assignees) == 0 {
+			out = append(out, t)
+			continue
+		}
+		for _, a := range t.Assignees {
+			if a == openID {
+				out = append(out, t)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // CompleteTask marks a task finished.
 func (c *FeishuOpenAPI) CompleteTask(ctx context.Context, guid string) error {
-	guid = strings.TrimSpace(guid)
+	done := true
+	return c.UpdateTask(ctx, guid, FeishuTaskPatch{Complete: &done})
+}
+
+// UpdateTask patches title / notes / due / completed via task v2.
+func (c *FeishuOpenAPI) UpdateTask(ctx context.Context, guid string, patch FeishuTaskPatch) error {
+	guid = feishuTaskGUID(guid)
 	if guid == "" {
 		return fmt.Errorf("feishu api: task guid required")
+	}
+	task := map[string]any{}
+	fields := []string{}
+	if patch.Summary != nil {
+		fields = append(fields, "summary")
+		task["summary"] = strings.TrimSpace(*patch.Summary)
+	}
+	if patch.Description != nil {
+		fields = append(fields, "description")
+		task["description"] = *patch.Description
+	}
+	if patch.ClearDue {
+		fields = append(fields, "due")
+	} else if patch.SetDue && patch.DueUnix > 0 {
+		fields = append(fields, "due")
+		task["due"] = map[string]any{
+			"timestamp":  strconv.FormatInt(patch.DueUnix*1000, 10),
+			"is_all_day": patch.WholeDay,
+		}
+	}
+	if patch.Complete != nil {
+		fields = append(fields, "completed_at")
+		if *patch.Complete {
+			task["completed_at"] = strconv.FormatInt(time.Now().UnixMilli(), 10)
+		} else {
+			task["completed_at"] = "0"
+		}
+	}
+	if len(fields) == 0 {
+		return fmt.Errorf("feishu api: nothing to update")
 	}
 	var parsed struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 	}
-	path := "/open-apis/task/v2/tasks/" + url.PathEscape(guid)
+	path := "/open-apis/task/v2/tasks/" + url.PathEscape(guid) + "?user_id_type=open_id"
 	if err := c.call(ctx, http.MethodPatch, path, map[string]any{
-		"completed_at": strconv.FormatInt(time.Now().UnixMilli(), 10),
+		"task":          task,
+		"update_fields": fields,
 	}, &parsed); err != nil {
 		return err
 	}
 	if parsed.Code != 0 {
-		return feishuAPIErr("task/complete", parsed.Code, parsed.Msg)
+		return feishuAPIErr("task/update", parsed.Code, parsed.Msg)
 	}
 	return nil
 }
@@ -376,7 +625,7 @@ func (c *FeishuOpenAPI) CreateDoc(ctx context.Context, doc FeishuDoc) (docID, li
 	}
 	link = "https://feishu.cn/docx/" + docID
 	if content := strings.TrimSpace(doc.Content); content != "" {
-		if err := c.appendDocText(ctx, docID, content); err != nil {
+		if err := c.AppendDocText(ctx, docID, content); err != nil {
 			return docID, link, fmt.Errorf("created doc %s but writing body failed: %w", docID, err)
 		}
 	}
@@ -447,6 +696,33 @@ func (c *FeishuOpenAPI) ReadDoc(ctx context.Context, documentRef string) (title,
 		return "", "", feishuAPIErr("docx/raw_content", raw.Code, raw.Msg)
 	}
 	return meta.Data.Document.Title, raw.Data.Content, nil
+}
+
+// UpdateDocTitle changes an existing docx title.
+func (c *FeishuOpenAPI) UpdateDocTitle(ctx context.Context, documentRef, title string) error {
+	docID := feishuDocumentID(documentRef)
+	title = strings.TrimSpace(title)
+	if docID == "" || title == "" {
+		return fmt.Errorf("feishu api: document_id and title required")
+	}
+	var parsed struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := c.call(ctx, http.MethodPatch, "/open-apis/docx/v1/documents/"+url.PathEscape(docID), map[string]any{
+		"title": title,
+	}, &parsed); err != nil {
+		return err
+	}
+	if parsed.Code != 0 {
+		return feishuAPIErr("docx/patch", parsed.Code, parsed.Msg)
+	}
+	return nil
+}
+
+// AppendDocText appends plain-text paragraphs to an existing docx.
+func (c *FeishuOpenAPI) AppendDocText(ctx context.Context, documentRef, content string) error {
+	return c.appendDocText(ctx, feishuDocumentID(documentRef), content)
 }
 
 func (c *FeishuOpenAPI) appendDocText(ctx context.Context, docID, content string) error {
@@ -551,6 +827,143 @@ func feishuTaskMembers(openIDs []string) []map[string]string {
 		out = append(out, map[string]string{"id": id, "type": "user", "role": "assignee"})
 	}
 	return out
+}
+
+type feishuTaskJSON struct {
+	GUID        string `json:"guid"`
+	Summary     string `json:"summary"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	URL         string `json:"url"`
+	CompletedAt string `json:"completed_at"`
+	Due         struct {
+		Timestamp string `json:"timestamp"`
+		IsAllDay  bool   `json:"is_all_day"`
+	} `json:"due"`
+	Members []struct {
+		ID   string `json:"id"`
+		Role string `json:"role"`
+	} `json:"members"`
+}
+
+func (t feishuTaskJSON) info() FeishuTaskInfo {
+	info := FeishuTaskInfo{
+		GUID:        t.GUID,
+		Summary:     t.Summary,
+		Description: t.Description,
+		Status:      t.Status,
+		URL:         t.URL,
+		WholeDay:    t.Due.IsAllDay,
+	}
+	if ms, err := strconv.ParseInt(strings.TrimSpace(t.Due.Timestamp), 10, 64); err == nil && ms > 0 {
+		info.DueUnix = ms / 1000
+	}
+	if t.CompletedAt != "" && t.CompletedAt != "0" {
+		info.Completed = true
+		if info.Status == "" {
+			info.Status = "done"
+		}
+	}
+	if info.Status == "" {
+		if info.Completed {
+			info.Status = "done"
+		} else {
+			info.Status = "todo"
+		}
+	}
+	seen := map[string]bool{}
+	for _, m := range t.Members {
+		id := strings.TrimSpace(m.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		if role := strings.ToLower(strings.TrimSpace(m.Role)); role != "" && role != "assignee" {
+			continue
+		}
+		seen[id] = true
+		info.Assignees = append(info.Assignees, id)
+	}
+	return info
+}
+
+type feishuTaskV1JSON struct {
+	ID           string `json:"id"`
+	Summary      string `json:"summary"`
+	Description  string `json:"description"`
+	CompleteTime string `json:"complete_time"`
+	Due          struct {
+		Time     string `json:"time"`
+		Timezone string `json:"timezone"`
+		IsAllDay bool   `json:"is_all_day"`
+	} `json:"due"`
+	Collaborators []struct {
+		ID     string   `json:"id"`
+		IDList []string `json:"id_list"`
+	} `json:"collaborators"`
+	CollaboratorIDs []string `json:"collaborator_ids"`
+}
+
+func (t feishuTaskV1JSON) info() FeishuTaskInfo {
+	id := strings.TrimSpace(t.ID)
+	info := FeishuTaskInfo{
+		GUID:        id,
+		Summary:     t.Summary,
+		Description: t.Description,
+		WholeDay:    t.Due.IsAllDay,
+	}
+	if id != "" {
+		info.URL = "https://applink.feishu.cn/client/todo/detail?guid=" + id
+	}
+	if sec, err := strconv.ParseInt(strings.TrimSpace(t.Due.Time), 10, 64); err == nil && sec > 0 {
+		info.DueUnix = sec
+	}
+	if t.CompleteTime != "" && t.CompleteTime != "0" {
+		info.Completed = true
+		info.Status = "done"
+	} else {
+		info.Status = "todo"
+	}
+	seen := map[string]bool{}
+	add := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" || seen[raw] {
+			return
+		}
+		seen[raw] = true
+		info.Assignees = append(info.Assignees, raw)
+	}
+	for _, c := range t.Collaborators {
+		add(c.ID)
+		for _, id := range c.IDList {
+			add(id)
+		}
+	}
+	for _, id := range t.CollaboratorIDs {
+		add(id)
+	}
+	return info
+}
+
+func feishuTaskGUID(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	if u, err := url.Parse(ref); err == nil && u.RawQuery != "" {
+		if g := strings.TrimSpace(u.Query().Get("guid")); g != "" {
+			return g
+		}
+	}
+	if i := strings.Index(ref, "guid="); i >= 0 {
+		g := ref[i+5:]
+		if j := strings.IndexAny(g, "&?#"); j >= 0 {
+			g = g[:j]
+		}
+		if g != "" {
+			return g
+		}
+	}
+	return ref
 }
 
 func feishuDocumentID(ref string) string {

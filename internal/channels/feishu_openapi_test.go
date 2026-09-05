@@ -50,6 +50,31 @@ func TestFeishuOpenAPICreateEventTaskDoc(t *testing.T) {
 				"code": 0,
 				"data": map[string]any{"task": map[string]any{"guid": "task_1", "url": "https://applink.feishu.cn/t/1"}},
 			})
+		case strings.HasSuffix(r.URL.Path, "/task/v2/tasks") && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{"items": []any{
+					map[string]any{"guid": "task_1", "summary": "写周报", "status": "todo"},
+				}},
+			})
+		case strings.Contains(r.URL.Path, "/task/v2/tasks/") && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{"task": map[string]any{
+					"guid": "task_1", "summary": "写周报", "status": "todo",
+					"due": map[string]any{"timestamp": "1773462000000", "is_all_day": true},
+				}},
+			})
+		case strings.Contains(r.URL.Path, "/task/v2/tasks/") && r.Method == http.MethodPatch:
+			body, _ := io.ReadAll(r.Body)
+			var payload map[string]any
+			_ = json.Unmarshal(body, &payload)
+			if _, ok := payload["update_fields"]; !ok {
+				t.Errorf("patch missing update_fields: %#v", payload)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0})
+		case strings.Contains(r.URL.Path, "/docx/v1/documents/") && r.Method == http.MethodPatch:
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0})
 		case strings.HasSuffix(r.URL.Path, "/docx/v1/documents") && r.Method == http.MethodPost:
 			body, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(body, &gotDoc)
@@ -109,6 +134,22 @@ func TestFeishuOpenAPICreateEventTaskDoc(t *testing.T) {
 	}
 	if gotTask["summary"] != "写周报" {
 		t.Fatalf("task payload = %#v", gotTask)
+	}
+
+	listed, err := c.ListTasks(ctx, nil, 20)
+	if err != nil || len(listed) != 1 || listed[0].GUID != "task_1" {
+		t.Fatalf("ListTasks %#v err=%v", listed, err)
+	}
+	got, err := c.GetTask(ctx, "https://applink.feishu.cn/client/todo/detail?guid=task_1")
+	if err != nil || got.Summary != "写周报" || got.DueUnix != 1773462000 {
+		t.Fatalf("GetTask %#v err=%v", got, err)
+	}
+	done := true
+	if err := c.UpdateTask(ctx, "task_1", FeishuTaskPatch{Complete: &done}); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	if err := c.UpdateDocTitle(ctx, "doc_1", "新标题"); err != nil {
+		t.Fatalf("UpdateDocTitle: %v", err)
 	}
 
 	did, durl, err := c.CreateDoc(ctx, FeishuDoc{
@@ -174,5 +215,86 @@ func TestFeishuDocumentID(t *testing.T) {
 	}
 	if got := feishuDocumentID("doxcnABC"); got != "doxcnABC" {
 		t.Fatalf("plain %q", got)
+	}
+}
+
+func TestFeishuTaskGUID(t *testing.T) {
+	if got := feishuTaskGUID("https://applink.feishu.cn/client/todo/detail?guid=abc-1&x=1"); got != "abc-1" {
+		t.Fatalf("got %q", got)
+	}
+	if got := feishuTaskGUID("abc-1"); got != "abc-1" {
+		t.Fatalf("plain %q", got)
+	}
+}
+
+func TestFeishuOpenAPIListTasksUsesV1AppCreated(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "tenant_access_token") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0, "tenant_access_token": "tok_fs", "expire": 7200,
+			})
+			return
+		}
+		gotPath = r.URL.Path
+		if r.URL.Query().Get("task_completed") != "false" {
+			t.Errorf("task_completed = %q", r.URL.Query().Get("task_completed"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 0,
+			"data": map[string]any{
+				"items": []any{
+					map[string]any{
+						"id":            "guid-mine",
+						"summary":       "写周报",
+						"description":   "周五交",
+						"complete_time": "0",
+						"due":           map[string]any{"time": "1773462000", "is_all_day": true},
+						"collaborators": []any{map[string]any{"id": "ou_me"}},
+					},
+					map[string]any{
+						"id":               "guid-other",
+						"summary":          "别人的",
+						"complete_time":    "0",
+						"collaborator_ids": []any{"ou_other"},
+					},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewFeishuOpenAPI("cli_app", "sec", srv.URL)
+	open := false
+	listed, err := c.ListTasks(context.Background(), &open, 20)
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if !strings.Contains(gotPath, "/task/v1/tasks") {
+		t.Fatalf("path = %s, want v1", gotPath)
+	}
+	if len(listed) != 2 || listed[0].GUID != "guid-mine" || listed[0].DueUnix != 1773462000 {
+		t.Fatalf("listed = %#v", listed)
+	}
+	if listed[0].Completed || listed[0].Status != "todo" {
+		t.Fatalf("status = %#v", listed[0])
+	}
+	mine := FilterTasksByAssignee(listed, "ou_me")
+	if len(mine) != 1 || mine[0].GUID != "guid-mine" {
+		t.Fatalf("filter = %#v", mine)
+	}
+}
+
+func TestFilterTasksByAssigneeKeepsUnassigned(t *testing.T) {
+	items := []FeishuTaskInfo{
+		{GUID: "a", Assignees: nil},
+		{GUID: "b", Assignees: []string{"ou_x"}},
+	}
+	got := FilterTasksByAssignee(items, "ou_me")
+	if len(got) != 1 || got[0].GUID != "a" {
+		t.Fatalf("got %#v", got)
+	}
+	if got := FilterTasksByAssignee(items, ""); len(got) != 2 {
+		t.Fatalf("empty filter %#v", got)
 	}
 }
