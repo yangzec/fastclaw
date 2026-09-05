@@ -1,9 +1,11 @@
 package session
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/fastclaw-ai/fastclaw/internal/provider"
 )
@@ -113,4 +115,47 @@ func TestConcurrentPushDrainNoLossNoDup(t *testing.T) {
 	if got != producers*perProducer {
 		t.Fatalf("message count mismatch: got %d want %d", got, producers*perProducer)
 	}
+}
+
+func TestPushSteerInterruptsBoundLLM(t *testing.T) {
+	s := &Session{}
+	s.BeginTurn()
+	ctx, cancel := context.WithCancel(context.Background())
+	s.BindLLMCancel(cancel)
+
+	if !s.PushSteerIfActive(um("turn around")) {
+		t.Fatal("push during active turn should return true")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("steer should cancel the bound LLM context")
+	}
+	drained := s.DrainSteer()
+	if len(drained) != 1 || drained[0].Content != "turn around" {
+		t.Fatalf("steer should stay buffered after interrupt, got %v", drained)
+	}
+
+	s.BindLLMCancel(nil)
+	s.EndTurn()
+}
+
+func TestPushSteerCancelDoesNotDeadlockUnbind(t *testing.T) {
+	s := &Session{}
+	s.BeginTurn()
+	_, cancel := context.WithCancel(context.Background())
+	s.BindLLMCancel(func() {
+		cancel()
+		s.BindLLMCancel(nil)
+	})
+
+	done := make(chan struct{})
+	go func() {
+		s.PushSteerIfActive(um("x"))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("PushSteerIfActive deadlocked against BindLLMCancel")
+	}
+	s.EndTurn()
 }

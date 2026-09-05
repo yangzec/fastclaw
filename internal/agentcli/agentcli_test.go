@@ -295,9 +295,26 @@ func TestInitFailsWhenNoSuperAdmin(t *testing.T) {
 func TestAssertAgentScopedConfig(t *testing.T) {
 	if err := AssertAgentScopedConfig("provider.openai.apiKey"); err == nil {
 		t.Fatal("provider key must be rejected")
+	} else if !strings.Contains(err.Error(), "Models") || !strings.Contains(err.Error(), "Do not retry") {
+		t.Fatalf("provider refusal should name Models and forbid retry, got: %v", err)
 	}
 	if err := AssertAgentScopedConfig("tools.providers"); err == nil {
 		t.Fatal("system namespace must be rejected")
+	} else if !strings.Contains(err.Error(), "fastclaw tools provider-set") {
+		t.Fatalf("tools.providers should point at the tools CLI, got: %v", err)
+	}
+	if err := AssertAgentScopedConfig("mcpServers"); err == nil {
+		t.Fatal("mcpServers must be rejected")
+	} else {
+		msg := err.Error()
+		for _, need := range []string{"agent → MCP", "mcp.json", "Do not retry", "Supported keys:"} {
+			if !strings.Contains(msg, need) {
+				t.Fatalf("mcpServers refusal missing %q: %s", need, msg)
+			}
+		}
+		if !strings.Contains(msg, "model") {
+			t.Fatalf("mcpServers refusal should list supported keys, got: %s", msg)
+		}
 	}
 	if err := AssertAgentScopedConfig("model"); err != nil {
 		t.Fatalf("agent-scope model: %v", err)
@@ -561,6 +578,13 @@ func TestSettingKeyRouting(t *testing.T) {
 	}
 	if _, _, _, err := settingKey("bogus"); err == nil {
 		t.Error("expected error for unknown key")
+	} else if !strings.Contains(err.Error(), "Supported keys:") || !strings.Contains(err.Error(), "Do not retry") {
+		t.Errorf("unknown-key error should list supported keys and forbid retry, got: %v", err)
+	}
+	if _, _, _, err := settingKey("mcpServers"); err == nil {
+		t.Error("mcpServers must not route through generic config set")
+	} else if !strings.Contains(err.Error(), "agent → MCP") {
+		t.Errorf("mcpServers error should name the dashboard door, got: %v", err)
 	}
 	if _, _, _, err := settingKey("bindings"); err == nil {
 		t.Error("bindings must not be exposed through generic config set")

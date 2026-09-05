@@ -57,12 +57,18 @@ type Session struct {
 	// Steering: turnDepth counts in-flight HandleMessage turns for this
 	// session (a counter, not a bool, so re-entrant/overlapping turns
 	// don't strand the active flag). steerBuf holds user messages that
-	// arrived mid-turn; the running ReAct loop drains them between tool
-	// iterations. Both are guarded by mu. getByKey never touches these,
+	// arrived mid-turn; PushSteerIfActive cancels the bound LLM stream
+	// so the running loop can drain and turn around immediately (also
+	// drained between tool iterations). Both are guarded by mu. getByKey
+	// never touches these,
 	// so a Manager.Get reload (which overwrites Messages) can't clobber a
 	// pending steer.
 	turnDepth int
 	steerBuf  []provider.Message
+	// llmCancel aborts only the current provider stream. Insert/steer
+	// uses this so the model can turn around immediately; Stop still
+	// cancels the whole turn context.
+	llmCancel context.CancelFunc
 }
 
 // SessionKey returns the opaque session_key this Session is bound to.
@@ -584,11 +590,32 @@ func (s *Session) PushSteerIfActive(msg provider.Message) bool {
 		return false
 	}
 	s.steerBuf = append(s.steerBuf, msg)
+	cancel := s.llmCancel
+	if cancel != nil {
+		// Drop the lock before cancel so the stream teardown can
+		// BindLLMCancel(nil) without deadlocking.
+		s.mu.Unlock()
+		cancel()
+		s.mu.Lock()
+	}
 	return true
 }
 
+// BindLLMCancel registers the cancel func for the in-flight provider
+// stream. Pass nil when the call returns so a late steer does not
+// cancel a finished request.
+func (s *Session) BindLLMCancel(cancel context.CancelFunc) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.llmCancel = cancel
+}
+
 // DrainSteer atomically returns and clears the buffered steer messages.
-// The running loop calls this between tool iterations.
+// The running loop calls this after an interrupted completion and
+// between tool iterations.
 func (s *Session) DrainSteer() []provider.Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -684,6 +711,9 @@ func (s *Session) rewriteFile() {
 }
 
 func (s *Session) appendToFile(msg provider.Message) {
+	if s.filePath == "" {
+		return
+	}
 	dir := filepath.Dir(s.filePath)
 	os.MkdirAll(dir, 0o755)
 

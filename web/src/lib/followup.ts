@@ -66,3 +66,12 @@ export function resolveFollowupAction(
   }
   return behavior;
 }
+
+// Phones treat Enter as newline and have no ⌘/Ctrl+Enter, so the
+// composer hint points at the on-screen Queue / Insert buttons instead.
+export function followupComposerHint(behavior: FollowupBehavior, isMobile: boolean): string {
+  if (isMobile) return "Type, then tap Queue or Insert";
+  return behavior === "queue"
+    ? "Enter to queue · ⌘/Ctrl+Enter to insert this turn"
+    : "Enter to insert this turn · ⌘/Ctrl+Enter to queue";
+}

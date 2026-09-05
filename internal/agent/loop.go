@@ -577,9 +577,10 @@ func (a *Agent) HandleWebChatStream(ctx context.Context, sessionId, projectIDHin
 
 // SteerWeb buffers a steering message for an in-flight web turn on the
 // given session. Returns true if a turn was active and the message was
-// buffered (the running loop will fold it in between tool rounds and
-// emit a "steer" event on the existing SSE), false if no turn is
-// running — in which case the caller should fall back to a normal send.
+// buffered: the running loop cancels the in-flight completion, folds
+// the instruction in, and emits a "steer" event on the existing SSE.
+// Returns false if no turn is running — the caller should fall back
+// to a normal send.
 // Session resolution mirrors HandleWebChatStream exactly so we land on
 // the same *session.Session pointer the running turn holds.
 func (a *Agent) SteerWeb(sessionId, projectIDHint, text string) bool {
@@ -747,6 +748,7 @@ func (a *Agent) checkQuota(ctx context.Context) string {
 // durationMs is the wall-clock time of the LLM call; pass 0 when not
 // measured (the daily bucket doesn't use it, only the log table).
 func (a *Agent) meterTokens(ctx context.Context, sessionKey string, u provider.Usage, durationMs int64) {
+	addTurnUsage(ctx, u)
 	if a.meter == nil {
 		return
 	}
@@ -782,15 +784,19 @@ func (a *Agent) meterTokens(ctx context.Context, sessionKey string, u provider.U
 // HandleMessage path. Providers that don't actually stream still work
 // — they just deliver one big chunk on Done.
 func (a *Agent) streamChatToResponse(ctx context.Context, messages []provider.Message, tools []provider.Tool) (*provider.Response, error) {
-	return a.streamChatToResponseWithOptions(ctx, messages, tools, true)
+	return a.streamChatToResponseWithOptions(ctx, ctx, messages, tools, true)
+}
+
+func (a *Agent) streamChatToResponseEmit(emitCtx, streamCtx context.Context, messages []provider.Message, tools []provider.Tool) (*provider.Response, error) {
+	return a.streamChatToResponseWithOptions(emitCtx, streamCtx, messages, tools, true)
 }
 
 func (a *Agent) streamChatToResponseQuiet(ctx context.Context, messages []provider.Message, tools []provider.Tool) (*provider.Response, error) {
-	return a.streamChatToResponseWithOptions(ctx, messages, tools, false)
+	return a.streamChatToResponseWithOptions(ctx, ctx, messages, tools, false)
 }
 
-func (a *Agent) streamChatToResponseWithOptions(ctx context.Context, messages []provider.Message, tools []provider.Tool, emitDeltas bool) (*provider.Response, error) {
-	sr, err := a.provider.ChatStream(ctx, messages, tools, a.model, a.maxTokens, a.temperature)
+func (a *Agent) streamChatToResponseWithOptions(emitCtx, streamCtx context.Context, messages []provider.Message, tools []provider.Tool, emitDeltas bool) (*provider.Response, error) {
+	sr, err := a.provider.ChatStream(streamCtx, messages, tools, a.model, a.maxTokens, a.temperature)
 	if err != nil {
 		return nil, err
 	}
@@ -815,7 +821,9 @@ func (a *Agent) streamChatToResponseWithOptions(ctx context.Context, messages []
 				// that only know about the legacy `content` event
 				// ignore unknown types and rely on the final
 				// emit (caller's responsibility) instead.
-				emitEvent(ctx, ChatEvent{
+				// emitCtx is the turn ctx. Insert cancels streamCtx
+				// only — those last tokens must still reach the UI.
+				emitEvent(emitCtx, ChatEvent{
 					Type: "content_delta",
 					Data: map[string]any{"delta": chunk.Content},
 				})
@@ -839,7 +847,15 @@ func (a *Agent) streamChatToResponseWithOptions(ctx context.Context, messages []
 		}
 	}
 	if err := sr.Err(); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(streamCtx.Err(), context.Canceled) {
+			return streamPartialResponse(contentBuilder.String(), toolCalls, thinking, streamUsage, rawAssistant), err
+		}
 		return nil, err
+	}
+	if err := streamCtx.Err(); err != nil {
+		// Provider often closes the chunk channel on cancel without
+		// SetErr. Keep tokens already shown so steer can turn around.
+		return streamPartialResponse(contentBuilder.String(), toolCalls, thinking, streamUsage, rawAssistant), err
 	}
 	// Mirror what AnthropicProvider.parseSSE does when no
 	// RawAssistant was emitted but we still captured thinking text:
@@ -854,13 +870,17 @@ func (a *Agent) streamChatToResponseWithOptions(ctx context.Context, messages []
 			rawAssistant = raw
 		}
 	}
+	return streamPartialResponse(contentBuilder.String(), toolCalls, thinking, streamUsage, rawAssistant), nil
+}
+
+func streamPartialResponse(content string, toolCalls []provider.ToolCall, thinking string, usage provider.Usage, raw json.RawMessage) *provider.Response {
 	return &provider.Response{
-		Content:      contentBuilder.String(),
+		Content:      content,
 		ToolCalls:    toolCalls,
 		Thinking:     thinking,
-		Usage:        streamUsage,
-		RawAssistant: rawAssistant,
-	}, nil
+		Usage:        usage,
+		RawAssistant: raw,
+	}
 }
 
 // HookRegistry returns the agent's hook registry for external hook registration.
@@ -1847,7 +1867,7 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 	if a.provider == nil {
 		noProviderMsg := noProviderConfiguredMsg(a.model)
 		emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": noProviderMsg}})
-		emitEvent(ctx, ChatEvent{Type: "done"})
+		emitDone(ctx)
 		return noProviderMsg
 	}
 
@@ -1874,16 +1894,32 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 		messages = privacy.ScrubMessages(messages)
 	}
 
-	resp, err := a.streamChatToResponse(ctx, messages, nil)
+	var resp *provider.Response
+	var err error
+	for {
+		llmCtx, cancelLLM := context.WithCancel(ctx)
+		sess.BindLLMCancel(cancelLLM)
+		resp, err = a.streamChatToResponseEmit(ctx, llmCtx, messages, nil)
+		cancelLLM()
+		sess.BindLLMCancel(nil)
+		if redirected, next := a.foldSteerInterrupt(ctx, sess, messages, resp); redirected {
+			if resp != nil {
+				a.meterTokens(ctx, sess.Key(), resp.Usage, 0)
+			}
+			messages = next
+			continue
+		}
+		break
+	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			slog.Info("plan-mode chat canceled", "agent", a.name)
-			emitEvent(ctx, ChatEvent{Type: "done"})
+			emitDone(ctx)
 			return ""
 		}
 		slog.Error("plan-mode chat failed", "agent", a.name, "error", err)
 		emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": err.Error()}})
-		emitEvent(ctx, ChatEvent{Type: "done"})
+		emitDone(ctx)
 		return "Sorry, I couldn't draft the plan — the LLM call failed."
 	}
 	a.meterTokens(ctx, sess.Key(), resp.Usage, 0)
@@ -1901,8 +1937,39 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 		"content":  resp.Content,
 		"metadata": planMeta,
 	}})
-	emitEvent(ctx, ChatEvent{Type: "done"})
+	emitDone(ctx)
 	return resp.Content
+}
+
+// foldSteerInterrupt persists already-streamed assistant text and folds
+// any buffered insert into the live prompt. Returns true when the
+// caller should issue another LLM call in the same turn (the model is
+// turning around). Parent-ctx cancel (Stop) never folds — leftover
+// steer is parked by EndTurn.
+func (a *Agent) foldSteerInterrupt(ctx context.Context, sess *session.Session, messages []provider.Message, resp *provider.Response) (bool, []provider.Message) {
+	if ctx.Err() != nil {
+		return false, messages
+	}
+	steer := sess.DrainSteer()
+	if len(steer) == 0 {
+		return false, messages
+	}
+	if resp != nil && strings.TrimSpace(resp.Content) != "" {
+		asst := provider.Message{
+			Role:      "assistant",
+			Content:   resp.Content,
+			Thinking:  resp.Thinking,
+			Timestamp: time.Now().UnixMilli(),
+		}
+		// Drop incomplete tool_calls / RawAssistant so the next call
+		// isn't asked to continue a half-built tool round.
+		if !resp.HasToolCalls() {
+			asst.RawAssistant = resp.RawAssistant
+		}
+		sess.Append(asst)
+		messages = append(messages, asst)
+	}
+	return true, a.appendSteer(ctx, sess, messages, steer)
 }
 
 // appendSteer folds drained steer messages into the running turn: each
@@ -1962,7 +2029,7 @@ func llmRetry(ctx context.Context, label string, fn func(context.Context) (*prov
 
 		// Context errors are terminal — don't retry.
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, err
+			return resp, err
 		}
 
 		// 4xx (except 429) means the request is illegal or unauthorized.
@@ -2314,7 +2381,8 @@ func (a *Agent) runToolsWithProgress(ctx context.Context, toolCalls []provider.T
 
 // HandleMessage processes an inbound message through the ReAct loop.
 func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) string {
-	// Check for slash commands first. Empty reply means "handled but
+	ctx = withTurnUsage(ctx)
+	// Check for slash commands first. Empty reply means "handled but"
 	// intentionally silent" — /goal foo and /goal resume both fall
 	// through to a streaming continuation that IS the response, so
 	// emitting a separate content event would just clutter the chat
@@ -2332,7 +2400,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		if result.continuationQueued {
 			emitEvent(ctx, ChatEvent{Type: "turn_pending"})
 		} else {
-			emitEvent(ctx, ChatEvent{Type: "done"})
+			emitDone(ctx)
 		}
 		return result.reply
 	}
@@ -2342,7 +2410,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	// the main ReAct loop so no LLM tokens are burned.
 	if rejection := a.checkQuota(ctx); rejection != "" {
 		emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{"content": rejection}})
-		emitEvent(ctx, ChatEvent{Type: "done"})
+		emitDone(ctx)
 		return rejection
 	}
 
@@ -2547,7 +2615,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			slog.Error("agent has no provider configured", "agent", a.name, "model", a.model)
 			noProviderMsg := noProviderConfiguredMsg(a.model)
 			emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": noProviderMsg}})
-			emitEvent(ctx, ChatEvent{Type: "done"})
+			emitDone(ctx)
 			return noProviderMsg
 		}
 		// After enough consecutive rounds where every tool came back
@@ -2584,13 +2652,25 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			})
 		}
 		dumpLLMRequest(a.name, a.model, llmMessages, callTools)
-		resp, err := llmRetry(ctx, a.name, func(ctx context.Context) (*provider.Response, error) {
-			return a.streamChatToResponse(ctx, llmMessages, callTools)
+		llmCtx, cancelLLM := context.WithCancel(ctx)
+		sess.BindLLMCancel(cancelLLM)
+		resp, err := llmRetry(llmCtx, a.name, func(streamCtx context.Context) (*provider.Response, error) {
+			return a.streamChatToResponseEmit(ctx, streamCtx, llmMessages, callTools)
 		})
+		cancelLLM()
+		sess.BindLLMCancel(nil)
 
 		// Hook: AfterModelCall
 		hcAfter := &HookContext{AgentName: a.name, Point: AfterModelCall, Messages: messages, Response: resp, Error: err, StartTime: hcBefore.StartTime, Channel: msg.Channel, AccountID: msg.AccountID, ChatID: msg.ChatID, UserID: a.ownerUserID, GoalSessionKey: a.registry.GoalSessionKey()}
 		a.hooks.Run(ctx, hcAfter)
+
+		if redirected, next := a.foldSteerInterrupt(ctx, sess, messages, resp); redirected {
+			if resp != nil {
+				a.meterTokens(ctx, sess.Key(), resp.Usage, 0)
+			}
+			messages = next
+			continue
+		}
 
 		if err != nil {
 			// Cancellation is a control-flow outcome (Stop, shutdown, or a
@@ -2599,7 +2679,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			// arrive after the UI has already rendered "(Stopped)".
 			if errors.Is(err, context.Canceled) {
 				slog.Info("LLM chat canceled", "agent", a.name)
-				emitEvent(ctx, ChatEvent{Type: "done"})
+				emitDone(ctx)
 				return ""
 			}
 			if !overflowRetried && isContextOverflowError(err) {
@@ -2617,7 +2697,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			slog.Error("LLM chat failed after retries", "agent", a.name, "error", err)
 			fallback := buildFallbackReply(err, replyParts, streakState.lastFailedTool, streakState.lastFailureText)
 			emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": err.Error()}})
-			emitEvent(ctx, ChatEvent{Type: "done"})
+			emitDone(ctx)
 			return fallback
 		}
 		a.meterTokens(ctx, sess.Key(), resp.Usage, 0)
@@ -2627,7 +2707,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			if strings.TrimSpace(resp.Content) == "" {
 				emptyMsg := "model returned an empty response"
 				emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": emptyMsg}})
-				emitEvent(ctx, ChatEvent{Type: "done"})
+				emitDone(ctx)
 				return emptyMsg
 			}
 			asst := provider.Message{Role: "assistant", Content: resp.Content, Thinking: resp.Thinking, Metadata: knowledgeMeta, Timestamp: time.Now().UnixMilli(), RawAssistant: resp.RawAssistant}
@@ -2666,7 +2746,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				messages = a.appendSteer(ctx, sess, messages, steer)
 				continue
 			}
-			emitEvent(ctx, ChatEvent{Type: "done"})
+			emitDone(ctx)
 			a.runPostTurn(ctx, msg, messages, totalToolCalls, chatterMem)
 			return joinReplyParts(replyParts)
 		}
@@ -2941,7 +3021,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	if finalContent != "" {
 		replyParts = append(replyParts, finalContent)
 	}
-	emitEvent(ctx, ChatEvent{Type: "done"})
+	emitDone(ctx)
 	a.runPostTurn(ctx, msg, messages, totalToolCalls, chatterMem)
 	return joinReplyParts(replyParts)
 }

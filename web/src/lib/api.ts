@@ -1227,6 +1227,13 @@ export interface ChatStreamEvent {
     max?: number;
     phase?: "thinking" | "running" | "final-delivery" | "done";
     tools?: string[];
+    usage?: {
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadTokens?: number;
+      cacheCreationTokens?: number;
+      requestCount?: number;
+    };
   };
 }
 

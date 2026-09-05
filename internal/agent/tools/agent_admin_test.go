@@ -217,8 +217,32 @@ func TestConfigureAgentRejectsSystemScopeKeys(t *testing.T) {
 		t.Fatal("expected refusal for tools.providers")
 	}
 
+	_, err = r.GetFunc("configure_agent")(context.Background(), json.RawMessage(`{"agent":"owned","key":"mcpServers","value":"{}"}`))
+	if err == nil {
+		t.Fatal("expected refusal for mcpServers")
+	}
+	if !strings.Contains(err.Error(), "agent → MCP") || !strings.Contains(err.Error(), "Do not retry") {
+		t.Errorf("mcpServers refusal should name the dashboard and forbid retry, got: %v", err)
+	}
+
 	if _, err := r.GetFunc("configure_agent")(context.Background(), json.RawMessage(`{"agent":"owned","key":"model","value":"openai/gpt-4.1"}`)); err != nil {
 		t.Fatalf("agent-scope model must still work: %v", err)
+	}
+
+	desc := ""
+	for _, info := range r.RegisteredTools() {
+		if info.Name == "configure_agent" {
+			desc = info.Description
+			break
+		}
+	}
+	if desc == "" {
+		t.Fatal("configure_agent is not registered")
+	}
+	for _, need := range []string{"mcpServers", "never retry", "agent → MCP"} {
+		if !strings.Contains(desc, need) {
+			t.Errorf("configure_agent description missing %q: %s", need, desc)
+		}
 	}
 }
 

@@ -27,6 +27,14 @@ action on upgrade — read those notes before deploying.
   256KB, keyword / CJK-bigram search) and when *not* to bolt on
   SiliconFlow embeddings, Dify, Volcengine knowledge / OpenViking /
   Mem0. Chat models can still use SiliconFlow via a Custom provider.
+- **This-turn token line in the composer.** After a reply finishes, the
+  footer shows `12.4k → 890` next to the context-window meter (hover
+  for in/out/cache). Distinct from the session context bar.
+- **Insert cancels the in-flight provider stream.** Queue still waits
+  for the turn; Insert now aborts the current completion, keeps the
+  partial assistant text, and turns around in the same turn. Phones
+  show both Queue and Insert next to Stop. Last tokens on the cut
+  bubble are not dropped when Insert races the LLM cancel.
 
 ### Changed
 
@@ -65,6 +73,12 @@ action on upgrade — read those notes before deploying.
 - **Knowledge uploads accept multiple files and keep CJK names.** The
   picker is `multiple`; the server no longer turns `产品说明.md` into
   `----.md`. Path separators and control characters are still stripped.
+- **Closed-door config refusals name the real door and forbid retry.**
+  `configure_agent` / `agents config` errors for mcpServers, plugins,
+  tools, and provider.* now point at the dashboard (or the matching
+  CLI) and say not to retry, `--help`, or read source. The tool
+  description lists allowed keys; one standing prompt rule covers the
+  whole class. Docs alone never reach the model on the failure path.
 
 - **Chat replies no longer leak literal ` ``` `.** Models often open
   a fence and never close it, wrap the whole answer in ` ```markdown `,

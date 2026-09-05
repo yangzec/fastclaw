@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import {
+  followupComposerHint,
   loadFollowupBehavior,
   loadSessionQueue,
   resolveFollowupAction,
@@ -54,6 +55,13 @@ test("default queue mode sends to the tray, modifier steers", () => {
 test("steer mode inserts, modifier queues", () => {
   assert.equal(resolveFollowupAction("steer", false), "steer");
   assert.equal(resolveFollowupAction("steer", true), "queue");
+});
+
+test("mobile composer hint names the on-screen buttons, not keyboard shortcuts", () => {
+  assert.equal(followupComposerHint("queue", true), "Type, then tap Queue or Insert");
+  assert.equal(followupComposerHint("steer", true), "Type, then tap Queue or Insert");
+  assert.match(followupComposerHint("queue", false), /Enter to queue/);
+  assert.match(followupComposerHint("steer", false), /Enter to insert/);
 });
 
 test("follow-up behavior defaults to queue unless localStorage is exactly steer", () => {
