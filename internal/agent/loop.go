@@ -784,15 +784,19 @@ func (a *Agent) meterTokens(ctx context.Context, sessionKey string, u provider.U
 // HandleMessage path. Providers that don't actually stream still work
 // — they just deliver one big chunk on Done.
 func (a *Agent) streamChatToResponse(ctx context.Context, messages []provider.Message, tools []provider.Tool) (*provider.Response, error) {
-	return a.streamChatToResponseWithOptions(ctx, messages, tools, true)
+	return a.streamChatToResponseWithOptions(ctx, ctx, messages, tools, true)
+}
+
+func (a *Agent) streamChatToResponseEmit(emitCtx, streamCtx context.Context, messages []provider.Message, tools []provider.Tool) (*provider.Response, error) {
+	return a.streamChatToResponseWithOptions(emitCtx, streamCtx, messages, tools, true)
 }
 
 func (a *Agent) streamChatToResponseQuiet(ctx context.Context, messages []provider.Message, tools []provider.Tool) (*provider.Response, error) {
-	return a.streamChatToResponseWithOptions(ctx, messages, tools, false)
+	return a.streamChatToResponseWithOptions(ctx, ctx, messages, tools, false)
 }
 
-func (a *Agent) streamChatToResponseWithOptions(ctx context.Context, messages []provider.Message, tools []provider.Tool, emitDeltas bool) (*provider.Response, error) {
-	sr, err := a.provider.ChatStream(ctx, messages, tools, a.model, a.maxTokens, a.temperature)
+func (a *Agent) streamChatToResponseWithOptions(emitCtx, streamCtx context.Context, messages []provider.Message, tools []provider.Tool, emitDeltas bool) (*provider.Response, error) {
+	sr, err := a.provider.ChatStream(streamCtx, messages, tools, a.model, a.maxTokens, a.temperature)
 	if err != nil {
 		return nil, err
 	}
@@ -817,7 +821,9 @@ func (a *Agent) streamChatToResponseWithOptions(ctx context.Context, messages []
 				// that only know about the legacy `content` event
 				// ignore unknown types and rely on the final
 				// emit (caller's responsibility) instead.
-				emitEvent(ctx, ChatEvent{
+				// emitCtx is the turn ctx. Insert cancels streamCtx
+				// only — those last tokens must still reach the UI.
+				emitEvent(emitCtx, ChatEvent{
 					Type: "content_delta",
 					Data: map[string]any{"delta": chunk.Content},
 				})
@@ -841,12 +847,12 @@ func (a *Agent) streamChatToResponseWithOptions(ctx context.Context, messages []
 		}
 	}
 	if err := sr.Err(); err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		if errors.Is(err, context.Canceled) || errors.Is(streamCtx.Err(), context.Canceled) {
 			return streamPartialResponse(contentBuilder.String(), toolCalls, thinking, streamUsage, rawAssistant), err
 		}
 		return nil, err
 	}
-	if err := ctx.Err(); err != nil {
+	if err := streamCtx.Err(); err != nil {
 		// Provider often closes the chunk channel on cancel without
 		// SetErr. Keep tokens already shown so steer can turn around.
 		return streamPartialResponse(contentBuilder.String(), toolCalls, thinking, streamUsage, rawAssistant), err
@@ -1893,7 +1899,7 @@ func (a *Agent) handlePlanMode(ctx context.Context, msg bus.InboundMessage) stri
 	for {
 		llmCtx, cancelLLM := context.WithCancel(ctx)
 		sess.BindLLMCancel(cancelLLM)
-		resp, err = a.streamChatToResponse(llmCtx, messages, nil)
+		resp, err = a.streamChatToResponseEmit(ctx, llmCtx, messages, nil)
 		cancelLLM()
 		sess.BindLLMCancel(nil)
 		if redirected, next := a.foldSteerInterrupt(ctx, sess, messages, resp); redirected {
@@ -2648,8 +2654,8 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		dumpLLMRequest(a.name, a.model, llmMessages, callTools)
 		llmCtx, cancelLLM := context.WithCancel(ctx)
 		sess.BindLLMCancel(cancelLLM)
-		resp, err := llmRetry(llmCtx, a.name, func(ctx context.Context) (*provider.Response, error) {
-			return a.streamChatToResponse(ctx, llmMessages, callTools)
+		resp, err := llmRetry(llmCtx, a.name, func(streamCtx context.Context) (*provider.Response, error) {
+			return a.streamChatToResponseEmit(ctx, streamCtx, llmMessages, callTools)
 		})
 		cancelLLM()
 		sess.BindLLMCancel(nil)

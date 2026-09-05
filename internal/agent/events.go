@@ -157,5 +157,11 @@ func emitEvent(ctx context.Context, evt ChatEvent) {
 	select {
 	case ch <- evt:
 	case <-ctx.Done():
+		// Insert cancels only the LLM ctx. A turn reader is still
+		// there — don't drop the last tokens on that race.
+		select {
+		case ch <- evt:
+		default:
+		}
 	}
 }
