@@ -181,7 +181,7 @@ FastClaw **不能** 当应用的多端同步云。
 
 2. **chatter 从哪读？**（若选 B）— **倾向 C，不一致则 400**（见 §8.2）：两个都认；只带一个就用那个；两个都带且字符串不同 → **直接 400**，不静默挑一边。
 
-3. **basic-memory** — **应用自己 find-or-create**（BM 的 resolve + create，见 §8.3）。模板不装 MCP。不改 BM 上游，FastClaw 现在也不包一层 BM。
+3. **basic-memory** — **已收口**，见 §8.3。应用 HTTP find-or-create + `params`；模板不装 MCP。
 
 4. **记忆主键** — **已选 A**：每个产品注册用户一份（客服/写作共享要点）。区分方式见 §7.4。
 
@@ -293,7 +293,24 @@ MCP 若不定死 `--project`，模型可以自己传 `project=`。理论上能�
 
 不要用 body `user` / `X-Fastclaw-End-User` 当 chatter。
 
-### 8.3 basic-memory 有没有「按你们 user_id 找或建 project」？我们能改吗？
+### 8.3 basic-memory 最终方案（已收口）
+
+**产品用户的跨会话记忆，不走 FastClaw MCP，不走 FastClaw USER.md。**
+
+```text
+应用后端（BM API key 只放服务端）
+  → name = "app-" + 你们的 user_id
+  → POST /v2/projects/resolve ；没有则 POST /v2/projects 创建
+  → 只在这一个 project 里 search（回合前）
+  → 短列表写入 params.known_facts
+  → POST FastClaw /v1/chat/completions
+  → 回合后按需把新要点写回同一个 project（自行去重）
+```
+
+模板 Agent：**不装** basic-memory MCP，Auto-remember **关**。  
+不改 BM 上游，FastClaw 也不包一层 BM。find-or-create 就是应用那两步 HTTP。
+
+### 8.3b basic-memory 有没有「按你们 user_id 找或建 project」？我们能改吗？
 
 **BM 没有 SaaS 用户这一等公民。** 它有的是普通 project API：
 
@@ -330,5 +347,17 @@ resolve(name) → 有则用
 
 「IM 只允许控制台用户接」只限制 **谁能绑通道**，不会把微信 openid 自动换成 FastClaw 账号 id。同一人两边聊，默认仍是两份 USER.md、两通会话。控制台侧边栏能看到 IM 会话，容易误以为已经是一份。
 
-要同一份：打开 **Shared identity across channels**。会话也会并在一起。群聊不要开。  
+要同一份：**不必改 FastClaw 代码**。在该（运营者自己用的）Agent 上打开 **Shared identity across channels**。会话也会并在一起。群聊不要开。  
 产品 API 用户仍用 `app:<user_id>`，不要传控制台账号 id。
+
+### 8.4b Hermes 有记忆，FastClaw 要不要改成那样？
+
+记错可以理解：Hermes/OpenClaw 一类产品常把控制台和 IM 收成同一身份。FastClaw **默认故意分开**；同一能力已经做成 **每 Agent 开关**，不是缺失功能。
+
+| | |
+|---|---|
+| 能改吗 | 能。运营者自己的 Agent 打开 Shared identity 即可。不要改全局默认（会让所有 Agent 的 IM 发送者并进主人） |
+| 值得改吗 | **值得开开关，不值得改代码 / 改默认。** IM 只给控制台、且是私聊时，开了就能像 Hermes 一样两边接着聊、同一份 USER.md |
+| 影响刚才的决策吗 | **不影响。** 产品 API、`app:<user_id>`、BM HTTP、`params`、owner 账单、不发 End-User、模板关 Auto-remember / 不装 MCP，全部不动。Shared identity 只作用于该 Agent 的 IM ↔ 控制台 |
+
+不要在 **对外模板 Agent** 上开：以后若对公众开放 IM，所有发言者会被写成主人，记忆全串。模板继续关 Shared identity、关 Auto-remember。
