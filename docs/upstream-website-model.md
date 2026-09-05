@@ -131,7 +131,7 @@ FastClaw **不能** 当应用的多端同步云。
 
 ## 4. FastClaw 打算怎么改（尚未开工）
 
-在开放问题拍板之前 **不改代码**。倾向只做轻量 chatter，不碰 UserSpace。
+轻量 chatter **已合入** `yangzec`（见 `internal/api/chatter.go`）。不碰 UserSpace。
 
 ### 4.1 拟议改动（待你选接线）
 
