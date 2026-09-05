@@ -3,53 +3,22 @@
 Use this skill when integrating an upstream application with FastClaw as an
 agent runtime.
 
-The canonical reference is `docs/upstream-api.md` in the FastClaw repository.
-Follow that document over guesses from existing dashboard code.
+Canonical HTTP contract: `docs/upstream-api.md`.
+Basic Memory (optional, app-side): `docs/upstream-basic-memory.md`.
+Follow those over guesses from dashboard code.
 
-## Integration Boundary
+## Default website path
 
-Use `/v1/*` for upstream applications:
-
-- `POST /v1/chat/completions` for end-user chat.
-- `GET /v1/agents` to list agents accessible to the API key.
-- `POST /v1/users` to provision upstream end-users, or lazy-provision via chat.
-- `GET /v1/usage` for billing dashboards.
-- `PUT /v1/quota`, `GET /v1/quota`, `DELETE /v1/quota` for paid-plan limits.
-- After a chat turn, list/download workspace files with the same API key:
-  `GET /api/agents/{agent_id}/files?sessionId=<session_key or session_id>`.
-
-Use `/api/*` or the `fastclaw` CLI only for operator/admin workflows such as
-creating agents, configuring providers, installing skills, managing channels,
-and runtime/project administration.
-
-## Required Inputs
-
-Before writing integration code, identify:
-
-- FastClaw base URL.
-- API key, stored server-side only.
-- Agent ID.
-- Upstream stable user ID field.
-- Upstream conversation/session ID field.
-- Whether usage/quota billing must be wired.
-- Whether attachments/images must be supported.
-
-Do not expose FastClaw API keys to browsers or mobile clients. Route calls
-through the upstream backend.
-
-## Chat Contract
-
-Call:
+One website = one FastClaw account + one server-side API key.
+Agents are product capabilities, not one agent per registered user.
 
 ```http
 POST /v1/chat/completions
 Authorization: Bearer <FASTCLAW_API_KEY>
 Content-Type: application/json
-X-Fastclaw-Session-Key: <deterministic-session-key>
+X-Fastclaw-Session-Key: <app>:<your-user-id>:<conversation-id>
 X-Fastclaw-Chatter: app:<your-user-id>
 ```
-
-Body:
 
 ```json
 {
@@ -60,137 +29,63 @@ Body:
   ],
   "params": {
     "user_id": "app:<your-user-id>",
-    "display_name": "Ada"
+    "display_name": "Ada",
+    "known_facts": []
   }
 }
 ```
 
-Rules:
+- `messages` = **this turn only**. FastClaw keeps session history. Replaying
+  an OpenAI transcript is ignored except the last user line.
+- Chatter (`X-Fastclaw-Chatter` and/or `params.user_id`) keys USER.md /
+  MEMORY.md. Both set and different → 400. Neither → `api-user`.
+- Do **not** send `user` or `X-Fastclaw-End-User` (those switch UserSpace
+  and still do not set chatter).
+- Keys stay on the server. Browsers must not call FastClaw or choose chatter.
 
-- `agent_id` selects the FastClaw agent. Body wins over
-  `X-Fastclaw-Agent-ID`.
-- Chatter (USER.md / MEMORY.md) is `X-Fastclaw-Chatter` and/or
-  `params.user_id`. Both set and different → 400. Neither → `api-user`.
-  Not the same as `user` / `X-Fastclaw-End-User` (those switch UserSpace;
-  omit them on the website default path).
-- `user` is the upstream app_user switch. Body wins over
-  `X-Fastclaw-End-User`. Do not use it as chatter.
-- `X-Fastclaw-Session-Key` is YOUR conversation id. Use a deterministic
-  key such as `<app>:<user-id>:<conversation-id>`. FastClaw stores a
-  separate native `session_id` (`s-...`) for that row.
-- Every completion echoes both ids:
-  - headers `X-Fastclaw-Session-Key` (what you sent) and
-    `X-Fastclaw-Session-Id` (native `s-...`)
-  - non-stream JSON also has `session_key` and `session_id`
-- Use either id as `?sessionId=` when listing or downloading files.
-- `params` is per-turn structured context. It is shown to the agent but not
-  persisted. Cross-session memory (Basic Memory HTTP) is your backend:
-  resolve/create project `app-<user_id>`, search, put a short
-  `params.known_facts` list on the FastClaw call. See
-  `docs/upstream-basic-memory.md`. Do not mount BM MCP on the template
-  agent. FastClaw does not call BM.
-- Use `images` or `imageUrls` for image URLs/data URLs intended for vision
-  models.
-- Use `attachments` for general files, with optional `name`.
+## Other `/v1` calls
 
-## Session Files
+- `GET /v1/agents` — agents this API key can call.
+- `GET /v1/usage` — owner totals on the default path (omit `user_id`).
+  Sum `daily[].agentId` for per-agent. Per registered user: your DB.
+- `/v1/quota` — site-wide cap on the owner account (`user_id` = owner).
+- Files: `GET /api/agents/{id}/files?sessionId=<session key or session_id>`.
+  Always pass `sessionId`.
+- `POST /v1/users` — optional app_user mint. Not the default website path.
 
-Agent-produced files (markdown, charts, uploads) live in the session
-workspace. After a completion:
+Dashboard `/api/chat/*` is not the upstream chat API.
 
-```http
-GET /api/agents/<agent_id>/files?sessionId=<session_key or session_id>
-Authorization: Bearer <FASTCLAW_API_KEY>
-```
+## Session and memory
 
-Download one file (relative name from the list, or `/workspace/<name>`):
+- Reuse the session key to continue a thread. New conversation-id = new thread.
+- FastClaw compaction handles long threads. You do not need a second compressor.
+- Cross-session product facts: your backend or Basic Memory HTTP, then
+  `params.known_facts`. FastClaw does not call BM. Do not mount BM MCP on
+  a template agent. Recipe: `docs/upstream-basic-memory.md`.
+- Template agents: keep Auto-remember off until chatter ids are unique.
+- Operator console + personal IM: FastClaw **Shared identity** toggle on
+  that agent. No BM required for that pair.
 
-```http
-GET /api/agents/<agent_id>/files/<name>?sessionId=<session_key or session_id>
-Authorization: Bearer <FASTCLAW_API_KEY>
-```
+## Streaming
 
-`sessionId` accepts the header you sent on chat (`session_key`) or the
-native `session_id` from the response. Do not guess `sessions/<id>/...`
-paths yourself.
+First event is the role chunk. `: heartbeat` every 10s while tools run.
+Ignore lines starting with `:`. Do not treat silence as a hang.
+Completion `usage` is zeros — bill from `GET /v1/usage`.
 
-If chat used `user` or `X-Fastclaw-End-User`, send the same
-`X-Fastclaw-End-User` on file requests so the row lookup matches.
+## Checklist
 
-## User Provisioning
+1. Server-side base URL, API key, agent id.
+2. Deterministic session key and chatter (`app:<user-id>`).
+3. SSE client that survives heartbeats.
+4. File list with `?sessionId=`.
+5. Owner usage/quota only if you need a site cap.
+6. Errors: `400` (including chatter mismatch), `401`, `404`, `429`, `503`.
 
-Either explicitly provision:
+## Do not
 
-```http
-POST /v1/users
-Authorization: Bearer <FASTCLAW_API_KEY>
-Content-Type: application/json
-
-{
-  "external_id": "upstream-user-id",
-  "display_name": "Optional Display Name"
-}
-```
-
-Or skip provisioning and pass `user` on every chat call. FastClaw will lazy
-create the app-user for that API key.
-
-Store the returned `user_id` if the upstream app needs usage/quota lookups.
-
-## Usage And Quota
-
-Query usage:
-
-```http
-GET /v1/usage?user_id=u_...&days=30
-Authorization: Bearer <FASTCLAW_API_KEY>
-```
-
-Set quota after subscription changes:
-
-```http
-PUT /v1/quota
-Authorization: Bearer <FASTCLAW_API_KEY>
-Content-Type: application/json
-
-{
-  "user_id": "u_...",
-  "monthly_token_limit": 5000000,
-  "monthly_request_limit": 10000,
-  "reset_day": 1
-}
-```
-
-## Implementation Checklist
-
-1. Add server-side FastClaw client configuration:
-   - base URL
-   - API key
-   - agent ID
-2. Add or reuse upstream conversation IDs.
-3. Map upstream user IDs to FastClaw `user` or `/v1/users`.
-4. Implement streaming SSE parsing for `/v1/chat/completions`.
-   Keep the socket open through tool execution: the first event is the
-   role chunk, then `: heartbeat` comments every 10s until tokens
-   arrive. Ignore lines that start with `:`. Do not time out on silence.
-5. Persist or derive `X-Fastclaw-Session-Key` per conversation. After
-   each completion, store `session_id` from the response headers/body
-   if you need dashboard-style ids; file APIs accept either token.
-6. Add attachment support only if the product UI needs it.
-7. Add `/v1/usage` and `/v1/quota` only if billing/paid limits are required.
-8. Handle OpenAI-style error objects:
-   - `400` invalid request
-   - `401` auth failure
-   - `404` inaccessible agent
-   - `429` rate/quota limit
-   - `503` subsystem disabled
-
-## Do Not
-
-- Do not call dashboard `/api/chat/stream` for upstream app chat unless you are
-  embedding FastClaw's own dashboard semantics.
-- Do not put FastClaw API keys in frontend code.
-- Do not use email/display name as the stable FastClaw `user` value.
-- Do not reuse one session key across unrelated conversations.
-- Do not configure agents/providers/skills through `/v1`; use dashboard,
-  `/api/*`, or CLI for admin workflows.
+- Put FastClaw or BM keys in the frontend.
+- Send End-User / body `user` on the default path.
+- Reuse one session key across users.
+- Replay full chat history in `messages`.
+- Create one FastClaw agent per registered user.
+- Configure providers/skills through `/v1`.
