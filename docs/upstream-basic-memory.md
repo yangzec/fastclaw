@@ -1,5 +1,8 @@
 # Website + Basic Memory (HTTP, not FastClaw MCP)
 
+Chat/session/chatter HTTP: `docs/upstream-api.md`. This page is only the
+optional BM recipe.
+
 Product-user **cross-session** memory is **your backend**, not FastClaw.
 FastClaw does not call Basic Memory. Do not mount the BM MCP on a
 shared template agent.
