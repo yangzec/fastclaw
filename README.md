@@ -150,6 +150,7 @@ table and is edited through the dashboard or `fastclaw agents config`.
 - MEMORY.md — long-term facts, auto-updated by heartbeat
 - Session-based context with full history preservation
 - Thinking/reasoning content preserved for memory extraction
+- Per-agent Knowledge page — owner-uploaded text files (keyword / CJK-bigram search, not vectors). What belongs there vs SiliconFlow / Dify / Volcengine / Mem0: [`docs/knowledge-architecture.md`](docs/knowledge-architecture.md)
 
 ### API
 - OpenAI-compatible `/v1/chat/completions` (streaming)

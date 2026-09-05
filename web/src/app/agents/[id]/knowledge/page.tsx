@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BookOpen, FileText, Files, Loader2, Trash2, Upload } from "lucide-react";
+import { BookOpen, FileText, Files, Loader2, Trash2, Upload, X } from "lucide-react";
 
 import {
   AlertDialog,
@@ -26,6 +26,7 @@ import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { useAgentName } from "@/hooks/use-agent-name";
 
 const MAX_BYTES = 256 * 1024;
+const ALLOWED_EXTS = new Set([".md", ".markdown", ".txt", ".csv", ".json", ".yaml", ".yml", ".log"]);
 
 type KnowledgeFile = {
   name: string;
@@ -35,6 +36,11 @@ type KnowledgeFile = {
   hash?: string;
 };
 
+function fileExt(name: string): string {
+  const i = name.lastIndexOf(".");
+  return i >= 0 ? name.slice(i).toLowerCase() : "";
+}
+
 export default function AgentKnowledgePage() {
   const agentId = useAgentIdFromURL();
   const agentName = useAgentName(agentId);
@@ -42,8 +48,9 @@ export default function AgentKnowledgePage() {
   const [files, setFiles] = useState<KnowledgeFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploadOpen, setUploadOpen] = useState(false);
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState("");
   const [uploadError, setUploadError] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<KnowledgeFile | null>(null);
@@ -67,54 +74,99 @@ export default function AgentKnowledgePage() {
   const handleUploadOpenChange = (open: boolean) => {
     setUploadOpen(open);
     if (!open) {
-      setUploadFile(null);
+      setUploadFiles([]);
       setUploadError("");
+      setUploadProgress("");
       setDragOver(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
-  const acceptFile = (list: FileList | null) => {
+  const acceptFiles = (list: FileList | null) => {
     if (!list?.length) return;
-    if (list.length > 1) {
-      setUploadError("Please upload one knowledge file at a time.");
-      return;
+    const next: File[] = [];
+    const errors: string[] = [];
+    const seen = new Set(uploadFiles.map((f) => `${f.name}:${f.size}`));
+    for (const file of Array.from(list)) {
+      const key = `${file.name}:${file.size}`;
+      if (seen.has(key)) continue;
+      if (!ALLOWED_EXTS.has(fileExt(file.name))) {
+        errors.push(`${file.name}: unsupported type. Use .md .txt .csv .json .yaml .yml .log`);
+        continue;
+      }
+      if (file.size > MAX_BYTES) {
+        errors.push(`${file.name}: too large; maximum size is 256KB.`);
+        continue;
+      }
+      seen.add(key);
+      next.push(file);
     }
-    const file = list[0];
-    if (file.size > MAX_BYTES) {
-      setUploadError("Knowledge file is too large; maximum size is 256KB.");
-      return;
+    if (next.length) {
+      setUploadFiles((prev) => [...prev, ...next]);
     }
-    setUploadFile(file);
-    setUploadError("");
+    setUploadError(errors.join("\n"));
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removeSelected = (index: number) => {
+    setUploadFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
   const upload = async () => {
-    if (!uploadFile) return;
+    if (!uploadFiles.length) return;
     setUploading(true);
     setUploadError("");
+    const failures: string[] = [];
+    let duplicates = 0;
+    let saved = 0;
     try {
-      const form = new FormData();
-      form.append("file", uploadFile);
-      const res = await apiFetch(`/api/agents/${agentId}/knowledge-files`, {
-        method: "POST",
-        body: form,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data?.ok === false) {
-        throw new Error(data?.error || `Upload failed (${res.status})`);
+      for (let i = 0; i < uploadFiles.length; i++) {
+        const file = uploadFiles[i];
+        setUploadProgress(`Uploading ${i + 1}/${uploadFiles.length}…`);
+        const form = new FormData();
+        form.append("file", file);
+        const res = await apiFetch(`/api/agents/${agentId}/knowledge-files`, {
+          method: "POST",
+          body: form,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.ok === false) {
+          failures.push(`${file.name}: ${data?.error || `upload failed (${res.status})`}`);
+          continue;
+        }
+        if (data?.duplicate) {
+          duplicates += 1;
+          continue;
+        }
+        saved += 1;
       }
-      if (data?.duplicate) {
-        setUploadError("This file is already in the knowledge base.");
-        await fetchFiles();
+      await fetchFiles();
+      const notes: string[] = [];
+      if (duplicates) {
+        notes.push(
+          duplicates === 1
+            ? "1 file was already in the knowledge base."
+            : `${duplicates} files were already in the knowledge base.`,
+        );
+      }
+      if (failures.length) {
+        notes.push(failures.join("\n"));
+        setUploadError(notes.join("\n"));
+        setUploadFiles((prev) =>
+          prev.filter((file) => failures.some((msg) => msg.startsWith(`${file.name}:`))),
+        );
+        return;
+      }
+      if (saved === 0 && duplicates > 0) {
+        setUploadError(notes.join("\n"));
         return;
       }
       handleUploadOpenChange(false);
-      await fetchFiles();
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : String(err));
     } finally {
       setUploading(false);
+      setUploadProgress("");
     }
   };
 
@@ -140,7 +192,7 @@ export default function AgentKnowledgePage() {
         </div>
         <Button variant="outline" onClick={() => setUploadOpen(true)}>
           <Upload className="h-4 w-4 mr-2" />
-          Upload File
+          Upload files
         </Button>
       </div>
 
@@ -162,7 +214,7 @@ export default function AgentKnowledgePage() {
             </p>
             <Button variant="outline" size="sm" onClick={() => setUploadOpen(true)}>
               <Upload className="h-4 w-4 mr-2" />
-              Upload File
+              Upload files
             </Button>
           </div>
         </div>
@@ -179,7 +231,9 @@ export default function AgentKnowledgePage() {
                     <FileText className="h-4 w-4 text-primary" />
                   </div>
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{file.name}</p>
+                    <p className="truncate text-sm font-medium" title={file.name}>
+                      {file.name}
+                    </p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {formatBytes(file.size)}
                       {file.hash ? ` · ${file.hash.slice(0, 8)}` : ""}
@@ -204,14 +258,15 @@ export default function AgentKnowledgePage() {
       <Dialog open={uploadOpen} onOpenChange={handleUploadOpenChange}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Upload knowledge file</DialogTitle>
+            <DialogTitle>Upload knowledge files</DialogTitle>
           </DialogHeader>
           <input
             ref={fileInputRef}
             type="file"
+            multiple
             className="hidden"
             accept=".md,.markdown,.txt,.csv,.json,.yaml,.yml,.log"
-            onChange={(event) => acceptFile(event.target.files)}
+            onChange={(event) => acceptFiles(event.target.files)}
           />
           <button
             type="button"
@@ -224,36 +279,60 @@ export default function AgentKnowledgePage() {
             onDrop={(event) => {
               event.preventDefault();
               setDragOver(false);
-              acceptFile(event.dataTransfer.files);
+              acceptFiles(event.dataTransfer.files);
             }}
-            className={`flex h-48 w-full flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed bg-muted/20 px-6 py-8 text-center transition-colors hover:bg-muted/40 ${
+            className={`flex h-40 w-full flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed bg-muted/20 px-6 py-8 text-center transition-colors hover:bg-muted/40 ${
               dragOver ? "border-primary bg-primary/5" : "border-border"
             }`}
           >
             <Files
               className={`h-10 w-10 ${
-                uploadFile ? "text-primary" : "text-muted-foreground/60"
+                uploadFiles.length ? "text-primary" : "text-muted-foreground/60"
               }`}
               strokeWidth={1.4}
             />
-            {uploadFile ? (
-              <div className="space-y-1">
-                <p className="break-all text-sm font-medium">{uploadFile.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {formatBytes(uploadFile.size)} · click to choose a different file
-                </p>
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Drag and drop or click to upload
-              </p>
-            )}
+            <p className="text-sm text-muted-foreground">
+              {uploadFiles.length
+                ? "Drop or click to add more files"
+                : "Drag and drop or click to upload"}
+            </p>
           </button>
+          {uploadFiles.length > 0 && (
+            <ul className="max-h-40 space-y-1.5 overflow-y-auto">
+              {uploadFiles.map((file, index) => (
+                <li
+                  key={`${file.name}-${file.size}-${index}`}
+                  className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-1.5"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium" title={file.name}>
+                      {file.name}
+                    </p>
+                    <p className="text-xs text-muted-foreground">{formatBytes(file.size)}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 shrink-0 text-muted-foreground hover:text-destructive"
+                    onClick={() => removeSelected(index)}
+                    disabled={uploading}
+                    title="Remove from selection"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
           <p className="text-xs text-muted-foreground">
-            Supported text files up to 256KB. Existing files with the same name are replaced.
+            One or more text files, up to 256KB each. Files with the same content are skipped.
           </p>
+          {uploadProgress && (
+            <p className="text-xs text-muted-foreground">{uploadProgress}</p>
+          )}
           {uploadError && (
-            <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive break-words">
+            <p className="whitespace-pre-wrap rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive break-words">
               {uploadError}
             </p>
           )}
@@ -261,16 +340,16 @@ export default function AgentKnowledgePage() {
             <Button variant="outline" onClick={() => handleUploadOpenChange(false)} disabled={uploading}>
               Cancel
             </Button>
-            <Button onClick={upload} disabled={!uploadFile || uploading}>
+            <Button onClick={upload} disabled={!uploadFiles.length || uploading}>
               {uploading ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Uploading...
+                  {uploadProgress || "Uploading..."}
                 </>
               ) : (
                 <>
                   <Upload className="h-4 w-4 mr-2" />
-                  Upload
+                  {uploadFiles.length > 1 ? `Upload ${uploadFiles.length} files` : "Upload"}
                 </>
               )}
             </Button>

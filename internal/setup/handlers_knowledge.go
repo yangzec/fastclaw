@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/fastclaw-ai/fastclaw/internal/auth"
@@ -226,28 +227,42 @@ func (s *Server) handleDeleteAgentKnowledgeFile(w http.ResponseWriter, r *http.R
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+const maxKnowledgeFilenameRunes = 120
+
+// sanitizeKnowledgeFilename keeps the uploaded basename, including CJK
+// and other Unicode letters, while stripping path separators and other
+// characters that are unsafe in stored names. Non-ASCII letters used
+// to be rewritten as '-', which turned names like 产品说明.md into ----.md.
 func sanitizeKnowledgeFilename(name string) string {
 	name = strings.TrimSpace(filepath.Base(name))
 	name = strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z':
-			return r
-		case r >= 'A' && r <= 'Z':
-			return r
-		case r >= '0' && r <= '9':
-			return r
-		case r == '.', r == '-', r == '_', r == ' ':
-			return r
-		default:
-			return '-'
+		switch r {
+		case 0, '/', '\\', ':', '*', '?', '"', '<', '>', '|':
+			return -1
 		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return -1
 	}, name)
 	name = strings.Trim(name, ". ")
 	if name == "" || name == "." || name == ".." {
 		return ""
 	}
-	if len(name) > 120 {
-		name = name[:120]
+	if utf8.RuneCountInString(name) > maxKnowledgeFilenameRunes {
+		ext := filepath.Ext(name)
+		stem := strings.TrimSuffix(name, ext)
+		maxStem := maxKnowledgeFilenameRunes - utf8.RuneCountInString(ext)
+		if maxStem < 1 {
+			maxStem = 1
+		}
+		stemRunes := []rune(stem)
+		if len(stemRunes) > maxStem {
+			name = string(stemRunes[:maxStem]) + ext
+		}
 	}
 	return name
 }
