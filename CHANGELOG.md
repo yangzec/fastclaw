@@ -5,6 +5,16 @@ action on upgrade — read those notes before deploying.
 
 ## [Unreleased]
 
+### Added
+
+- **Feishu 待办 / 文档 read + confirm-to-edit.** Chat can list and
+  get official tasks (`feishu_list_tasks`, `feishu_get_task`) and
+  append text or retitle a 云文档 (`feishu_append_doc`). Completing
+  or updating a task and modifying a doc require a two-step
+  `confirm_token`: first call only previews, the second applies
+  after the user agrees. QR login now also requests `task:task:read`.
+  Existing bots still need a rescan for new scopes.
+
 ### Changed
 
 - **First run no longer trains the operator.** Rule: don't ask what

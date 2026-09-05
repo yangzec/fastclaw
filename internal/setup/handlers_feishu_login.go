@@ -440,6 +440,7 @@ var (
 		"calendar:calendar:readonly",
 		"calendar:calendar.event:create",
 		"calendar:calendar.event:update",
+		"task:task:read",
 		"task:task:write",
 		"task:task:writeonly",
 		"application:app_slash_command:read",

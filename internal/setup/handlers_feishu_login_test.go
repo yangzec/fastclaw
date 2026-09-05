@@ -307,6 +307,7 @@ func TestFeishuRegistrationOptionsDefaults(t *testing.T) {
 		"im:chat.members:bot_access",
 		"calendar:calendar",
 		"calendar:calendar.event:create",
+		"task:task:read",
 		"task:task:write",
 		"docx:document:create",
 		"docs:permission.member:create",

@@ -100,7 +100,7 @@ const CATALOG: { type: string; label: string; description: string; available: bo
   {
     type: "feishu",
     label: "Feishu",
-    description: "Scan a QR code in Feishu / Lark to create a bot, or paste an existing App ID and Secret. Chat can create official calendar events, tasks, and docs.",
+    description: "Scan a QR code in Feishu / Lark to create a bot, or paste an existing App ID and Secret. Chat can create calendar events, and read / create / confirm-to-edit official tasks and docs.",
     available: true,
   },
   {

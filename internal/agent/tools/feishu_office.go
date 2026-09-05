@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/fastclaw-ai/fastclaw/internal/channels"
 	"github.com/fastclaw-ai/fastclaw/internal/scope"
@@ -30,10 +31,6 @@ type feishuCreateTaskArgs struct {
 	WholeDay    bool   `json:"whole_day"`
 }
 
-type feishuCompleteTaskArgs struct {
-	TaskGUID string `json:"task_guid"`
-}
-
 type feishuCreateDocArgs struct {
 	Title   string `json:"title"`
 	Content string `json:"content"`
@@ -41,6 +38,37 @@ type feishuCreateDocArgs struct {
 
 type feishuReadDocArgs struct {
 	DocumentID string `json:"document_id"`
+}
+
+type feishuListTasksArgs struct {
+	Completed string `json:"completed,omitempty"` // "", "true", "false"
+}
+
+type feishuGetTaskArgs struct {
+	TaskGUID string `json:"task_guid"`
+}
+
+type feishuUpdateTaskArgs struct {
+	TaskGUID     string `json:"task_guid"`
+	Summary      string `json:"summary,omitempty"`
+	Description  string `json:"description,omitempty"`
+	Due          string `json:"due,omitempty"`
+	ClearDue     bool   `json:"clear_due,omitempty"`
+	WholeDay     bool   `json:"whole_day,omitempty"`
+	Complete     *bool  `json:"complete,omitempty"`
+	ConfirmToken string `json:"confirm_token,omitempty"`
+}
+
+type feishuCompleteTaskArgs struct {
+	TaskGUID     string `json:"task_guid"`
+	ConfirmToken string `json:"confirm_token,omitempty"`
+}
+
+type feishuAppendDocArgs struct {
+	DocumentID   string `json:"document_id"`
+	Content      string `json:"content"`
+	Title        string `json:"title,omitempty"`
+	ConfirmToken string `json:"confirm_token,omitempty"`
 }
 
 // feishuOpenAPIFromChannel is swapped in tests so OpenAPI calls hit httptest.
@@ -124,19 +152,95 @@ func RegisterFeishuOfficeTools(r *Registry, st store.Store, agentID string) {
 		makeFeishuCreateTask(st, r, agentID),
 	)
 
-	r.Register("feishu_complete_task",
-		"Mark an official Feishu task complete by the task_guid returned from feishu_create_task.",
+	r.Register("feishu_list_tasks",
+		"List official Feishu / Lark tasks the connected bot can see (type=my_tasks). Use this to read 待办. completed empty = all, true = done only, false = open only. Personal todos the user created in the Feishu app may not appear — use feishu_get_task with a guid or todo link.",
+		map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"completed": map[string]interface{}{
+					"type":        "string",
+					"description": "Filter: empty for all, \"true\" for done, \"false\" for open.",
+				},
+			},
+		},
+		makeFeishuListTasks(st, r, agentID),
+	)
+
+	r.Register("feishu_get_task",
+		"Read one official Feishu / Lark task by task_guid or a Feishu todo URL that contains guid=.",
 		map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"task_guid": map[string]interface{}{
 					"type":        "string",
-					"description": "The guid from feishu_create_task.",
+					"description": "Task guid from feishu_create_task / feishu_list_tasks, or a todo applink.",
+				},
+			},
+			"required": []string{"task_guid"},
+		},
+		makeFeishuGetTask(st, r, agentID),
+	)
+
+	r.Register("feishu_complete_task",
+		"Mark an official Feishu task complete. REQUIRES two-step confirmation: first call returns a preview + confirm_token. Show that to the user. Only call again with confirm_token after they explicitly agree. Never invent a token.",
+		map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"task_guid": map[string]interface{}{
+					"type":        "string",
+					"description": "The guid from feishu_create_task or feishu_list_tasks.",
+				},
+				"confirm_token": map[string]interface{}{
+					"type":        "string",
+					"description": "Token from the first call. Required to actually complete. Omit on the preview call.",
 				},
 			},
 			"required": []string{"task_guid"},
 		},
 		makeFeishuCompleteTask(st, r, agentID),
+	)
+
+	r.Register("feishu_update_task",
+		"Change an official Feishu task title, notes, due time, or completion. REQUIRES two-step confirmation: first call previews the change and returns confirm_token. Ask the user. Only retry with that token after they agree. Never invent a token.",
+		map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"task_guid": map[string]interface{}{
+					"type":        "string",
+					"description": "Task guid or todo URL.",
+				},
+				"summary": map[string]interface{}{
+					"type":        "string",
+					"description": "New title.",
+				},
+				"description": map[string]interface{}{
+					"type":        "string",
+					"description": "New notes.",
+				},
+				"due": map[string]interface{}{
+					"type":        "string",
+					"description": "New due time (same formats as feishu_create_task).",
+				},
+				"clear_due": map[string]interface{}{
+					"type":        "boolean",
+					"description": "Remove the due time.",
+				},
+				"whole_day": map[string]interface{}{
+					"type":        "boolean",
+					"description": "Due is a date without a time.",
+				},
+				"complete": map[string]interface{}{
+					"type":        "boolean",
+					"description": "true = mark done, false = reopen.",
+				},
+				"confirm_token": map[string]interface{}{
+					"type":        "string",
+					"description": "Token from the first call. Required to apply. Omit on the preview call.",
+				},
+			},
+			"required": []string{"task_guid"},
+		},
+		makeFeishuUpdateTask(st, r, agentID),
 	)
 
 	r.Register("feishu_create_doc",
@@ -171,6 +275,33 @@ func RegisterFeishuOfficeTools(r *Registry, st store.Store, agentID string) {
 			"required": []string{"document_id"},
 		},
 		makeFeishuReadDoc(st, r, agentID),
+	)
+
+	r.Register("feishu_append_doc",
+		"Modify an official Feishu / Lark document: append plain-text paragraphs and/or change the title. REQUIRES two-step confirmation: first call returns a preview + confirm_token. Show that to the user. Only call again with confirm_token after they explicitly agree. Never invent a token. Does not replace the existing body.",
+		map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"document_id": map[string]interface{}{
+					"type":        "string",
+					"description": "document_id or a /docx/ URL.",
+				},
+				"content": map[string]interface{}{
+					"type":        "string",
+					"description": "Plain text to append (one paragraph per line). Optional if only changing the title.",
+				},
+				"title": map[string]interface{}{
+					"type":        "string",
+					"description": "Optional new document title.",
+				},
+				"confirm_token": map[string]interface{}{
+					"type":        "string",
+					"description": "Token from the first call. Required to apply. Omit on the preview call.",
+				},
+			},
+			"required": []string{"document_id"},
+		},
+		makeFeishuAppendDoc(st, r, agentID),
 	)
 }
 
@@ -288,6 +419,65 @@ func makeFeishuCreateTask(st store.Store, r *Registry, agentID string) ToolFunc 
 	}
 }
 
+func makeFeishuListTasks(st store.Store, r *Registry, agentID string) ToolFunc {
+	return func(ctx context.Context, rawArgs json.RawMessage) (string, error) {
+		var args feishuListTasksArgs
+		if len(rawArgs) > 0 {
+			if err := json.Unmarshal(rawArgs, &args); err != nil {
+				return "", fmt.Errorf("parse args: %w", err)
+			}
+		}
+		client, err := feishuOfficeClient(ctx, st, r, agentID)
+		if err != nil {
+			return "", err
+		}
+		var completed *bool
+		switch strings.ToLower(strings.TrimSpace(args.Completed)) {
+		case "true", "1", "done", "yes":
+			v := true
+			completed = &v
+		case "false", "0", "open", "todo", "no":
+			v := false
+			completed = &v
+		}
+		items, err := client.ListTasks(ctx, completed, 50)
+		if err != nil {
+			return "", err
+		}
+		if len(items) == 0 {
+			return "No Feishu tasks visible to this bot (my_tasks). If you have a todo link or guid, use feishu_get_task.", nil
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "%d Feishu task(s):\n", len(items))
+		for _, t := range items {
+			b.WriteString(formatFeishuTask(t))
+			b.WriteByte('\n')
+		}
+		return strings.TrimSpace(b.String()), nil
+	}
+}
+
+func makeFeishuGetTask(st store.Store, r *Registry, agentID string) ToolFunc {
+	return func(ctx context.Context, rawArgs json.RawMessage) (string, error) {
+		var args feishuGetTaskArgs
+		if err := json.Unmarshal(rawArgs, &args); err != nil {
+			return "", fmt.Errorf("parse args: %w", err)
+		}
+		if strings.TrimSpace(args.TaskGUID) == "" {
+			return "", fmt.Errorf("task_guid required")
+		}
+		client, err := feishuOfficeClient(ctx, st, r, agentID)
+		if err != nil {
+			return "", err
+		}
+		info, err := client.GetTask(ctx, args.TaskGUID)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(formatFeishuTask(info)), nil
+	}
+}
+
 func makeFeishuCompleteTask(st store.Store, r *Registry, agentID string) ToolFunc {
 	return func(ctx context.Context, rawArgs json.RawMessage) (string, error) {
 		var args feishuCompleteTaskArgs
@@ -302,11 +492,236 @@ func makeFeishuCompleteTask(st store.Store, r *Registry, agentID string) ToolFun
 		if err != nil {
 			return "", err
 		}
-		if err := client.CompleteTask(ctx, guid); err != nil {
+		if strings.TrimSpace(args.ConfirmToken) != "" {
+			p, err := feishuTakePending(agentID, args.ConfirmToken)
+			if err != nil {
+				return "", err
+			}
+			if p.Kind != "complete_task" || p.TaskGUID == "" {
+				return "", fmt.Errorf("confirm_token is not for completing a task")
+			}
+			if err := client.CompleteTask(ctx, p.TaskGUID); err != nil {
+				return "", err
+			}
+			return "Completed Feishu task " + p.TaskGUID + ".", nil
+		}
+		info, err := client.GetTask(ctx, guid)
+		if err != nil {
 			return "", err
 		}
-		return "Completed Feishu task " + guid + ".", nil
+		preview := "About to COMPLETE this Feishu task:\n" + formatFeishuTask(info)
+		tok := feishuStorePending(feishuPending{AgentID: agentID, Kind: "complete_task", TaskGUID: info.GUID, Preview: preview})
+		return feishuConfirmPrompt(preview, tok), nil
 	}
+}
+
+func makeFeishuUpdateTask(st store.Store, r *Registry, agentID string) ToolFunc {
+	return func(ctx context.Context, rawArgs json.RawMessage) (string, error) {
+		var args feishuUpdateTaskArgs
+		if err := json.Unmarshal(rawArgs, &args); err != nil {
+			return "", fmt.Errorf("parse args: %w", err)
+		}
+		guid := strings.TrimSpace(args.TaskGUID)
+		if guid == "" {
+			return "", fmt.Errorf("task_guid required")
+		}
+		client, err := feishuOfficeClient(ctx, st, r, agentID)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(args.ConfirmToken) != "" {
+			p, err := feishuTakePending(agentID, args.ConfirmToken)
+			if err != nil {
+				return "", err
+			}
+			if p.Kind != "update_task" {
+				return "", fmt.Errorf("confirm_token is not for updating a task")
+			}
+			if err := client.UpdateTask(ctx, p.TaskGUID, p.Patch); err != nil {
+				return "", err
+			}
+			return "Updated Feishu task " + p.TaskGUID + ".", nil
+		}
+		info, err := client.GetTask(ctx, guid)
+		if err != nil {
+			return "", err
+		}
+		tzName := scope.Timezone(ctx, st, r.ChatterUserID(), agentID)
+		loc := scope.LoadLocationOrLocal(tzName)
+		patch, err := feishuTaskPatchFromArgs(args, loc)
+		if err != nil {
+			return "", err
+		}
+		preview := "About to UPDATE this Feishu task:\n" + formatFeishuTask(info) + "\nProposed changes:\n" + formatFeishuTaskPatch(patch)
+		tok := feishuStorePending(feishuPending{
+			AgentID: agentID, Kind: "update_task", TaskGUID: info.GUID,
+			Patch: patch, Preview: preview,
+		})
+		return feishuConfirmPrompt(preview, tok), nil
+	}
+}
+
+func makeFeishuAppendDoc(st store.Store, r *Registry, agentID string) ToolFunc {
+	return func(ctx context.Context, rawArgs json.RawMessage) (string, error) {
+		var args feishuAppendDocArgs
+		if err := json.Unmarshal(rawArgs, &args); err != nil {
+			return "", fmt.Errorf("parse args: %w", err)
+		}
+		ref := strings.TrimSpace(args.DocumentID)
+		if ref == "" {
+			return "", fmt.Errorf("document_id required")
+		}
+		title := strings.TrimSpace(args.Title)
+		content := strings.TrimSpace(args.Content)
+		if title == "" && content == "" {
+			return "", fmt.Errorf("title or content is required")
+		}
+		client, err := feishuOfficeClient(ctx, st, r, agentID)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(args.ConfirmToken) != "" {
+			p, err := feishuTakePending(agentID, args.ConfirmToken)
+			if err != nil {
+				return "", err
+			}
+			if p.Kind != "append_doc" {
+				return "", fmt.Errorf("confirm_token is not for modifying a document")
+			}
+			if p.DocTitle != "" {
+				if err := client.UpdateDocTitle(ctx, p.DocID, p.DocTitle); err != nil {
+					return "", err
+				}
+			}
+			if p.DocAppend != "" {
+				if err := client.AppendDocText(ctx, p.DocID, p.DocAppend); err != nil {
+					return "", err
+				}
+			}
+			return "Updated Feishu doc " + p.DocID + ".", nil
+		}
+		curTitle, curText, err := client.ReadDoc(ctx, ref)
+		if err != nil {
+			return "", err
+		}
+		if curTitle == "" {
+			curTitle = "(untitled)"
+		}
+		var b strings.Builder
+		b.WriteString("About to MODIFY Feishu doc ")
+		b.WriteString(ref)
+		b.WriteString(" (current title: ")
+		b.WriteString(curTitle)
+		b.WriteString(").\n")
+		if title != "" {
+			b.WriteString("New title: ")
+			b.WriteString(title)
+			b.WriteByte('\n')
+		}
+		if content != "" {
+			b.WriteString("Append:\n")
+			b.WriteString(content)
+			b.WriteByte('\n')
+		}
+		if n := len(curText); n > 400 {
+			b.WriteString("Current body (truncated): ")
+			b.WriteString(curText[:400])
+			b.WriteString("…\n")
+		} else if n > 0 {
+			b.WriteString("Current body: ")
+			b.WriteString(curText)
+			b.WriteByte('\n')
+		}
+		tok := feishuStorePending(feishuPending{
+			AgentID: agentID, Kind: "append_doc", DocID: ref,
+			DocTitle: title, DocAppend: content, Preview: b.String(),
+		})
+		return feishuConfirmPrompt(strings.TrimSpace(b.String()), tok), nil
+	}
+}
+
+func feishuTaskPatchFromArgs(args feishuUpdateTaskArgs, loc *time.Location) (channels.FeishuTaskPatch, error) {
+	var patch channels.FeishuTaskPatch
+	if s := strings.TrimSpace(args.Summary); s != "" {
+		patch.Summary = &s
+	}
+	if args.Description != "" {
+		d := args.Description
+		patch.Description = &d
+	}
+	if strings.TrimSpace(args.Due) != "" {
+		unix, day, err := parseWeComWhen(args.Due, loc)
+		if err != nil {
+			return patch, fmt.Errorf("due: %w", err)
+		}
+		patch.SetDue = true
+		patch.DueUnix = unix
+		patch.WholeDay = args.WholeDay || day
+	}
+	if args.ClearDue {
+		patch.ClearDue = true
+		patch.SetDue = false
+	}
+	patch.Complete = args.Complete
+	if patch.Summary == nil && patch.Description == nil && !patch.SetDue && !patch.ClearDue && patch.Complete == nil {
+		return patch, fmt.Errorf("provide summary, description, due, clear_due, or complete")
+	}
+	return patch, nil
+}
+
+func formatFeishuTask(t channels.FeishuTaskInfo) string {
+	status := t.Status
+	if status == "" {
+		if t.Completed {
+			status = "done"
+		} else {
+			status = "todo"
+		}
+	}
+	line := fmt.Sprintf("- %s [%s] %s", t.GUID, status, strings.TrimSpace(t.Summary))
+	if t.DueUnix > 0 {
+		when := time.Unix(t.DueUnix, 0).UTC().Format("2006-01-02")
+		if !t.WholeDay {
+			when = time.Unix(t.DueUnix, 0).UTC().Format("2006-01-02 15:04")
+		}
+		line += " due " + when
+	}
+	if u := strings.TrimSpace(t.URL); u != "" {
+		line += " " + u
+	}
+	if d := strings.TrimSpace(t.Description); d != "" {
+		if len(d) > 160 {
+			d = d[:160] + "…"
+		}
+		line += "\n  " + d
+	}
+	return line
+}
+
+func formatFeishuTaskPatch(p channels.FeishuTaskPatch) string {
+	var parts []string
+	if p.Summary != nil {
+		parts = append(parts, "summary → "+*p.Summary)
+	}
+	if p.Description != nil {
+		parts = append(parts, "description → "+*p.Description)
+	}
+	if p.ClearDue {
+		parts = append(parts, "due → (cleared)")
+	} else if p.SetDue {
+		parts = append(parts, fmt.Sprintf("due → %d (whole_day=%v)", p.DueUnix, p.WholeDay))
+	}
+	if p.Complete != nil {
+		if *p.Complete {
+			parts = append(parts, "status → done")
+		} else {
+			parts = append(parts, "status → todo")
+		}
+	}
+	if len(parts) == 0 {
+		return "(none)"
+	}
+	return "- " + strings.Join(parts, "\n- ")
 }
 
 func makeFeishuCreateDoc(st store.Store, r *Registry, agentID string) ToolFunc {
