@@ -19,6 +19,7 @@ import {
   workspaceToolPath,
 } from "@/lib/workspace-files";
 import {
+  followupComposerHint,
   loadFollowupBehavior,
   loadSessionQueue,
   newFollowupId,
@@ -28,6 +29,14 @@ import {
   type FollowupBehavior,
   type QueuedFollowup,
 } from "@/lib/followup";
+import {
+  formatTurnUsageHint,
+  formatTurnUsageLine,
+  loadLastTurnUsage,
+  parseTurnUsage,
+  saveLastTurnUsage,
+  type TurnUsage,
+} from "@/lib/turn-usage";
 import { Bot, Send, Copy, Check, Pencil, Wrench, ChevronDown, ChevronRight, Download, X, File, FileText, Folder, FolderSearch, Image as ImageIcon, FileCode, Film, Music, Puzzle, SlidersHorizontal, ShieldCheck, Paperclip, Square, FolderOpen, RefreshCw, Eye, Code2, RotateCcw, ListChecks, Terminal, ExternalLink, MoreHorizontal, PanelLeftClose, PanelLeftOpen, BookOpen, Upload } from "lucide-react";
 import Link from "next/link";
 import { ChatMarkdown } from "@/components/chat-markdown";
@@ -593,10 +602,11 @@ export function ChatScreen() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   // Codex-style follow-up: default is queue (run after this turn).
-  // "steer" injects into the in-flight turn at the next tool/model
-  // boundary. Persisted so the composer matches last session's choice.
+  // "steer" cancels the in-flight completion and redirects the same
+  // turn. Persisted so the composer matches last session's choice.
   const [followupBehavior, setFollowupBehavior] = useState<FollowupBehavior>(loadFollowupBehavior);
   const [queuedFollowups, setQueuedFollowups] = useState<QueuedFollowup[]>([]);
+  const [lastTurnUsage, setLastTurnUsage] = useState<TurnUsage | null>(null);
   // todo.md state for the current session — agent maintains the file,
   // we re-fetch on every write_file/edit_file event that touches
   // todo.md plus once at mount. Empty `items` hides the panel.
@@ -804,6 +814,7 @@ export function ChatScreen() {
     setAttachments([]);
     setSending(false);
     setQueuedFollowups([]);
+    setLastTurnUsage(null);
   }, [selectedAgent]);
 
   const lastFollowupScopeRef = useRef("");
@@ -1131,10 +1142,18 @@ export function ChatScreen() {
           case "steer": {
             claim();
             applySteerEvent(data.data?.content || "");
+            // Next tokens are a redirected reply — don't append them
+            // onto the interrupted bubble.
+            streamingMsgIdRef.current = null;
             break;
           }
           case "done": {
             claim();
+            const usage = parseTurnUsage(data.data);
+            if (usage) {
+              setLastTurnUsage(usage);
+              saveLastTurnUsage(selectedAgent, sessionId, usage);
+            }
             // Defensive clear — content events should already have
             // sealed the streaming bubble, but a turn that errors out
             // before the trailing `content` event lands would leave
@@ -1441,6 +1460,7 @@ export function ChatScreen() {
     // Same for the subagent progress indicator — never carry it across
     // sessions; a fresh load means no in-flight delegate_task to track.
     setSubagentProgress(null);
+    setLastTurnUsage(loadLastTurnUsage(selectedAgent, sessionId));
     // Refresh todo.md alongside the history fetch. We don't gate the
     // rest of the load on it — a 404 (no todo.md yet) is the normal
     // empty-session case.
@@ -2002,6 +2022,17 @@ export function ChatScreen() {
             // running turn server-side. Render it as a user bubble
             // (reconciled against the optimistic pendingSteer bubble).
             applySteerEvent(evt.data?.content || "", turnAgent, turnSessionId);
+            startNewGroup();
+            break;
+          }
+          case "done": {
+            const usage = parseTurnUsage(evt.data);
+            if (usage) {
+              if (sessionIdRef.current === turnSessionId && selectedAgentRef.current === turnAgent) {
+                setLastTurnUsage(usage);
+              }
+              saveLastTurnUsage(turnAgent, turnSessionId, usage);
+            }
             break;
           }
           case "error": {
@@ -2240,13 +2271,19 @@ export function ChatScreen() {
     await handleSend(item.text, true);
   }, [replaceQueue, sending, steerFollowup, handleSend]);
 
-  // submitFollowup is Enter (or the Queue/Steer button) while a turn is
+  // submitFollowup is Enter (or the Queue/Insert buttons) while a turn is
   // streaming. Default comes from followupBehavior; Ctrl/Cmd flips it.
-  const submitFollowup = useCallback(async (flip = false) => {
+  // Phones have no modifier key, so the buttons pass "queue" / "steer"
+  // explicitly.
+  const submitFollowup = useCallback(async (
+    flipOrAction: boolean | FollowupBehavior = false,
+  ) => {
     const text = input.trim();
     if (!text || !selectedAgent || !sending) return;
     setInput("");
-    const action = resolveFollowupAction(followupBehavior, flip);
+    const action = typeof flipOrAction === "string"
+      ? flipOrAction
+      : resolveFollowupAction(followupBehavior, flipOrAction);
     if (action === "steer") {
       await steerFollowup(text);
       return;
@@ -2472,6 +2509,66 @@ export function ChatScreen() {
     }
     return null;
   })();
+  const sendingPlaceholder = followupComposerHint(followupBehavior, isMobile);
+  const hasFollowupText = Boolean(input.trim());
+  // Phones have no ⌘/Ctrl+Enter. While a turn is running, always show
+  // both Queue and Insert next to Stop so steer is not trapped behind a
+  // modifier the software keyboard cannot send.
+  const renderSendingActions = (compact: boolean) => {
+    const actionClass = compact
+      ? "h-10 rounded-lg px-2.5 text-xs md:h-8"
+      : "h-9 rounded-full px-3 text-xs";
+    const stopClass = compact
+      ? "h-10 w-10 shrink-0 rounded-lg md:h-8 md:w-8"
+      : "h-9 w-9 shrink-0 rounded-full";
+    return (
+      <div className="flex items-center gap-1.5">
+        {isMobile ? (
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              className={actionClass}
+              disabled={!hasFollowupText}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => void submitFollowup("queue")}
+            >
+              Queue
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className={actionClass}
+              disabled={!hasFollowupText}
+              onClick={() => void submitFollowup("steer")}
+              onMouseDown={(e) => e.preventDefault()}
+            >
+              Insert
+            </Button>
+          </>
+        ) : hasFollowupText ? (
+          <Button
+            type="button"
+            variant="outline"
+            className={actionClass}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => void submitFollowup(false)}
+          >
+            {followupBehavior === "queue" ? "Queue" : "Insert"}
+          </Button>
+        ) : null}
+        <Button
+          onClick={handleStop}
+          size="icon"
+          className={stopClass}
+          aria-label="Stop generating"
+        >
+          <Square className="h-3.5 w-3.5 fill-current" />
+        </Button>
+      </div>
+    );
+  };
+
   // Hero title is the same on both the bare agent home and a project
   // landing page — Manus-style "what can I do" prompt. Project pages
   // render a small info card UNDER the hero (folder + name + meta)
@@ -3097,9 +3194,7 @@ export function ChatScreen() {
                         : isReadOnlyChannel
                           ? `Slash commands only — reply from ${channelLabel(currentChannel)}`
                           : sending
-                            ? followupBehavior === "queue"
-                              ? "Enter to queue · ⌘/Ctrl+Enter to insert this turn"
-                              : "Enter to insert this turn · ⌘/Ctrl+Enter to queue"
+                            ? sendingPlaceholder
                           : selectedAgent
                             ? `Message ${agentName || selectedAgent}... ("/" to pick a skill)`
                             : "Select an agent first"
@@ -3150,27 +3245,7 @@ export function ChatScreen() {
                         />
                       ) : null}
                       {sending ? (
-                        <>
-                          {input.trim() ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              className="h-9 rounded-full px-3 text-xs"
-                              onMouseDown={(e) => e.preventDefault()}
-                              onClick={() => void submitFollowup(false)}
-                            >
-                              {followupBehavior === "queue" ? "Queue" : "Insert"}
-                            </Button>
-                          ) : null}
-                          <Button
-                            onClick={handleStop}
-                            size="icon"
-                            className="h-9 w-9 shrink-0 rounded-full"
-                            aria-label="Stop generating"
-                          >
-                            <Square className="h-3.5 w-3.5 fill-current" />
-                          </Button>
-                        </>
+                        renderSendingActions(false)
                       ) : (
                         <Button
                           type="button"
@@ -3192,7 +3267,8 @@ export function ChatScreen() {
                   </div>
                 </>
               ) : (
-                <div className="flex items-center gap-2">
+                <div className={sending && isMobile ? "flex flex-col gap-2" : "flex items-center gap-2"}>
+                  <div className={sending && isMobile ? "flex items-center gap-2" : "contents"}>
                   <label
                     className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors md:h-8 md:w-8 ${
                       !canAttach
@@ -3224,9 +3300,7 @@ export function ChatScreen() {
                         : isReadOnlyChannel
                           ? `Slash commands only — reply from ${channelLabel(currentChannel)}`
                           : sending
-                            ? followupBehavior === "queue"
-                              ? "Enter to queue · ⌘/Ctrl+Enter to insert this turn"
-                              : "Enter to insert this turn · ⌘/Ctrl+Enter to queue"
+                            ? sendingPlaceholder
                           : selectedAgent
                             ? `Message ${agentName || selectedAgent}... ("/" to pick a skill)`
                             : "Select an agent first"
@@ -3236,6 +3310,7 @@ export function ChatScreen() {
                     className="flex-1 resize-none bg-transparent text-base leading-8 placeholder:text-muted-foreground/50 outline-none disabled:opacity-50 md:text-[15px]"
                     style={{ maxHeight: 200, minHeight: 32 }}
                   />
+                  </div>
                   <div className="flex items-center gap-1">
                     {selectedAgent ? (
                       <ComposerModelPicker
@@ -3246,27 +3321,9 @@ export function ChatScreen() {
                       />
                     ) : null}
                     {sending ? (
-                      <>
-                        {input.trim() ? (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="h-10 rounded-lg px-2.5 text-xs md:h-8"
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => void submitFollowup(false)}
-                          >
-                            {followupBehavior === "queue" ? "Queue" : "Insert"}
-                          </Button>
-                        ) : null}
-                        <Button
-                          onClick={handleStop}
-                          size="icon"
-                          className="h-10 w-10 shrink-0 rounded-lg md:h-8 md:w-8"
-                          aria-label="Stop generating"
-                        >
-                          <Square className="h-3.5 w-3.5 fill-current" />
-                        </Button>
-                      </>
+                      <div className={isMobile ? "flex justify-end" : undefined}>
+                        {renderSendingActions(true)}
+                      </div>
                     ) : (
                       <Button
                         type="button"
@@ -3297,24 +3354,45 @@ export function ChatScreen() {
                   <span />
                 )}
                 {canUseComposer ? (
-                  <div className="flex shrink-0 items-center gap-2">
-                    <span>While it replies</span>
-                    <button
-                      type="button"
-                      className={followupBehavior === "queue" ? "font-medium text-foreground" : "hover:text-foreground"}
-                      onClick={() => setFollowupMode("queue")}
-                    >
-                      Queue
-                    </button>
-                    <span>·</span>
-                    <button
-                      type="button"
-                      className={followupBehavior === "steer" ? "font-medium text-foreground" : "hover:text-foreground"}
-                      onClick={() => setFollowupMode("steer")}
-                    >
-                      Insert
-                    </button>
+                  <div className="flex min-w-0 shrink-0 items-center gap-2">
+                    {isMobile && sending ? (
+                      <span>Tap Queue or Insert above</span>
+                    ) : (
+                      <>
+                        <span>While it replies</span>
+                        <button
+                          type="button"
+                          className={followupBehavior === "queue" ? "font-medium text-foreground" : "hover:text-foreground"}
+                          onClick={() => setFollowupMode("queue")}
+                        >
+                          Queue
+                        </button>
+                        <span>·</span>
+                        <button
+                          type="button"
+                          className={followupBehavior === "steer" ? "font-medium text-foreground" : "hover:text-foreground"}
+                          onClick={() => setFollowupMode("steer")}
+                        >
+                          Insert
+                        </button>
+                      </>
+                    )}
+                    {lastTurnUsage && (
+                      <span
+                        className="ml-auto font-mono tabular-nums"
+                        title={formatTurnUsageHint(lastTurnUsage)}
+                      >
+                        {formatTurnUsageLine(lastTurnUsage)}
+                      </span>
+                    )}
                   </div>
+                ) : lastTurnUsage ? (
+                  <span
+                    className="ml-auto font-mono tabular-nums"
+                    title={formatTurnUsageHint(lastTurnUsage)}
+                  >
+                    {formatTurnUsageLine(lastTurnUsage)}
+                  </span>
                 ) : null}
               </div>
             )}

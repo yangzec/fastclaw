@@ -52,6 +52,13 @@ func TestAgentPrompt_TrustedTurnGrantsOperatorWork(t *testing.T) {
 	mustContain(t, prompt, "Installing into\n     an agent OTHER than yourself is normal")
 	mustContain(t, prompt, "Never install a skill into yourself as a substitute")
 
+	// Closed doors (MCP / plugins / Models) must name the dashboard and
+	// forbid --help / source dumps after configure_agent refuses.
+	mustContain(t, prompt, "do NOT read source code")
+	mustContain(t, prompt, "Never retry configure_agent with key=mcpServers")
+	mustContain(t, prompt, "Do not exec `--help`")
+	mustNotContain(t, prompt, "run any subcommand with --help")
+
 	// The guest wording must not also be present — two contradictory
 	// branches in one prompt is what produced the original refusal.
 	mustNotContain(t, prompt, "is NOT a super_admin")

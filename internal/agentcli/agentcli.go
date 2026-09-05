@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -735,11 +736,6 @@ var systemSettingNamespaces = []string{
 	"teams",
 }
 
-// settingKey resolves a CLI key to (namespace, path-into-data, scope).
-// Agent-scope keys cover model/temperature/sandbox; everything else is
-// a system-wide namespace. The bool return is "isAgentScope" — true
-// means the row's agent_id should be set to the active agentID; false
-// means a system row (user_id=”, agent_id=”).
 // AssertAgentScopedConfig rejects keys that would write a system-wide
 // configs row. configure_agent runs inside a tenant's chat; letting it
 // set provider.openai.apiKey (or tools.providers, plugins, …) used to
@@ -752,17 +748,80 @@ func AssertAgentScopedConfig(key string) error {
 		return errors.New("config key is required")
 	}
 	if strings.HasPrefix(key, "provider.") {
-		return fmt.Errorf("config key %q is platform-wide; set providers in Models, not via configure_agent", key)
+		slog.Info("configure_agent rejected key", "key", key, "reason", "provider")
+		return platformWideProviderError(key)
 	}
 	_, _, isAgentScope, err := settingKey(key)
 	if err != nil {
+		slog.Info("configure_agent rejected key", "key", key, "reason", "unsupported")
 		return err
 	}
 	if !isAgentScope {
-		return fmt.Errorf("config key %q is system-scoped and cannot be written from an agent session", key)
+		slog.Info("configure_agent rejected key", "key", key, "reason", "system-scoped")
+		return systemScopedConfigKeyError(key)
 	}
 	return nil
 }
+
+// SortedAgentScopeKeys is the configure_agent / `agents config set` list.
+func SortedAgentScopeKeys() []string {
+	keys := make([]string, 0, len(agentScopeKeys))
+	for k := range agentScopeKeys {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func supportedKeysList() string {
+	return strings.Join(SortedAgentScopeKeys(), ", ") + ", sandbox.*"
+}
+
+const configKeyNoRetry = "Do not retry this key, do not run `fastclaw --help` or `fastclaw agents config --help`, and do not read FastClaw source — there is no other configure_agent flag for this."
+
+func configKeyDoor(key string) string {
+	k := strings.TrimSpace(key)
+	switch {
+	case k == "mcpServers" || strings.HasPrefix(k, "mcpServers.") || strings.EqualFold(k, "mcp"):
+		return "Add MCP servers in the web dashboard: open the agent → MCP, or the sidebar MCP page for a shared catalog. Paste Cursor/Claude mcp.json on the JSON tab. An operator can also PUT /api/agents/<id> with {\"mcpServers\": {\"name\": {\"type\":\"http\",\"url\":\"https://...\"}}}."
+	case strings.HasPrefix(k, "provider."):
+		return "Providers and model credentials are managed in the dashboard under Models."
+	case k == "plugins" || strings.HasPrefix(k, "plugins."):
+		return "Install plugins with `fastclaw plugins install`, or enable them on the dashboard Plugins page."
+	case strings.HasPrefix(k, "tools."):
+		return "Tool providers are set in the dashboard or with `fastclaw tools provider-set`."
+	default:
+		return ""
+	}
+}
+
+func unsupportedConfigKeyError(key string) error {
+	msg := fmt.Sprintf("unsupported config key %q. Supported keys: %s.", key, supportedKeysList())
+	if door := configKeyDoor(key); door != "" {
+		msg += " " + door
+	} else {
+		msg += " MCP servers (mcpServers), plugins, tools, and provider.* cannot be set here."
+	}
+	return errors.New(msg + " " + configKeyNoRetry)
+}
+
+func systemScopedConfigKeyError(key string) error {
+	msg := fmt.Sprintf("config key %q is system-scoped and cannot be written from a chat session. Supported configure_agent keys: %s.", key, supportedKeysList())
+	if door := configKeyDoor(key); door != "" {
+		msg += " " + door
+	}
+	return errors.New(msg + " " + configKeyNoRetry)
+}
+
+func platformWideProviderError(key string) error {
+	return fmt.Errorf("config key %q is platform-wide. %s %s", key, configKeyDoor(key), configKeyNoRetry)
+}
+
+// settingKey resolves a CLI key to (namespace, path-into-data, scope).
+// Agent-scope keys cover model/temperature/sandbox; everything else is
+// a system-wide namespace. The bool return is "isAgentScope" — true
+// means the row's agent_id should be set to the active agentID; false
+// means a system row (user_id=”, agent_id=”).
 
 func settingKey(key string) (string, []string, bool, error) {
 	if ns, ok := agentScopeKeys[key]; ok {
@@ -787,7 +846,7 @@ func settingKey(key string) (string, []string, bool, error) {
 			}
 		}
 	}
-	return "", nil, false, fmt.Errorf("unsupported config key %q", key)
+	return "", nil, false, unsupportedConfigKeyError(key)
 }
 
 func configDump(ctx context.Context, st store.Store, agentID string) (map[string]interface{}, error) {

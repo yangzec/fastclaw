@@ -1231,13 +1231,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"reply": reply})
 }
 
-// handleChatSteer buffers a message into an in-flight turn for the
-// session. It does NOT open a stream or emit an event — the running
-// turn (started by the earlier /api/chat/stream POST) folds the message
-// in between tool rounds and emits the "steer" event on its existing
-// SSE. 200 {"buffered":true} when a turn was active; 409
-// {"buffered":false} when none is running, so the client falls back to
-// a normal /api/chat/stream send.
+// handleChatSteer buffers a message into an in-flight turn and cancels
+// the current provider stream so the model turns around immediately.
+// It does NOT open a new SSE — the running turn (started by the
+// earlier /api/chat/stream POST) emits the "steer" event on its
+// existing stream, then continues with a new completion. 200
+// {"buffered":true} when a turn was active; 409 {"buffered":false}
+// when none is running, so the client falls back to a normal
+// /api/chat/stream send.
 func (s *Server) handleChatSteer(w http.ResponseWriter, r *http.Request) {
 	var req chatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
