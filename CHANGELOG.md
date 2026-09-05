@@ -21,6 +21,18 @@ action on upgrade — read those notes before deploying.
 
 ### Changed
 
+- **API chatter is no longer hardcoded to `api-user`.**
+  `POST /v1/chat/completions` reads `X-Fastclaw-Chatter` and/or
+  `params.user_id` (string) for USER.md / MEMORY.md / Auto-remember
+  routing. One value or matching values win; both set and different
+  is `400`. Neither set still falls back to `api-user`. This does
+  **not** switch UserSpace — `user` / `X-Fastclaw-End-User` stay on
+  the app_user path. Website backends should send a stable prefixed
+  id such as `app:<their-user-id>`. Cross-session Basic Memory stays
+  on the website backend; recipe in `docs/upstream-basic-memory.md`.
+  `docs/upstream-api.md` and the integration skill now describe the
+  default website path (session key + chatter, no End-User).
+
 - **Guests cannot inventory an agent's config.** Non-owner chatters
   can no longer `exec` `cat` persona files or `SKILL.md`, see those
   names in `list_dir`, or receive `create_agent` / `configure_agent` /
