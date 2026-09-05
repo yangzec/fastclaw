@@ -100,11 +100,11 @@ type Meter interface {
 	// include all chatters.
 	SessionsForAgent(ctx context.Context, agentID, userID string, r Range, limit int) ([]Rank, error)
 	// TotalsForUser returns aggregate token counts scoped to one user.
-	// Used by quota enforcement and the /v1/usage API.
+	// Used by quota enforcement and the /v1/usage API (owner bucket).
 	TotalsForUser(ctx context.Context, userID string, r Range) (Totals, error)
 	// DailyForUser returns per-day, per-agent token breakdowns for
-	// one user. Backs the GET /v1/usage API so upstream SaaS apps
-	// can pull detailed consumption.
+	// one user. Backs GET /v1/usage so a website account can roll up
+	// by agentId.
 	DailyForUser(ctx context.Context, userID string, r Range) ([]DailyUsage, error)
 	// RecordTokenLog appends one row per LLM call to token_usage_log.
 	// Unlike RecordTokens (which UPSERTs into daily buckets), this is

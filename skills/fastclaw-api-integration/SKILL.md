@@ -46,9 +46,10 @@ X-Fastclaw-Chatter: app:<your-user-id>
 ## Other `/v1` calls
 
 - `GET /v1/agents` — agents this API key can call.
-- `GET /v1/usage` — owner totals on the default path (omit `user_id`).
+- `GET /v1/usage` — owner-account token ledger (`user_id` ignored).
   Sum `daily[].agentId` for per-agent. Per registered user: your DB.
-- `/v1/quota` — site-wide cap on the owner account (`user_id` = owner).
+- `/v1/quota` — site-wide cap on that same owner (`user_id` optional,
+  must match the owner when set).
 - Files: `GET /api/agents/{id}/files?sessionId=<session key or session_id>`.
   Always pass `sessionId`.
 - `POST /v1/users` — optional app_user mint. Not the default website path.
@@ -78,8 +79,10 @@ Completion `usage` is zeros — bill from `GET /v1/usage`.
 2. Deterministic session key and chatter (`app:<user-id>`).
 3. SSE client that survives heartbeats.
 4. File list with `?sessionId=`.
-5. Owner usage/quota only if you need a site cap.
-6. Errors: `400` (including chatter mismatch), `401`, `404`, `429`, `503`.
+5. Owner usage/quota only if you need a site cap. Do not look up
+   usage by app_user.
+6. Errors: `400` (including chatter mismatch), `401`, `403` (quota
+   `user_id` is not the owner), `404`, `429`, `503`.
 
 ## Do not
 

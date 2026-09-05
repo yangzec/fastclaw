@@ -3,7 +3,7 @@
 记录日期：2026-09-05。  
 对话来源：cloud agent 与产品方对齐（模板 Agent、账单、会话、记忆、同步、basic-memory）。  
 API 合同：`docs/upstream-api.md`。集成短技能：`skills/fastclaw-api-integration/SKILL.md`。  
-相关实现：owner 账单桶见 PR #44（`cursor/upstream-template-usage-e336`）。本文不代替该 PR 的代码说明。
+相关实现：owner 账单桶见后续 PR（`cursor/upstream-template-usage-a3b3`）。本文不代替该 PR 的代码说明。
 
 本文是产品/集成决策，不是「一人一个 Agent」方案。后续改 API 或验收，先回到这里的开放问题。
 
@@ -91,7 +91,7 @@ API 写死 `"api-user"` 是 2026-03 给 ChatClaw 单调用方的 **占位**，�
 
 ### 2.6 账单与配额
 
-- `GET /v1/usage`、`/v1/quota` = API key **owner** 桶（#44）。
+- `GET /v1/usage`、`/v1/quota` = API key **owner** 桶（本分支实现）。
 - 按 Agent：`daily[].agentId`。
 - 按注册用户：应用按 session-key 前缀自己加。
 - 完成响应里的 `usage` 仍是 0，不要用来计费。
