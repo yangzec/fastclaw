@@ -1,10 +1,8 @@
 // Package usage — quota enforcement layer.
 //
-// Quotas are per-user monthly token ceilings set by upstream SaaS apps
-// (e.g. weclaw) via PUT /v1/quota.  The agent loop checks CheckQuota
-// before every LLM call; channel messages (WeChat, Telegram, …) that
-// arrive when the user is over-limit get a friendly rejection instead
-// of burning tokens the app can't bill for.
+// Quotas are monthly token/request ceilings on a FastClaw user. The
+// public /v1/quota API applies them to the API-key owner (one website
+// account). The agent loop checks CheckQuota before every LLM call.
 //
 // Two implementations mirror Meter: MemQuotaStore (dev/test) and
 // SQLQuotaStore (prod, backed by the quotas table).

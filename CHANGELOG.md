@@ -24,6 +24,11 @@ action on upgrade — read those notes before deploying.
 
 ### Changed
 
+- **Upstream website usage/quota is the API-key owner.** `GET /v1/usage`
+  always returns the key owner's ledger (`user_id` is ignored, which
+  also closes the previous IDOR). `/v1/quota` is a site-wide cap on
+  that same owner; `user_id` is optional and must match. **BREAKING**
+  for clients that set quota or expected usage on an app_user id.
 - **First run no longer trains the operator.** Rule: don't ask what
   already has a default; after the last required field, enter the
   product; if the machine already has a key, don't ask a human.
