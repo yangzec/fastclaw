@@ -9,6 +9,16 @@ import { Badge } from "@/components/ui/badge";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { fileUrl, getAgent, getAgentKnowledgeFile, getChangedFiles, getChatHistoryWithCursor, getChatSessions, getChatTodo, getMe, getScopePreview, getScopePreviewLogs, getSessionHistory, listAgentFiles, listProjects, renameChatSession, restoreSessionHistory, revealAgentWorkspace, sendChatStream, steerChat, stopChat, uploadAgentFiles, getSkills, type ChatHistoryMessage, type ChatStreamEvent, type KnowledgeSource, type ScopePreview, type SkillInfo, type TodoItem, type ToolResultMetadata, type WorkspaceFile, type WorkspaceHistoryEntry } from "@/lib/api";
 import {
+  filesForOpenBadge,
+  hasWorkspaceArtifact,
+  isSystemFile,
+  isTemplateNoise,
+  listedFileSnapKey,
+  mergeTurnWorkspaceFiles,
+  panelVisibleFiles,
+  workspaceToolPath,
+} from "@/lib/workspace-files";
+import {
   loadFollowupBehavior,
   loadSessionQueue,
   newFollowupId,
@@ -205,29 +215,6 @@ function splitOnMarker(s: string): string[] {
   if (!s.includes(SPLIT_MARKER)) return [s];
   const parts = s.split(SPLIT_MARKER).map((p) => p.trim()).filter((p) => p.length > 0);
   return parts.length > 0 ? parts : [s];
-}
-
-// Single-segment identity filenames that route to the agent's home dir
-// (not the workspace) — exclude from the "Your files" panel.
-const SYSTEM_FILES = new Set([
-  "SOUL.md", "IDENTITY.md", "USER.md", "BOOTSTRAP.md",
-  "MEMORY.md", "KNOWLEDGE.md", "HEARTBEAT.md", "AGENTS.md", "TOOLS.md", "agent.json",
-]);
-
-function isSystemFile(path: string): boolean {
-  return !path.includes("/") && SYSTEM_FILES.has(path);
-}
-
-// workspaceToolPath maps a write_file/edit_file argument onto the
-// session-store key. Relative names and /workspace/<name> are the same
-// artifact; /tmp/ scratch and identity files are not listed.
-function workspaceToolPath(path: string): string | null {
-  if (!path) return null;
-  let p = path;
-  if (p.startsWith("/workspace/")) p = p.slice("/workspace/".length);
-  else if (p.startsWith("/")) return null;
-  if (!p || isSystemFile(p)) return null;
-  return p;
 }
 
 function notifyWorkspaceChanged(agentId: string, sessionId?: string) {
@@ -1491,10 +1478,18 @@ export function ChatScreen() {
           // sessions/<chat>/ for loose ones — so we don't have to
           // hard-code `sessions/<sid>/` here. The hard-coded prefix
           // missed every file in a project chat.
-          const sessionFiles: ProducedFile[] = (
-            await listAgentFiles(selectedAgent, sessionId)
-          )
-            .filter((f) => !isSystemFile(f.path))
+          const [listed, changed] = await Promise.all([
+            listAgentFiles(selectedAgent, sessionId),
+            getChangedFiles(selectedAgent, sessionId).catch(() => ({
+              files: [],
+              available: false,
+            })),
+          ]);
+          // Same default list the workspace panel opens to — otherwise
+          // write_file `notes.md` + store `sessions/<sid>/notes.md` (or
+          // a Changed-only tree) made the badge say 2 while the panel
+          // showed 1.
+          const sessionFiles: ProducedFile[] = filesForOpenBadge(listed, changed)
             .map((f) => ({ path: f.path, size: f.size }));
           if (sessionFiles.length > 0) {
             for (let i = built.length - 1; i >= 0; i--) {
@@ -1745,7 +1740,7 @@ export function ChatScreen() {
     const preTurnFilesPromise = listAgentFiles(selectedAgent, sessionId)
       .then((items) => {
         const m = new Map<string, string>();
-        for (const f of items) m.set(f.path, `${f.size}|${f.modTime}`);
+        for (const f of items) m.set(f.path, listedFileSnapKey(f));
         return m;
       })
       .catch(() => new Map<string, string>());
@@ -1943,7 +1938,7 @@ export function ChatScreen() {
               try {
                 const args = JSON.parse(tc.arguments);
                 const p = workspaceToolPath(typeof args?.path === "string" ? args.path : "");
-                if (p && !seenPaths.has(p)) {
+                if (p && !hasWorkspaceArtifact(seenPaths, p)) {
                   seenPaths.add(p);
                   turnFiles.push({ path: p, size: parseWrittenSize(resultText) });
                   notifyWorkspaceChanged(selectedAgent, sessionId);
@@ -2031,15 +2026,8 @@ export function ChatScreen() {
       // world flows. Union both sources by path.
       const postTurnFiles = await listAgentFiles(selectedAgent, sessionId).catch(() => []);
       const preSnap = await preTurnFilesPromise;
-      const diffFiles: ProducedFile[] = [];
-      for (const f of postTurnFiles) {
-        if (isSystemFile(f.path)) continue;
-        const key = `${f.size}|${f.modTime}`;
-        if (preSnap.get(f.path) === key) continue; // unchanged
-        if (seenPaths.has(f.path)) continue;
-        diffFiles.push({ path: f.path, size: f.size });
-      }
-      const allFiles = [...turnFiles, ...diffFiles];
+      const allFiles = mergeTurnWorkspaceFiles(turnFiles, postTurnFiles, preSnap)
+        .map((f) => ({ path: f.path, size: f.size }));
       // Diagnostic: when sandbox-exec produces a file but the Files
       // panel doesn't show, we need to know whether the API returned
       // the file at all and where the diff dropped it. Cheap to keep.
@@ -2051,8 +2039,7 @@ export function ChatScreen() {
           postTurnCount: postTurnFiles.length,
           postTurnPaths: postTurnFiles.map((f) => f.path),
           turnFiles,
-          diffFiles,
-          attached: allFiles.length,
+          attached: allFiles,
         });
       }
       if (allFiles.length > 0) {
@@ -4681,7 +4668,7 @@ function WorkspacePanel({
               )}
               {/* When there's a template baseline, default to showing only the
                   files THIS task changed; let the user flip to the full tree. */}
-              {changed.available && (
+              {changed.available && isTemplateNoise(files.length) && (
                 <div className="flex items-center gap-1 border-b border-border px-3 py-1.5 text-xs">
                   <button
                     onClick={() => setShowAll(false)}
@@ -4689,7 +4676,10 @@ function WorkspacePanel({
                       !showAll ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground"
                     }`}
                   >
-                    Changed{changed.files.length ? ` (${changed.files.length})` : ""}
+                    Changed{(() => {
+                      const n = panelVisibleFiles(files, changed, false).length;
+                      return n ? ` (${n})` : "";
+                    })()}
                   </button>
                   <button
                     onClick={() => setShowAll(true)}
@@ -4706,8 +4696,8 @@ function WorkspacePanel({
               )}
               <div className="flex-1 overflow-y-auto p-2">
                 {(() => {
-                  const showChanged = changed.available && !showAll;
-                  const list = showChanged ? changed.files : files;
+                  const showChanged = changed.available && isTemplateNoise(files.length) && !showAll;
+                  const list = panelVisibleFiles(files, changed, !showChanged);
                   if (!loading && list.length === 0) {
                     return (
                       <div className="px-3 py-8 text-center text-sm text-muted-foreground">
