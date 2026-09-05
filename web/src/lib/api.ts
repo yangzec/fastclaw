@@ -14,6 +14,7 @@ export interface StatusResponse {
   userId?: string;
   isAdmin?: boolean;
   users?: number;
+  envProvider?: { name: string; env: string; model?: string };
 }
 
 export interface RegisterRequest {
@@ -51,6 +52,7 @@ export interface AgentInfo {
   id: string;
   name?: string;
   model: string;
+  createdAt?: string;
   workspace: string;
 }
 
@@ -90,6 +92,7 @@ export interface AgentDetail {
   // own model/providers or the agent doesn't work for them.
   shareModelConfig?: boolean;
   model: string;
+  createdAt?: string;
   workspace?: string;
   maxTokens?: number;
   temperature?: number;
@@ -427,7 +430,9 @@ export interface OnboardRequest {
   sandboxBoxlitePrefix?: string;
 }
 
-export async function onboard(req: OnboardRequest): Promise<{ ok: boolean; error?: string }> {
+export async function onboard(
+  req: OnboardRequest,
+): Promise<{ ok: boolean; error?: string; agentId?: string }> {
   const res = await fetch("/api/onboard", {
     method: "POST",
     credentials: "same-origin",

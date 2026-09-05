@@ -806,6 +806,7 @@ func loadUserSpace(ctx context.Context, userID string, mb *bus.MessageBus, st st
 			}
 		}
 	}
+	fillMissingAgentModels(agentRecords, resolved)
 	if ws != nil {
 		if dir, gerr := globalSkillsDirPath(); gerr == nil {
 			if err := skills.HydrateSkillsDown(
@@ -1333,4 +1334,38 @@ func expandChannelBindings(rows []store.ConfigRecord, agentID string) []config.B
 		}
 	}
 	return out
+}
+
+// fillMissingAgentModels copies the oldest sibling's model onto agents
+// that have none. Create already inherits; this covers agents made
+// before that, so chat does not send the operator back to Models.
+func fillMissingAgentModels(records []store.AgentRecord, resolved []config.ResolvedAgent) {
+	fallback := ""
+	var oldest time.Time
+	has := false
+	modelByID := make(map[string]string, len(resolved))
+	for _, rc := range resolved {
+		if m := strings.TrimSpace(rc.Model); m != "" {
+			modelByID[rc.ID] = m
+		}
+	}
+	for _, ar := range records {
+		m := modelByID[ar.ID]
+		if m == "" {
+			continue
+		}
+		if !has || ar.CreatedAt.Before(oldest) {
+			oldest = ar.CreatedAt
+			fallback = m
+			has = true
+		}
+	}
+	if fallback == "" {
+		return
+	}
+	for i := range resolved {
+		if strings.TrimSpace(resolved[i].Model) == "" {
+			resolved[i].Model = fallback
+		}
+	}
 }

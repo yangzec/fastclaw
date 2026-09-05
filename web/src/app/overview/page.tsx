@@ -1,13 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
+import { buttonVariants } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { firstAgent, firstAgentChatPath } from "@/lib/first-chat";
+import { cn } from "@/lib/utils";
 import {
   getStatus,
+  getAgents,
   adminListChats,
   getTools,
   getConfig,
   type StatusResponse,
+  type AgentDetail,
   type ToolsConfig,
   type ConfigResponse,
 } from "@/lib/api";
@@ -21,6 +27,7 @@ import {
 
 export default function OverviewPage() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [agents, setAgents] = useState<AgentDetail[]>([]);
   const [chats, setChats] = useState<number | null>(null);
   const [tools, setTools] = useState<ToolsConfig | null>(null);
   const [runtime, setRuntime] = useState<ConfigResponse["sandbox"] | null>(null);
@@ -31,6 +38,9 @@ export default function OverviewPage() {
     getStatus()
       .then((s) => {
         setStatus(s);
+        getAgents()
+          .then(setAgents)
+          .catch(() => setAgents([]));
         if (s.isAdmin) {
           adminListChats()
             .then((rows) => setChats(rows.length))
@@ -71,6 +81,11 @@ export default function OverviewPage() {
   // Non-admins only need to see their agents — gateway plumbing (provider
   // config, users, chats) is admin-only.
   const isAdmin = status?.isAdmin ?? false;
+  const listed = agents.length > 0 ? agents : status?.agents ?? [];
+  const starter = firstAgent(listed);
+  const firstChat = firstAgentChatPath(listed);
+  const firstAgentName = starter?.name || "your agent";
+  const modelLabel = status?.provider?.model || starter?.model || "";
 
   // Pretty-print the configured fallback chain for each tool category as
   // "Web Search: Exa, Brave". A category with no configured provider is
@@ -95,9 +110,26 @@ export default function OverviewPage() {
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">Dashboard</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Monitor your FastClaw gateway
+          {firstChat ? "Your agents are ready." : "Monitor your FastClaw gateway"}
         </p>
       </div>
+
+      {firstChat && (
+        <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-5 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="font-medium">Talk to {firstAgentName}</p>
+            <p className="text-sm text-muted-foreground">
+              No extra setup — just say something.
+            </p>
+          </div>
+          <Link
+            href={firstChat}
+            className={cn(buttonVariants(), "shrink-0")}
+          >
+            Start chatting
+          </Link>
+        </div>
+      )}
 
       {/* Stats Cards — Agents shown to everyone; Users + Chats +
           Channels are gateway-management surfaces, admin-only. */}
@@ -186,14 +218,18 @@ export default function OverviewPage() {
             </p>
           </div>
           <div className="px-5 pb-5 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Model</span>
-              {status?.provider?.model ? (
-                <code className="text-sm font-mono bg-muted px-2 py-0.5 rounded">
-                  {status.provider.model}
-                </code>
+            <div className="flex items-center justify-between gap-3">
+              <Link href="/models/" className="text-sm text-muted-foreground hover:text-foreground">
+                Model
+              </Link>
+              {modelLabel ? (
+                <Link href="/models/" className="text-sm font-mono bg-muted px-2 py-0.5 rounded hover:bg-muted/80">
+                  {modelLabel}
+                </Link>
               ) : (
-                <span className="text-sm text-muted-foreground">—</span>
+                <Link href="/models/" className="text-sm text-muted-foreground hover:text-foreground">
+                  Set a model
+                </Link>
               )}
             </div>
             <Separator />
@@ -201,30 +237,40 @@ export default function OverviewPage() {
               toolSummary.map((t) => (
                 <div key={t.name} className="space-y-3">
                   <div className="flex items-center justify-between gap-3">
-                    <span className="text-sm text-muted-foreground">{t.label}</span>
-                    <span className="text-sm truncate">{t.providers}</span>
+                    <Link href="/tools/" className="text-sm text-muted-foreground hover:text-foreground">
+                      {t.label}
+                    </Link>
+                    <Link href="/tools/" className="text-sm truncate hover:text-foreground">
+                      {t.providers}
+                    </Link>
                   </div>
                   <Separator />
                 </div>
               ))
             ) : (
               <>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Tools</span>
-                  <span className="text-sm text-muted-foreground">None configured</span>
+                <div className="flex items-center justify-between gap-3">
+                  <Link href="/tools/" className="text-sm text-muted-foreground hover:text-foreground">
+                    Tools
+                  </Link>
+                  <Link href="/tools/" className="text-sm text-muted-foreground hover:text-foreground">
+                    None configured
+                  </Link>
                 </div>
                 <Separator />
               </>
             )}
             <div className="flex items-center justify-between gap-3">
-              <span className="text-sm text-muted-foreground">Runtime</span>
-              <span className="text-sm truncate">
+              <Link href="/settings/runtime/" className="text-sm text-muted-foreground hover:text-foreground">
+                Runtime
+              </Link>
+              <Link href="/settings/runtime/" className="text-sm truncate hover:text-foreground">
                 {runtime?.enabled
                   ? `${runtime.backend === "e2b" ? "E2B" : "Docker"}${
                       runtime.image ? ` (${runtime.image})` : ""
                     }`
                   : "Disabled"}
-              </span>
+              </Link>
             </div>
           </div>
         </div>

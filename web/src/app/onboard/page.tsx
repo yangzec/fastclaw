@@ -7,15 +7,12 @@ import {
   Card,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
-import { Separator } from "@/components/ui/separator";
 import {
   Select,
   SelectContent,
@@ -24,36 +21,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  ArrowLeft,
-  ArrowRight,
-  Bot,
   Check,
-  Container,
-  KeyRound,
+  ChevronDown,
   Loader2,
-  PartyPopper,
-  Sparkles,
-  UserPlus,
+  MessageSquare,
 } from "lucide-react";
-import { getStatus, onboard, testProvider } from "@/lib/api";
+import { getStatus, onboard, testProvider, type StatusResponse } from "@/lib/api";
+import { firstAgentChatPath } from "@/lib/first-chat";
+import { resolveFirstChatPath } from "@/lib/first-chat-nav";
 import { MIN_PASSWORD_LENGTH } from "@/lib/password";
 import { PROVIDER_PRESETS, PROVIDER_LABELS } from "@/lib/provider-presets";
 import { nextContextWindowOnIdChange, nextMaxTokensOnIdChange, presetContextWindow, presetMaxTokens } from "@/lib/model-defaults";
 import { ModelLimitsFields } from "@/components/model-limits-fields";
 
-const STEPS = [
-  { id: "welcome", label: "Welcome", icon: PartyPopper },
-  { id: "admin", label: "Admin", icon: UserPlus },
-  { id: "provider", label: "Provider", icon: KeyRound },
-  { id: "agent", label: "Agent", icon: Bot },
-  { id: "sandbox", label: "Sandbox", icon: Container },
-  { id: "launch", label: "Launch", icon: Sparkles },
-] as const;
-
-// Display label maps. base-ui's <Select.Value /> renders the raw `value`
-// (the SelectItem's `value` prop) by default, not the SelectItem's
-// children — so we explicitly map keys to titles via the children render
-// prop on SelectValue. Keep these in sync with the SelectItem lists.
 const API_TYPE_LABELS: Record<string, string> = {
   "openai-chat": "OpenAI Chat Completions",
   "anthropic-messages": "Anthropic Messages",
@@ -64,39 +44,14 @@ const AUTH_TYPE_LABELS: Record<string, string> = {
   "api-key": "API Key Header",
 };
 
-// PROVIDER_PRESETS (shared) holds the per-preset defaults the form
-// pre-fills when the user picks a provider from the dropdown.
-// `models[0]` is shown as the placeholder in the Default model input.
-
 export default function OnboardPage() {
   const router = useRouter();
-  const [step, setStep] = useState(0);
-
-  // Already-onboarded probe — /api/status returns configured=true once
-  // any account exists, in which case the wizard has nothing to do and
-  // we kick the visitor to the dashboard. Redirect via router.replace so
-  // Back doesn't bounce them back into onboard.
-  useEffect(() => {
-    let cancelled = false;
-    getStatus()
-      .then((s) => {
-        if (!cancelled && s?.configured) router.replace("/overview/");
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [router]);
-
-  // Admin
+  const [envProvider, setEnvProvider] = useState<StatusResponse["envProvider"]>();
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
-  const [displayName, setDisplayName] = useState("");
 
-  // Provider
-  const [providerEnabled, setProviderEnabled] = useState(true);
   const [providerKey, setProviderKey] = useState("openai");
   const [providerName, setProviderName] = useState("openai");
   const [apiBase, setApiBase] = useState(PROVIDER_PRESETS.openai.apiBase);
@@ -110,25 +65,10 @@ export default function OnboardPage() {
   const [maxTokens, setMaxTokens] = useState(
     presetMaxTokens(PROVIDER_PRESETS.openai.models[0]),
   );
-  const [testStatus, setTestStatus] = useState<"" | "ok" | "fail" | "running">(
-    "",
-  );
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [testStatus, setTestStatus] = useState<"" | "ok" | "fail" | "running">("");
   const [testError, setTestError] = useState("");
 
-  // Agent
-  const [agentName, setAgentName] = useState("default");
-
-  // Sandbox (optional — disabled by default; user can flip and configure)
-  const [sandboxEnabled, setSandboxEnabled] = useState(false);
-  const [sandboxBackend, setSandboxBackend] = useState("docker");
-  const [sandboxDockerImage, setSandboxDockerImage] = useState("thinkany/fastclaw-sandbox:latest");
-  const [sandboxE2BTemplate, setSandboxE2BTemplate] = useState("base");
-  const [sandboxE2BKey, setSandboxE2BKey] = useState("");
-  const [sandboxBoxliteImage, setSandboxBoxliteImage] = useState("");
-  const [sandboxBoxliteKey, setSandboxBoxliteKey] = useState("");
-  const [sandboxBoxliteURL, setSandboxBoxliteURL] = useState("");
-
-  // Submit state
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
 
@@ -145,23 +85,50 @@ export default function OnboardPage() {
         setMaxTokens(presetMaxTokens(preset.models[0]));
       }
     }
-    // Provider name auto-fills with the preset key — user can still
-    // override (lets them rename "openai" to e.g. "production" before
-    // creating). Custom provider clears the field so the user types one.
     setProviderName(next === "custom" ? "" : next);
     setTestStatus("");
     setTestError("");
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    getStatus()
+      .then(async (s) => {
+        if (cancelled) return;
+        if (s?.configured) {
+          router.replace(await resolveFirstChatPath());
+          return;
+        }
+        if (s?.envProvider) {
+          setEnvProvider(s.envProvider);
+          handleProviderChange(s.envProvider.name);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [router, handleProviderChange]);
+
+  const usingEnvKey =
+    !!envProvider && envProvider.name === providerKey && apiKey.trim() === "";
+
   async function handleTest() {
-    if (!apiKey) {
+    const key = apiKey || (usingEnvKey ? "env" : "");
+    if (!apiKey && !usingEnvKey) {
       setTestStatus("fail");
       setTestError("API key required");
       return;
     }
+    if (!apiKey && usingEnvKey) {
+      // The browser cannot read the process env; skip client test and
+      // let submit persist the server-side key.
+      setTestStatus("ok");
+      return;
+    }
     setTestStatus("running");
     setTestError("");
-    const res = await testProvider({ apiBase, apiKey, model, apiType, authType });
+    const res = await testProvider({ apiBase, apiKey: key, model, apiType, authType });
     if (res.ok) {
       setTestStatus("ok");
     } else {
@@ -170,778 +137,311 @@ export default function OnboardPage() {
     }
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(skipProvider: boolean) {
     setSubmitError("");
     setSubmitting(true);
-    // The user can rename a preset provider; we still slugify whatever
-    // they typed (lowercase, hyphens) so it's a clean key in the DB.
-    // When providerEnabled is false, send empty provider/apiKey/model so
-    // the backend's `if req.Provider != "" && req.APIKey != ""` guard skips
-    // the provider+defaults write entirely (handlers_admin.go:240).
+    const usingProvider = !skipProvider;
     const finalProviderName =
       providerName.trim().toLowerCase().replace(/\s+/g, "-") || providerKey;
     const res = await onboard({
       username,
       email,
       password,
-      displayName,
-      provider: providerEnabled ? finalProviderName : "",
-      apiBase: providerEnabled ? apiBase : "",
-      apiKey: providerEnabled ? apiKey : "",
-      apiType: providerEnabled ? apiType : "",
-      authType: providerEnabled ? authType : "",
-      model: providerEnabled ? model : "",
-      contextWindow: providerEnabled ? contextWindow : undefined,
-      maxTokens: providerEnabled ? maxTokens : undefined,
-      agentName,
-      sandboxEnabled,
-      sandboxBackend: sandboxEnabled ? sandboxBackend : undefined,
-      sandboxImage: sandboxEnabled
-        ? sandboxBackend === "docker"
-          ? sandboxDockerImage
-          : sandboxBackend === "e2b"
-            ? sandboxE2BTemplate
-            : sandboxBackend === "boxlite"
-              ? sandboxBoxliteImage
-              : undefined
-        : undefined,
-      sandboxE2BKey: sandboxEnabled && sandboxBackend === "e2b" ? sandboxE2BKey : undefined,
-      sandboxBoxliteKey: sandboxEnabled && sandboxBackend === "boxlite" ? sandboxBoxliteKey : undefined,
-      sandboxBoxliteUrl:
-        sandboxEnabled && sandboxBackend === "boxlite" && sandboxBoxliteURL
-          ? sandboxBoxliteURL
-          : undefined,
+      provider: usingProvider ? finalProviderName : "",
+      apiBase: usingProvider ? apiBase : "",
+      apiKey: usingProvider ? apiKey : "",
+      apiType: usingProvider ? apiType : "",
+      authType: usingProvider ? authType : "",
+      model: usingProvider ? model : "",
+      contextWindow: usingProvider ? contextWindow : undefined,
+      maxTokens: usingProvider ? maxTokens : undefined,
+      agentName: "Assistant",
     });
     setSubmitting(false);
     if (!res.ok) {
-      setSubmitError(res.error || "onboard failed");
-      setStep(1); // jump back to admin step where most errors come from
+      setSubmitError(res.error || "setup failed");
       return;
     }
-    setStep(STEPS.length - 1);
+    router.replace(firstAgentChatPath([{ id: res.agentId }]) ?? "/overview/");
   }
 
-  // Validation per step — drives the Next button's disabled state.
-  const sandboxValid =
-    !sandboxEnabled ||
-    (sandboxBackend === "docker"
-      ? sandboxDockerImage.trim() !== ""
-      : sandboxBackend === "e2b"
-        ? sandboxE2BKey.trim() !== "" && sandboxE2BTemplate.trim() !== ""
-        : sandboxBackend === "boxlite"
-          ? sandboxBoxliteKey.trim() !== "" && sandboxBoxliteImage.trim() !== ""
-          : false);
-  const stepValid: boolean[] = [
-    true,
+  const accountValid =
     username.trim() !== "" &&
-      email.trim() !== "" &&
-      password.length >= MIN_PASSWORD_LENGTH &&
-      password === passwordConfirm,
-    !providerEnabled ||
-      (apiKey.trim() !== "" && model.trim() !== "" && apiBase.trim() !== "" && testStatus === "ok"),
-    agentName.trim() !== "",
-    sandboxValid,
-    true,
-  ];
+    email.trim() !== "" &&
+    password.length >= MIN_PASSWORD_LENGTH &&
+    password === passwordConfirm;
+  const modelValid =
+    usingEnvKey ||
+    (apiKey.trim() !== "" && model.trim() !== "" && apiBase.trim() !== "");
+  const canStart = accountValid && modelValid;
+
+  const passwordTooShort =
+    password.length > 0 && password.length < MIN_PASSWORD_LENGTH;
+  const mismatch = passwordConfirm.length > 0 && password !== passwordConfirm;
+  const preset = PROVIDER_PRESETS[providerKey];
+  const isCustom = providerKey === "custom";
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-muted/30 p-4">
-      <div className="w-full max-w-2xl space-y-6">
-        <Stepper current={step} />
+      <div className="w-full max-w-xl">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <MessageSquare className="size-5 text-primary" />
+              Start talking
+            </CardTitle>
+            <CardDescription>
+              {usingEnvKey
+                ? `Found ${envProvider?.env} on this machine. Create an account and go.`
+                : "Account, then an API key. Everything else can wait."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="ob-username">Username</Label>
+                <Input
+                  id="ob-username"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  autoComplete="username"
+                  placeholder="alice"
+                  autoFocus
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="ob-email">Email</Label>
+                <Input
+                  id="ob-email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  autoComplete="email"
+                  placeholder="alice@example.com"
+                />
+              </div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="ob-password">Password</Label>
+                <Input
+                  id="ob-password"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="new-password"
+                  placeholder={`${MIN_PASSWORD_LENGTH}+ characters`}
+                />
+                {passwordTooShort && (
+                  <p className="text-xs text-destructive">at least {MIN_PASSWORD_LENGTH} characters</p>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="ob-password2">Confirm</Label>
+                <Input
+                  id="ob-password2"
+                  type="password"
+                  value={passwordConfirm}
+                  onChange={(e) => setPasswordConfirm(e.target.value)}
+                  autoComplete="new-password"
+                />
+                {mismatch && (
+                  <p className="text-xs text-destructive">passwords don&apos;t match</p>
+                )}
+              </div>
+            </div>
 
-        {step === 0 && <WelcomeStep />}
-
-        {step === 1 && (
-          <AdminStep
-            username={username}
-            setUsername={setUsername}
-            email={email}
-            setEmail={setEmail}
-            password={password}
-            setPassword={setPassword}
-            passwordConfirm={passwordConfirm}
-            setPasswordConfirm={setPasswordConfirm}
-            displayName={displayName}
-            setDisplayName={setDisplayName}
-          />
-        )}
-
-        {step === 2 && (
-          <ProviderStep
-            enabled={providerEnabled}
-            setEnabled={setProviderEnabled}
-            providerKey={providerKey}
-            onProviderChange={handleProviderChange}
-            providerName={providerName}
-            setProviderName={setProviderName}
-            apiBase={apiBase}
-            setApiBase={setApiBase}
-            apiKey={apiKey}
-            setApiKey={setApiKey}
-            apiType={apiType}
-            setApiType={setApiType}
-            authType={authType}
-            setAuthType={setAuthType}
-            model={model}
-            setModel={(next) => {
-              setContextWindow((prev) => nextContextWindowOnIdChange(next, model, prev));
-              setMaxTokens((prev) => nextMaxTokensOnIdChange(next, model, prev));
-              setModel(next);
-            }}
-            contextWindow={contextWindow}
-            setContextWindow={setContextWindow}
-            maxTokens={maxTokens}
-            setMaxTokens={setMaxTokens}
-            onTest={handleTest}
-            testStatus={testStatus}
-            testError={testError}
-          />
-        )}
-
-        {step === 3 && (
-          <AgentStep agentName={agentName} setAgentName={setAgentName} />
-        )}
-
-        {step === 4 && (
-          <SandboxStep
-            enabled={sandboxEnabled}
-            setEnabled={setSandboxEnabled}
-            backend={sandboxBackend}
-            setBackend={setSandboxBackend}
-            dockerImage={sandboxDockerImage}
-            setDockerImage={setSandboxDockerImage}
-            e2bTemplate={sandboxE2BTemplate}
-            setE2BTemplate={setSandboxE2BTemplate}
-            e2bKey={sandboxE2BKey}
-            setE2BKey={setSandboxE2BKey}
-            boxliteImage={sandboxBoxliteImage}
-            setBoxliteImage={setSandboxBoxliteImage}
-            boxliteKey={sandboxBoxliteKey}
-            setBoxliteKey={setSandboxBoxliteKey}
-            boxliteURL={sandboxBoxliteURL}
-            setBoxliteURL={setSandboxBoxliteURL}
-          />
-        )}
-
-        {step === 5 && (
-          <DoneStep
-            providerConfigured={providerEnabled}
-            onContinue={() => router.replace("/")}
-          />
-        )}
-
-        {submitError && (
-          <Card className="border-destructive/40 bg-destructive/5">
-            <CardContent className="pt-6">
-              <p className="text-sm text-destructive">{submitError}</p>
-            </CardContent>
-          </Card>
-        )}
-
-        {step !== STEPS.length - 1 && (
-          <div className="flex items-center justify-between">
-            <Button
-              variant="ghost"
-              onClick={() => setStep((s) => Math.max(0, s - 1))}
-              disabled={step === 0}
-            >
-              <ArrowLeft className="mr-1 size-4" /> Back
-            </Button>
-            {step < STEPS.length - 2 ? (
-              <Button
-                onClick={() => setStep((s) => s + 1)}
-                disabled={!stepValid[step]}
+            <div className="space-y-1.5">
+              <Label>Provider</Label>
+              <Select
+                value={providerKey}
+                onValueChange={(v) => v && handleProviderChange(v)}
               >
-                Next <ArrowRight className="ml-1 size-4" />
-              </Button>
-            ) : (
+                <SelectTrigger className="w-full">
+                  <SelectValue>
+                    {(v: unknown) => PROVIDER_LABELS[v as string] ?? (v as string) ?? ""}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.keys(PROVIDER_PRESETS).map((p) => (
+                    <SelectItem key={p} value={p}>
+                      {PROVIDER_LABELS[p] ?? p}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {isCustom && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label>Name</Label>
+                  <Input
+                    value={providerName}
+                    onChange={(e) => setProviderName(e.target.value)}
+                    placeholder="my-llm"
+                    className="font-mono text-sm"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>API Base URL</Label>
+                  <Input
+                    value={apiBase}
+                    onChange={(e) => setApiBase(e.target.value)}
+                    className="font-mono text-sm"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <Label>API Key</Label>
+              <Input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={usingEnvKey ? `using ${envProvider?.env}` : "sk-…"}
+                className="font-mono text-sm"
+              />
+              {usingEnvKey && (
+                <p className="text-xs text-muted-foreground">
+                  Leave blank to use the key already exported on this machine.
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>Model</Label>
+              <Input
+                value={model}
+                onChange={(e) => {
+                  setContextWindow((prev) => nextContextWindowOnIdChange(e.target.value, model, prev));
+                  setMaxTokens((prev) => nextMaxTokensOnIdChange(e.target.value, model, prev));
+                  setModel(e.target.value);
+                }}
+                placeholder={preset?.models[0] || "model-id"}
+                className="font-mono text-sm"
+              />
+            </div>
+
+            <div className="flex items-center gap-3">
               <Button
-                onClick={handleSubmit}
-                disabled={!stepValid[step] || submitting}
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleTest}
+                disabled={testStatus === "running" || (!apiKey && !usingEnvKey)}
+              >
+                {testStatus === "running" ? (
+                  <>
+                    <Loader2 className="mr-1 size-4 animate-spin" /> Testing
+                  </>
+                ) : (
+                  "Test connection"
+                )}
+              </Button>
+              {testStatus === "ok" && (
+                <Badge className="bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/15">
+                  <Check className="mr-1 size-3" /> connected
+                </Badge>
+              )}
+              {testStatus === "fail" && (
+                <span className="text-xs text-destructive">{testError}</span>
+              )}
+            </div>
+
+            <button
+              type="button"
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+            >
+              <ChevronDown
+                className={
+                  "size-3.5 transition-transform " + (showAdvanced ? "rotate-180" : "")
+                }
+              />
+              Advanced
+            </button>
+            {showAdvanced && (
+              <div className="space-y-4 rounded-lg border border-border p-3">
+                {!isCustom && (
+                  <div className="space-y-1.5">
+                    <Label>API Base URL</Label>
+                    <Input
+                      value={apiBase}
+                      onChange={(e) => setApiBase(e.target.value)}
+                      className="font-mono text-sm"
+                    />
+                  </div>
+                )}
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label>API Type</Label>
+                    <Select value={apiType} onValueChange={(v) => v && setApiType(v)}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue>
+                          {(v: unknown) => API_TYPE_LABELS[v as string] ?? (v as string) ?? ""}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="openai-chat">OpenAI Chat Completions</SelectItem>
+                        <SelectItem value="anthropic-messages">Anthropic Messages</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Auth Type</Label>
+                    <Select value={authType} onValueChange={(v) => v && setAuthType(v)}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue>
+                          {(v: unknown) => AUTH_TYPE_LABELS[v as string] ?? (v as string) ?? ""}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="bearer-token">Bearer Token</SelectItem>
+                        <SelectItem value="api-key">API Key Header</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <ModelLimitsFields
+                  modelId={model}
+                  contextWindow={contextWindow}
+                  maxTokens={maxTokens}
+                  onContextWindowChange={setContextWindow}
+                  onMaxTokensChange={setMaxTokens}
+                />
+              </div>
+            )}
+
+            {submitError && (
+              <p className="text-sm text-destructive">{submitError}</p>
+            )}
+
+            <div className="flex items-center justify-between gap-3 pt-1">
+              <Button
+                variant="ghost"
+                onClick={() => handleSubmit(true)}
+                disabled={!accountValid || submitting}
+              >
+                Skip key
+              </Button>
+              <Button
+                onClick={() => handleSubmit(false)}
+                disabled={!canStart || submitting}
               >
                 {submitting ? (
                   <>
                     <Loader2 className="mr-1 size-4 animate-spin" /> Setting up
                   </>
                 ) : (
-                  <>
-                    Create &amp; launch <Sparkles className="ml-1 size-4" />
-                  </>
+                  "Start chatting"
                 )}
               </Button>
-            )}
-          </div>
-        )}
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </div>
-  );
-}
-
-function Stepper({ current }: { current: number }) {
-  return (
-    <ol className="flex items-center gap-2">
-      {STEPS.map((s, i) => {
-        const Icon = s.icon;
-        const done = i < current;
-        const active = i === current;
-        return (
-          <li key={s.id} className="flex flex-1 items-center gap-2">
-            <div
-              className={
-                "flex size-8 shrink-0 items-center justify-center rounded-full border transition " +
-                (done
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : active
-                    ? "border-primary text-primary"
-                    : "border-border text-muted-foreground")
-              }
-            >
-              {done ? <Check className="size-4" /> : <Icon className="size-4" />}
-            </div>
-            <span
-              className={
-                "hidden text-sm sm:inline " +
-                (active
-                  ? "font-medium"
-                  : done
-                    ? "text-muted-foreground"
-                    : "text-muted-foreground/60")
-              }
-            >
-              {s.label}
-            </span>
-            {i < STEPS.length - 1 && (
-              <div
-                className={
-                  "h-px flex-1 " +
-                  (i < current ? "bg-primary" : "bg-border")
-                }
-              />
-            )}
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
-
-function WelcomeStep() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <PartyPopper className="size-5 text-primary" />
-          Welcome to FastClaw
-        </CardTitle>
-        <CardDescription>
-          A few quick steps to set up your platform — admin account, first LLM
-          provider, and your first agent. Takes about a minute.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3 text-sm text-muted-foreground">
-        <p>You&apos;ll be the super-admin once setup completes — you can add more users from the admin panel afterwards.</p>
-        <p>
-          Everything user-facing (providers, channels, agents, settings) lives in the database and can be changed from the UI later.
-        </p>
-      </CardContent>
-    </Card>
-  );
-}
-
-function AdminStep(props: {
-  username: string;
-  setUsername: (v: string) => void;
-  email: string;
-  setEmail: (v: string) => void;
-  password: string;
-  setPassword: (v: string) => void;
-  passwordConfirm: string;
-  setPasswordConfirm: (v: string) => void;
-  displayName: string;
-  setDisplayName: (v: string) => void;
-}) {
-  const passwordTooShort =
-    props.password.length > 0 && props.password.length < MIN_PASSWORD_LENGTH;
-  const mismatch =
-    props.passwordConfirm.length > 0 && props.password !== props.passwordConfirm;
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <UserPlus className="size-5 text-primary" />
-          Create super-admin account
-        </CardTitle>
-        <CardDescription>
-          You can sign in with either username or email afterwards.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label htmlFor="ob-username">Username</Label>
-            <Input
-              id="ob-username"
-              value={props.username}
-              onChange={(e) => props.setUsername(e.target.value)}
-              autoComplete="username"
-              placeholder="alice"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="ob-email">Email</Label>
-            <Input
-              id="ob-email"
-              type="email"
-              value={props.email}
-              onChange={(e) => props.setEmail(e.target.value)}
-              autoComplete="email"
-              placeholder="alice@example.com"
-            />
-          </div>
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="ob-display">Display Name (optional)</Label>
-          <Input
-            id="ob-display"
-            value={props.displayName}
-            onChange={(e) => props.setDisplayName(e.target.value)}
-            placeholder="Alice"
-          />
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label htmlFor="ob-password">Password</Label>
-            <Input
-              id="ob-password"
-              type="password"
-              value={props.password}
-              onChange={(e) => props.setPassword(e.target.value)}
-              autoComplete="new-password"
-              placeholder={`${MIN_PASSWORD_LENGTH}+ characters`}
-            />
-            {passwordTooShort && (
-              <p className="text-xs text-destructive">at least {MIN_PASSWORD_LENGTH} characters</p>
-            )}
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="ob-password2">Confirm Password</Label>
-            <Input
-              id="ob-password2"
-              type="password"
-              value={props.passwordConfirm}
-              onChange={(e) => props.setPasswordConfirm(e.target.value)}
-              autoComplete="new-password"
-            />
-            {mismatch && (
-              <p className="text-xs text-destructive">passwords don&apos;t match</p>
-            )}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function ProviderStep(props: {
-  enabled: boolean;
-  setEnabled: (v: boolean) => void;
-  providerKey: string;
-  onProviderChange: (v: string) => void;
-  providerName: string;
-  setProviderName: (v: string) => void;
-  apiBase: string;
-  setApiBase: (v: string) => void;
-  apiKey: string;
-  setApiKey: (v: string) => void;
-  apiType: string;
-  setApiType: (v: string) => void;
-  authType: string;
-  setAuthType: (v: string) => void;
-  model: string;
-  setModel: (v: string) => void;
-  contextWindow: number;
-  setContextWindow: (v: number) => void;
-  maxTokens: number;
-  setMaxTokens: (v: number) => void;
-  onTest: () => void;
-  testStatus: "" | "ok" | "fail" | "running";
-  testError: string;
-}) {
-  const preset = PROVIDER_PRESETS[props.providerKey];
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <KeyRound className="size-5 text-primary" />
-          First LLM provider
-        </CardTitle>
-        <CardDescription>
-          Connect at least one model. You can add more (and per-user/per-agent
-          overrides) from the Providers page later — or skip and configure
-          everything from there.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium">Configure a provider now</p>
-            <p className="text-xs text-muted-foreground">
-              Off = skip; you can add providers from the Providers page later.
-            </p>
-          </div>
-          <Switch checked={props.enabled} onCheckedChange={props.setEnabled} />
-        </div>
-        {props.enabled && <Separator />}
-        {!props.enabled && (
-          <p className="text-xs text-muted-foreground">
-            Skipping — the admin account and agent will be created without a
-            default model. Add one from{" "}
-            <span className="font-mono">Providers</span> after launch.
-          </p>
-        )}
-        {props.enabled && (
-        <>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label>Provider</Label>
-            <Select
-              value={props.providerKey}
-              onValueChange={(v) => v && props.onProviderChange(v)}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue>
-                  {(v: unknown) => PROVIDER_LABELS[v as string] ?? (v as string) ?? ""}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {Object.keys(PROVIDER_PRESETS).map((p) => (
-                  <SelectItem key={p} value={p}>
-                    {PROVIDER_LABELS[p] ?? p}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label>Provider Name</Label>
-            <Input
-              value={props.providerName}
-              onChange={(e) => props.setProviderName(e.target.value)}
-              placeholder="openai"
-              className="font-mono text-sm"
-            />
-          </div>
-        </div>
-
-        <div className="space-y-1.5">
-          <Label>Default Model</Label>
-          <Input
-            value={props.model}
-            onChange={(e) => props.setModel(e.target.value)}
-            placeholder={preset?.models[0] || "model-id"}
-            className="font-mono text-sm"
-          />
-        </div>
-        <ModelLimitsFields
-          modelId={props.model}
-          contextWindow={props.contextWindow}
-          maxTokens={props.maxTokens}
-          onContextWindowChange={props.setContextWindow}
-          onMaxTokensChange={props.setMaxTokens}
-        />
-        <div className="space-y-1.5">
-          <Label>API Base URL</Label>
-          <Input
-            value={props.apiBase}
-            onChange={(e) => props.setApiBase(e.target.value)}
-            className="font-mono text-sm"
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label>API Key</Label>
-          <Input
-            type="password"
-            value={props.apiKey}
-            onChange={(e) => props.setApiKey(e.target.value)}
-            placeholder="sk-…"
-            className="font-mono text-sm"
-          />
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label>API Type</Label>
-            <Select value={props.apiType} onValueChange={(v) => v && props.setApiType(v)}>
-              <SelectTrigger className="w-full">
-                <SelectValue>
-                  {(v: unknown) => API_TYPE_LABELS[v as string] ?? (v as string) ?? ""}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="openai-chat">OpenAI Chat Completions</SelectItem>
-                <SelectItem value="anthropic-messages">Anthropic Messages</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label>Auth Type</Label>
-            <Select value={props.authType} onValueChange={(v) => v && props.setAuthType(v)}>
-              <SelectTrigger className="w-full">
-                <SelectValue>
-                  {(v: unknown) => AUTH_TYPE_LABELS[v as string] ?? (v as string) ?? ""}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="bearer-token">Bearer Token</SelectItem>
-                <SelectItem value="api-key">API Key Header</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3 pt-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={props.onTest}
-            disabled={props.testStatus === "running" || !props.apiKey}
-          >
-            {props.testStatus === "running" ? (
-              <>
-                <Loader2 className="mr-1 size-4 animate-spin" /> Testing
-              </>
-            ) : (
-              "Test connection"
-            )}
-          </Button>
-          {props.testStatus === "ok" && (
-            <Badge className="bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/15">
-              <Check className="mr-1 size-3" /> connected
-            </Badge>
-          )}
-          {props.testStatus === "fail" && (
-            <span className="text-xs text-destructive">{props.testError}</span>
-          )}
-        </div>
-        </>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function AgentStep(props: {
-  agentName: string;
-  setAgentName: (v: string) => void;
-}) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Bot className="size-5 text-primary" />
-          First agent
-        </CardTitle>
-        <CardDescription>
-          Just a name for now — you can edit personality, skills, and tools
-          after launch.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-1.5">
-          <Label htmlFor="ob-agent">Agent Name</Label>
-          <Input
-            id="ob-agent"
-            value={props.agentName}
-            onChange={(e) => props.setAgentName(e.target.value)}
-            placeholder="default"
-          />
-          <p className="text-xs text-muted-foreground">
-            The agent gets a globally unique id (e.g.{" "}
-            <code className="rounded bg-muted px-1 py-0.5 text-xs">agt_a1b2c3…</code>);
-            this name is just for display.
-          </p>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function SandboxStep(props: {
-  enabled: boolean;
-  setEnabled: (v: boolean) => void;
-  backend: string;
-  setBackend: (v: string) => void;
-  dockerImage: string;
-  setDockerImage: (v: string) => void;
-  e2bTemplate: string;
-  setE2BTemplate: (v: string) => void;
-  e2bKey: string;
-  setE2BKey: (v: string) => void;
-  boxliteImage: string;
-  setBoxliteImage: (v: string) => void;
-  boxliteKey: string;
-  setBoxliteKey: (v: string) => void;
-  boxliteURL: string;
-  setBoxliteURL: (v: string) => void;
-}) {
-  const SANDBOX_BACKEND_LABELS: Record<string, string> = {
-    docker: "Docker",
-    e2b: "E2B (cloud)",
-    boxlite: "BoxLite (cloud)",
-  };
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Container className="size-5 text-primary" />
-          Sandbox (optional)
-        </CardTitle>
-        <CardDescription>
-          Run agent-executed code in an isolated environment. Skip this if
-          you&apos;re unsure — you can flip it on later from Settings.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium">Enable sandbox</p>
-            <p className="text-xs text-muted-foreground">
-              Off by default — code runs in the agent&apos;s own workspace.
-            </p>
-          </div>
-          <Switch checked={props.enabled} onCheckedChange={props.setEnabled} />
-        </div>
-        {props.enabled && (
-          <>
-            <Separator />
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label>Backend</Label>
-                <Select
-                  value={props.backend}
-                  onValueChange={(v) => v && props.setBackend(v)}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue>
-                      {(v: unknown) =>
-                        SANDBOX_BACKEND_LABELS[v as string] ?? (v as string) ?? ""
-                      }
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="docker">Docker</SelectItem>
-                    <SelectItem value="e2b">E2B (cloud)</SelectItem>
-                    <SelectItem value="boxlite">BoxLite (cloud)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              {props.backend === "e2b" ? (
-                <>
-                  <div className="space-y-1.5">
-                    <Label>E2B API Key</Label>
-                    <Input
-                      type="password"
-                      value={props.e2bKey}
-                      onChange={(e) => props.setE2BKey(e.target.value)}
-                      placeholder="e2b_…"
-                      className="font-mono text-sm"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>E2B Template</Label>
-                    <Input
-                      value={props.e2bTemplate}
-                      onChange={(e) => props.setE2BTemplate(e.target.value)}
-                      placeholder="base"
-                      className="font-mono text-sm"
-                    />
-                  </div>
-                </>
-              ) : props.backend === "boxlite" ? (
-                <>
-                  <div className="space-y-1.5">
-                    <Label>BoxLite API Key</Label>
-                    <Input
-                      type="password"
-                      value={props.boxliteKey}
-                      onChange={(e) => props.setBoxliteKey(e.target.value)}
-                      placeholder="client_secret"
-                      className="font-mono text-sm"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Snapshot</Label>
-                    <Input
-                      value={props.boxliteImage}
-                      onChange={(e) => props.setBoxliteImage(e.target.value)}
-                      placeholder="fastclaw-sandbox"
-                      className="font-mono text-sm"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      BoxLite snapshot name (imported via the BoxLite Dashboard),
-                      not a Docker Hub image reference.
-                    </p>
-                  </div>
-                  <div className="space-y-1.5 sm:col-span-2">
-                    <Label>API URL (optional)</Label>
-                    <Input
-                      value={props.boxliteURL}
-                      onChange={(e) => props.setBoxliteURL(e.target.value)}
-                      placeholder="https://api.dev.boxlite.ai/api/v1"
-                      className="font-mono text-sm"
-                    />
-                  </div>
-                </>
-              ) : (
-                <div className="space-y-1.5">
-                  <Label>Docker Image</Label>
-                  <Input
-                    value={props.dockerImage}
-                    onChange={(e) => props.setDockerImage(e.target.value)}
-                    placeholder="thinkany/fastclaw-sandbox:latest"
-                    className="font-mono text-sm"
-                  />
-                </div>
-              )}
-            </div>
-          </>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function DoneStep({
-  onContinue,
-  providerConfigured,
-}: {
-  onContinue: () => void;
-  providerConfigured: boolean;
-}) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <PartyPopper className="size-5 text-emerald-500" />
-          You&apos;re in!
-        </CardTitle>
-        <CardDescription>
-          {providerConfigured
-            ? "Admin account created, provider configured, first agent ready."
-            : "Admin account created and first agent ready. Add a provider from Models when you want to chat."}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <p className="text-sm text-muted-foreground">
-          The session cookie is already set — Open dashboard takes you
-          straight in.
-        </p>
-      </CardContent>
-      <CardFooter>
-        <Button onClick={onContinue} className="w-full">
-          Open dashboard <ArrowRight className="ml-1 size-4" />
-        </Button>
-      </CardFooter>
-    </Card>
   );
 }

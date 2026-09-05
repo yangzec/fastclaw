@@ -100,13 +100,13 @@ const CATALOG: { type: string; label: string; description: string; available: bo
   {
     type: "feishu",
     label: "Feishu",
-    description: "Scan a QR code in Feishu / Lark to create a bot automatically, or paste an existing App ID + Secret. Chat can create official 日程、待办、云文档.",
+    description: "Scan a QR code in Feishu / Lark to create a bot, or paste an existing App ID and Secret. Chat can create official calendar events, tasks, and docs.",
     available: true,
   },
   {
     type: "wecom",
     label: "WeCom",
-    description: "Scan a QR code in 企业微信 to create an AI bot, or paste BotID + long-connection Secret. Official calendar uses one 自建应用 on the same channel.",
+    description: "Scan a QR code in WeCom to create an AI bot, or paste a Bot ID and long-connection secret. Official calendar uses one self-built app on the same channel.",
     available: true,
   },
 ];
@@ -430,7 +430,7 @@ function ConnectedCard({
               Official calendar / tasks / docs
             </div>
             <p className="text-xs text-muted-foreground">
-              Chat writes into Feishu 日程、待办、云文档 with this bot.
+              Chat writes Feishu calendar events, tasks, and docs with this bot.
               Already connected before this update? Disconnect and scan
               again so the new scopes take effect.
             </p>
@@ -449,7 +449,7 @@ function ConnectedCard({
               </p>
             ) : (
               <p className="text-xs text-muted-foreground">
-                Chat is live. Add one 自建应用 (CorpID + Secret) to create WeCom 日程 from chat.
+                Chat is live. Add one self-built app (Corp ID + Secret) to create WeCom calendar events from chat.
               </p>
             )}
           </div>

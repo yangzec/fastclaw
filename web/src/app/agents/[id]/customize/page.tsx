@@ -10,14 +10,14 @@ import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { useAgentName } from "@/hooks/use-agent-name";
 
 const CUSTOMIZE_FILES = [
-  { name: "SOUL.md", label: "Soul" },
-  { name: "IDENTITY.md", label: "Identity" },
-  { name: "USER.md", label: "User" },
-  { name: "TOOLS.md", label: "Tools" },
-  { name: "BOOTSTRAP.md", label: "Bootstrap" },
-  { name: "HEARTBEAT.md", label: "Heartbeat" },
-  { name: "MEMORY.md", label: "Memory" },
-  { name: "AGENTS.md", label: "Agents" },
+  { name: "SOUL.md", label: "Soul", hint: "Who this agent is, what it cares about, and how it should talk." },
+  { name: "IDENTITY.md", label: "Identity", hint: "Name, role, and the few facts that should stay true every time." },
+  { name: "USER.md", label: "User", hint: "What this agent should know about you." },
+  { name: "TOOLS.md", label: "Tools", hint: "How this agent should use tools." },
+  { name: "BOOTSTRAP.md", label: "Bootstrap", hint: "What to do when a new conversation starts." },
+  { name: "HEARTBEAT.md", label: "Heartbeat", hint: "What to check on a regular pulse." },
+  { name: "MEMORY.md", label: "Memory", hint: "What this agent should remember across chats." },
+  { name: "AGENTS.md", label: "Agents", hint: "How this agent should work with other agents." },
 ];
 
 // FileState mirrors the backend's GET response: `content` is what's
@@ -305,7 +305,7 @@ export default function AgentCustomizePage({
         // page usable too: still grows on tall screens, but stops
         // short of "fills the viewport".
         style={{ height: "min(55vh, 480px)", minHeight: 280 }}
-        placeholder={`# ${activeTab}\n\nWrite your content here...`}
+        placeholder={CUSTOMIZE_FILES.find((f) => f.name === activeTab)?.hint || "Write what this file should say."}
       />
     </div>
   );

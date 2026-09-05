@@ -18,7 +18,7 @@ import { NavMain, NavItem } from "@/components/nav-main";
 import { NavSessions, SessionItem } from "@/components/nav-projects";
 import { NavProjectsList } from "@/components/nav-projects-list";
 import { NavUser } from "@/components/nav-user";
-import { AgentSettingsDialog } from "@/components/agent-settings-dialog";
+import { AgentSettingsDialog, type AgentSettingsTab } from "@/components/agent-settings-dialog";
 import {
   BotIcon,
   BrainIcon,
@@ -170,6 +170,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   // Settings entry (User tabs only). `settingsUserOnly` picks the mode.
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [settingsUserOnly, setSettingsUserOnly] = React.useState(false);
+  const [settingsTab, setSettingsTab] = React.useState<AgentSettingsTab | undefined>();
 
   // Keep status polling so the online dot / admin flag stay fresh.
   React.useEffect(() => {
@@ -292,6 +293,18 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   // button. So we keep the Agents nav entry visible.
   const quotaLocked = me?.user?.agentQuota === 0;
 
+  React.useEffect(() => {
+    const onOpen = (event: Event) => {
+      const tab = (event as CustomEvent<{ tab?: AgentSettingsTab }>).detail?.tab;
+      setSettingsUserOnly(false);
+      setSettingsTab(tab);
+      setSettingsOpen(true);
+      setOpenMobile(false);
+    };
+    window.addEventListener("fastclaw:open-settings", onOpen);
+    return () => window.removeEventListener("fastclaw:open-settings", onOpen);
+  }, [setOpenMobile]);
+
   return (
     <>
     <Sidebar collapsible="icon" {...props}>
@@ -348,6 +361,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
               isActive={!!pathname?.startsWith("/settings")}
               onClick={() => {
                 setSettingsUserOnly(!activeAgentId);
+                setSettingsTab(undefined);
                 setSettingsOpen(true);
                 setOpenMobile(false);
               }}
@@ -370,7 +384,11 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
     </Sidebar>
       <AgentSettingsDialog
         open={settingsOpen}
-        onOpenChange={setSettingsOpen}
+        onOpenChange={(open) => {
+          setSettingsOpen(open);
+          if (!open) setSettingsTab(undefined);
+        }}
+        defaultTab={settingsTab}
         userOnly={settingsUserOnly}
         role={
           activeAgentId && agentRoles[activeAgentId] === "viewer"

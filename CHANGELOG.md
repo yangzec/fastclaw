@@ -5,6 +5,28 @@ action on upgrade — read those notes before deploying.
 
 ## [Unreleased]
 
+### Changed
+
+- **First run no longer trains the operator.** Rule: don't ask what
+  already has a default; after the last required field, enter the
+  product; if the machine already has a key, don't ask a human.
+  `fastclaw` auto-inits from `OPENAI_API_KEY` / sibling env vars, or
+  opens the browser and waits. The wizard is one screen (account +
+  key) and **Start chatting** lands in the first agent. Login, `/`,
+  and signup do the same. Empty chat offers three click-to-send
+  starters. The first agent is named `Assistant`. Login and Overview
+  pick the **oldest** agent (API lists newest first). Overview shows
+  that agent's model and links Model / Tools / Runtime to the pages
+  that change them. Scheduler empty state says to ask in chat.
+  Customize tabs hint what to write. Chat follow-up controls stay in
+  English. The composer model picker no longer crashes (Base UI #31).
+  A second agent inherits the default / oldest sibling model so it
+  talks without another Models visit. Existing agents without a
+  model do the same at chat time. Settings groups into Talk / Teach
+  / Connect / Run. Empty chat has Adjust this agent. Skills empty
+  state offers three featured installs. `/cron/` and `/channels/`
+  open the current agent. Feishu / WeCom cards stay in English.
+
 ### Fixed
 
 - **Chat replies no longer leak literal ` ``` `.** Models often open

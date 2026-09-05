@@ -46,6 +46,7 @@ import {
   type SkillSearchResult,
 } from "@/lib/api";
 import { ConfigureSkillDialog, type SkillEntryView } from "@/components/configure-skill-dialog";
+import { FeaturedSkillCards } from "@/components/featured-skill-cards";
 import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { useAgentName } from "@/hooks/use-agent-name";
 
@@ -56,6 +57,7 @@ export default function AgentSkillsPage() {
   const [loading, setLoading] = useState(true);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [installOpen, setInstallOpen] = useState(false);
+  const [featuredInstalling, setFeaturedInstalling] = useState<string | null>(null);
   const [configureTarget, setConfigureTarget] = useState<SkillInfo | null>(null);
   // Skill env entries are GLOBAL (keyed by skill name), so the same
   // /api/config blob feeds both the global /skills page and this
@@ -195,21 +197,27 @@ export default function AgentSkillsPage() {
           ))}
         </div>
       ) : skills.length === 0 ? (
-        <div className="rounded-lg border border-border bg-card">
-          <div className="flex flex-col items-center justify-center py-16">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 mb-4">
-              <Sparkles className="h-7 w-7 text-primary" />
-            </div>
-            <p className="text-sm text-muted-foreground mb-1">
-              No skills yet
-            </p>
-            <p className="text-xs text-muted-foreground/60 mb-4 max-w-sm text-center">
-              Install a skill for this agent, or share one from the
-              global Skills catalog — those show up here as inherited.
-            </p>
-            <Button variant="outline" size="sm" onClick={() => setInstallOpen(true)}>
-              <Download className="h-4 w-4 mr-2" />
-              Install Skill
+        <div className="rounded-lg border border-border bg-card p-6">
+          <p className="text-sm font-medium">Pick one to start</p>
+          <p className="mt-1 mb-4 text-xs text-muted-foreground">
+            Or search if you already know a skill name.
+          </p>
+          <FeaturedSkillCards
+            installing={featuredInstalling}
+            installed={new Set(skills.map((s) => s.name))}
+            onInstall={async (name) => {
+              setFeaturedInstalling(name);
+              try {
+                const resp = await installSkill({ source: "skillssh", name, agent: agentId });
+                if (resp.ok) fetchSkills();
+              } finally {
+                setFeaturedInstalling(null);
+              }
+            }}
+          />
+          <div className="mt-4 text-center">
+            <Button variant="ghost" size="sm" onClick={() => setInstallOpen(true)}>
+              Search for another skill
             </Button>
           </div>
         </div>
@@ -550,11 +558,13 @@ function InstallSkillDialog({
 
         <div className="min-h-[240px] max-h-[420px] overflow-y-auto -mx-1 px-1">
           {!query.trim() ? (
-            <div className="flex flex-col items-center justify-center py-12 text-center">
-              <Sparkles className="h-8 w-8 text-muted-foreground/40 mb-3" />
-              <p className="text-sm text-muted-foreground">
-                Start typing to search skills.sh
-              </p>
+            <div className="space-y-3 py-1">
+              <p className="text-sm text-muted-foreground">Pick one, or type to search.</p>
+              <FeaturedSkillCards
+                installing={installingId}
+                installed={installedNames}
+                onInstall={(name) => void handleInstall({ id: name, skillId: name } as SkillSearchResult)}
+              />
             </div>
           ) : searching ? (
             <div className="space-y-2 py-2">

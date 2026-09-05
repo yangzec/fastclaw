@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fastclaw-ai/fastclaw/internal/agentcli"
 	"github.com/fastclaw-ai/fastclaw/internal/cliclient"
 	"github.com/fastclaw-ai/fastclaw/internal/config"
 	"github.com/fastclaw-ai/fastclaw/internal/daemon"
@@ -89,6 +90,12 @@ func runChat(ctx context.Context, opts chatOptions) error {
 		}
 		var err error
 		opts.apiKey, err = ensureCLIToken(ctx)
+		if errors.Is(err, errNeedsOnboard) {
+			if err := promptOnboard(ctx, opts.baseURL); err != nil {
+				return err
+			}
+			opts.apiKey, err = ensureCLIToken(ctx)
+		}
 		if err != nil {
 			return err
 		}
@@ -100,7 +107,7 @@ func runChat(ctx context.Context, opts chatOptions) error {
 		return fmt.Errorf("load agents: %w", err)
 	}
 	if len(agents) == 0 {
-		return errors.New("no agents configured; create one with `fastclaw agents init <name>`")
+		return fmt.Errorf("no agents yet — open %s and create one", opts.baseURL)
 	}
 	agent, err := selectAgent(agents, opts.agentID)
 	if err != nil {
@@ -185,6 +192,88 @@ func warnVersionSkew(ctx context.Context, baseURL string) {
 	}
 }
 
+var errNeedsOnboard = errors.New("fastclaw is not set up yet")
+
+func promptOnboard(ctx context.Context, baseURL string) error {
+	if ok, err := tryAutoOnboard(ctx); err != nil {
+		return err
+	} else if ok {
+		fmt.Fprintln(os.Stderr, "Using the API key already on this machine. Starting chat.")
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "Open %s — create an account, paste an API key, then this terminal will start chatting.\n", baseURL)
+	openBrowser(baseURL)
+	return waitUntilConfigured(ctx, baseURL, 30*time.Minute)
+}
+
+func tryAutoOnboard(ctx context.Context) (bool, error) {
+	det, ok := config.DetectProviderFromEnv()
+	if !ok {
+		return false, nil
+	}
+	st, err := openStoreFromEnv()
+	if err != nil {
+		return false, err
+	}
+	defer st.Close()
+	res, err := agentcli.Init(ctx, st, "Assistant", agentcli.InitOptions{
+		Provider:  det.Name,
+		Model:     det.Model,
+		APIKeyEnv: det.Env,
+	})
+	if err != nil {
+		return false, err
+	}
+	if res.OwnerCreated && res.GeneratedPassword != "" {
+		fmt.Fprintf(os.Stderr, "Created user %q with password: %s (shown once)\n", res.OwnerUsername, res.GeneratedPassword)
+	}
+	notifyGatewayReload()
+	return true, nil
+}
+
+func waitUntilConfigured(ctx context.Context, baseURL string, timeout time.Duration) error {
+	if gatewayConfigured(ctx, baseURL) {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return fmt.Errorf("timed out waiting for setup at %s", baseURL)
+			}
+			return ctx.Err()
+		case <-ticker.C:
+			if gatewayConfigured(ctx, baseURL) {
+				return nil
+			}
+		}
+	}
+}
+
+func gatewayConfigured(ctx context.Context, baseURL string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/status", nil)
+	if err != nil {
+		return false
+	}
+	client := &http.Client{Timeout: time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	var st struct {
+		Configured bool `json:"configured"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&st) != nil {
+		return false
+	}
+	return st.Configured
+}
+
 func gatewayReady(ctx context.Context, baseURL string) bool {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/healthz", nil)
 	client := &http.Client{Timeout: 500 * time.Millisecond}
@@ -226,7 +315,7 @@ func ensureCLIToken(ctx context.Context) (string, error) {
 		}
 	}
 	if owner == "" {
-		return "", errors.New("no super_admin found; finish FastClaw onboarding first")
+		return "", errNeedsOnboard
 	}
 	keys, err := users.NewAPIKeys(st)
 	if err != nil {

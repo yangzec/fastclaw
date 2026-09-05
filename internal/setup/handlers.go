@@ -545,6 +545,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"provider":         nil,
 		"uptime":           formatDuration(time.Since(s.startedAt)),
 	}
+	if det, ok := config.DetectProviderFromEnv(); ok {
+		resp["envProvider"] = det
+	}
 	ident, authed := auth.FromContext(r.Context())
 	if !authed {
 		jsonResponse(w, http.StatusOK, resp)
@@ -613,7 +616,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			id := ag.Name() // AgentHandle.Name() returns the agent id
 			entry := map[string]string{"id": id}
 			// Surface the human-friendly name from the agents row so the
-			// dashboard list reads "default" / "ImgAny" instead of
+			// dashboard list reads "Assistant" / "ImgAny" instead of
 			// "agt_…". Look-up failures fall back to id-only so a
 			// transient store error doesn't black out the panel.
 			if s.dataStore != nil {

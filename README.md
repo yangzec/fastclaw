@@ -47,17 +47,18 @@ powershell -ExecutionPolicy Bypass -Command "iex(New-Object Net.WebClient).Downl
 
 ```bash
 fastclaw
-# Opens setup wizard → configure LLM provider → creates default agent.
-# Foreground mode; ^C to stop. Use `fastclaw daemon start` to run in
-# the background, or `fastclaw daemon install` to register a
-# launchd / systemd service.
+# Starts the gateway. If OPENAI_API_KEY (or a sibling) is already
+# exported, FastClaw creates an agent and this terminal starts chatting.
+# Otherwise it opens the browser: account + API key, then chat.
+# Use `fastclaw daemon start` to run the gateway in the background,
+# or `fastclaw daemon install` for a launchd / systemd service.
 ```
 
 ### 2. Dashboard
 
 Open `http://localhost:18953` on this machine, or `http://<lan-ip>:18953`
 from another device on the same network. The startup log prints the LAN
-URLs. Login with your admin token.
+URLs. Sign in with the account you created in the setup form.
 
 - **Agents** — Create and manage agents, each with its own personality and model
 - **Skills** — Install shared skills from ClawHub or GitHub

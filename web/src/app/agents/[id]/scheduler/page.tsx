@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
+import Link from "next/link";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
@@ -163,9 +165,18 @@ export default function AgentSchedulerPage() {
       ) : jobs.length === 0 ? (
         <div className="rounded-lg border border-dashed border-border bg-card/50 p-10 text-center">
           <Clock className="mx-auto size-8 text-muted-foreground/50 mb-3" />
-          <p className="text-sm text-muted-foreground">
-            No scheduled tasks yet.
+          <p className="text-sm font-medium">No scheduled tasks yet.</p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Tell the agent in chat — for example, “Remind me tomorrow at 9.”
           </p>
+          {agentId ? (
+            <Link
+              href={`/agents/${encodeURIComponent(agentId)}/chat/`}
+              className={cn(buttonVariants(), "mt-4")}
+            >
+              Open chat
+            </Link>
+          ) : null}
         </div>
       ) : (
         <div className="grid gap-3">

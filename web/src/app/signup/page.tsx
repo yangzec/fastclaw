@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { register, getStatus, getMe } from "@/lib/api";
+import { resolveFirstChatPath } from "@/lib/first-chat-nav";
 import { MIN_PASSWORD_LENGTH } from "@/lib/password";
 
 export default function SignupPage() {
@@ -23,7 +24,7 @@ export default function SignupPage() {
       const me = await getMe().catch(() => null);
       if (aborted) return;
       if (me?.ok && me.user) {
-        router.replace("/overview/");
+        router.replace(await resolveFirstChatPath());
         return;
       }
       try {
@@ -59,8 +60,8 @@ export default function SignupPage() {
         setLoading(false);
         return;
       }
-      // Server set the session cookie on us; head to the app.
-      router.replace("/overview/");
+      // Server set the session cookie on us; head to the first agent.
+      router.replace(await resolveFirstChatPath());
     } catch {
       setError("Cannot reach server");
       setLoading(false);

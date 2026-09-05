@@ -2478,6 +2478,11 @@ export function ChatScreen() {
   // instead of taking over the headline, so users always know which
   // agent they're chatting with first.
   const heroTitle = "What can I do for you?";
+  const emptyChatStarters = [
+    "What can you help me with?",
+    "Write a short greeting I can send",
+    "What can you do from here?",
+  ];
 
   return (
     <div className="flex h-[calc(100dvh-3rem-env(safe-area-inset-top,0px))] min-h-0 flex-row">
@@ -2513,6 +2518,36 @@ export function ChatScreen() {
                 <h1 className="text-2xl font-semibold tracking-tight md:text-4xl">
                   {heroTitle}
                 </h1>
+                {selectedAgent && !isReadOnlyChannel && !isActAsView && (
+                  <div className="mt-5 flex flex-wrap justify-center gap-2">
+                    {emptyChatStarters.map((prompt) => (
+                      <button
+                        key={prompt}
+                        type="button"
+                        disabled={!canUseComposer || sending}
+                        onClick={() => void handleSend(prompt)}
+                        className="rounded-full border border-border bg-card px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:border-foreground/20 hover:bg-muted hover:text-foreground disabled:opacity-50"
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {selectedAgent && agentRole === "owner" && !isActAsView && (
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                      onClick={() => {
+                        window.dispatchEvent(
+                          new CustomEvent("fastclaw:open-settings", { detail: { tab: "profile" } }),
+                        );
+                      }}
+                    >
+                      Adjust this agent
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -2924,13 +2959,15 @@ export function ChatScreen() {
             {queuedFollowups.length > 0 && (
               <div className="mb-2 rounded-xl border border-border bg-muted/30 px-3 py-2">
                 <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                  <span>排队 {queuedFollowups.length} 条 · 本轮结束后按顺序发送</span>
+                  <span>
+                    Queue {queuedFollowups.length} · send in order after this turn
+                  </span>
                   <button
                     type="button"
                     className="hover:text-foreground"
                     onClick={() => replaceQueue([])}
                   >
-                    清空
+                    Clear
                   </button>
                 </div>
                 <ul className="space-y-1.5">
@@ -2943,9 +2980,9 @@ export function ChatScreen() {
                           type="button"
                           className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
                           onClick={() => void steerQueuedFollowup(item)}
-                          title={sending ? "插入当前回合" : "现在发送"}
+                          title={sending ? "Insert into this turn" : "Send now"}
                         >
-                          {sending ? "插入" : "发送"}
+                          {sending ? "Insert" : "Send"}
                         </button>
                         <button
                           type="button"
@@ -3061,8 +3098,8 @@ export function ChatScreen() {
                           ? `Slash commands only — reply from ${channelLabel(currentChannel)}`
                           : sending
                             ? followupBehavior === "queue"
-                              ? "Enter 排队 · ⌘/Ctrl+Enter 插入当前回合"
-                              : "Enter 插入当前回合 · ⌘/Ctrl+Enter 排队"
+                              ? "Enter to queue · ⌘/Ctrl+Enter to insert this turn"
+                              : "Enter to insert this turn · ⌘/Ctrl+Enter to queue"
                           : selectedAgent
                             ? `Message ${agentName || selectedAgent}... ("/" to pick a skill)`
                             : "Select an agent first"
@@ -3122,7 +3159,7 @@ export function ChatScreen() {
                               onMouseDown={(e) => e.preventDefault()}
                               onClick={() => void submitFollowup(false)}
                             >
-                              {followupBehavior === "queue" ? "排队" : "插入"}
+                              {followupBehavior === "queue" ? "Queue" : "Insert"}
                             </Button>
                           ) : null}
                           <Button
@@ -3188,8 +3225,8 @@ export function ChatScreen() {
                           ? `Slash commands only — reply from ${channelLabel(currentChannel)}`
                           : sending
                             ? followupBehavior === "queue"
-                              ? "Enter 排队 · ⌘/Ctrl+Enter 插入当前回合"
-                              : "Enter 插入当前回合 · ⌘/Ctrl+Enter 排队"
+                              ? "Enter to queue · ⌘/Ctrl+Enter to insert this turn"
+                              : "Enter to insert this turn · ⌘/Ctrl+Enter to queue"
                           : selectedAgent
                             ? `Message ${agentName || selectedAgent}... ("/" to pick a skill)`
                             : "Select an agent first"
@@ -3218,7 +3255,7 @@ export function ChatScreen() {
                             onMouseDown={(e) => e.preventDefault()}
                             onClick={() => void submitFollowup(false)}
                           >
-                            {followupBehavior === "queue" ? "排队" : "插入"}
+                            {followupBehavior === "queue" ? "Queue" : "Insert"}
                           </Button>
                         ) : null}
                         <Button
@@ -3261,13 +3298,13 @@ export function ChatScreen() {
                 )}
                 {canUseComposer ? (
                   <div className="flex shrink-0 items-center gap-2">
-                    <span>回复时</span>
+                    <span>While it replies</span>
                     <button
                       type="button"
                       className={followupBehavior === "queue" ? "font-medium text-foreground" : "hover:text-foreground"}
                       onClick={() => setFollowupMode("queue")}
                     >
-                      排队
+                      Queue
                     </button>
                     <span>·</span>
                     <button
@@ -3275,7 +3312,7 @@ export function ChatScreen() {
                       className={followupBehavior === "steer" ? "font-medium text-foreground" : "hover:text-foreground"}
                       onClick={() => setFollowupMode("steer")}
                     >
-                      插入
+                      Insert
                     </button>
                   </div>
                 ) : null}
