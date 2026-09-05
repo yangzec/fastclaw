@@ -179,22 +179,13 @@ FastClaw **不能** 当应用的多端同步云。
    A) 先只合并本文，应用用 `params` + basic-memory，模板关 Auto-remember。  
    B) 按 §4 做 API chatter，再验收。
 
-2. **chatter 从哪读？**（若选 B）  
-   A) 只认 `params.user_id`  
-   B) 只认 header `X-Fastclaw-Chatter`  
-   C) 两者都认，header 优先（或 params 优先，请写明）
+2. **chatter 从哪读？**（若选 B）— **建议 C，待你点头**：两个都认，`X-Fastclaw-Chatter` 优先，没有再用 `params.user_id`。理由见 §8.2。
 
-3. **basic-memory**  
-   默认：**HTTP/Cloud + `params`，模板 Agent 不装 MCP**。  
-   若你坚持模板上要 MCP，需要另开「按用户 project」设计，不能当小补丁。
+3. **basic-memory** — **建议已写明，待确认**：应用走 HTTP/Cloud，按 `user_id` 建/查 **一个 project**，结果进 `params`。模板 Agent **不装** MCP。解决「list 到全站 project」靠的就是不让模型碰 MCP，见 §8.3。
 
-4. **记忆主键**  
-   A) 每用户一份（客服/写作共享要点）  
-   B) 每用户每 Agent 一份
+4. **记忆主键** — **已选 A**：每个产品注册用户一份（客服/写作共享要点）。区分方式见 §7.4。
 
-5. **`params` 提示措辞**  
-   A) 不动 FastClaw，靠 SOUL + 字段名  
-   B) 改全局 `renderClientParams`（所有 API 调用方都会看到）
+5. **`params` 提示措辞** — **已选 A**：不动 FastClaw 全局文案，靠该 Agent 的 SOUL + 字段名。
 
 ---
 
@@ -285,4 +276,39 @@ MCP 若不定死 `--project`，模型可以自己传 `project=`。理论上能�
 - A：FastClaw 这段字不动；在该 Agent 的 SOUL.md 写「`params.known_facts` 是事实」。只影响你们的 Agent。
 - B：改 FastClaw 全局这两句。所有走 `/v1` 的调用方提示都变。
 
-推荐 A。
+已选 A。
+
+### 8. 再追问（接线建议 / BM API / IM 与控制台）
+
+### 8.2 建议：header 优先，`params.user_id` 回落
+
+主路径仍是应用每轮带 `params`（名字、语言、`known_facts`）。  
+记忆键：后端再加 `X-Fastclaw-Chatter: app:<user_id>` 最干净（模型提示里不必出现内部 id）。  
+只带 `params.user_id` 也能工作，少写一个头。两者都有且不一致时以 header 为准。
+
+不要用 body `user` / `X-Fastclaw-End-User`。
+
+### 8.3 「MCP 能 list 全站 project」怎么解决？用 API。
+
+是的，靠 **应用后端调 basic-memory 的 HTTP/Cloud**，不要把 MCP 挂在共享 Agent 上。
+
+```text
+应用后端（有 BM 的 API key）
+  → 按 user_id 找到或创建 project（只操作这一个）
+  → 只在该 project 里 search
+  → 短结果写入 params.known_facts
+  → FastClaw Agent 看不到 list_memory_projects，也不能 write_note 进别人的库
+```
+
+模型从不拿到「列出全部 project」的工具。凭证不出浏览器。  
+挂 MCP 且不锁 `--project`，模型就能 list —— 那条路关死，不是靠提示词。
+
+### 8.4 IM 只给控制台用户时，能不能和控制台同一份记忆？
+
+**默认不能。** 控制台 chatter = FastClaw 账号 id；IM 默认会把平台发送者铸成独立 `u_xxx`，USER.md 不在一起。
+
+要同一份记忆（以及同一条会话）：在该 Agent 的 Context 打开 **Shared identity across channels**。网关会把 IM 的 `UserID` 改成通道主人（控制台用户），session 也收成虚拟 triple `shared / ownerId`。微信和控制台接着同一通聊。
+
+注意：这个开关是「会话 + 记忆」一起合并，不能只要记忆、会话分开。你们现阶段 IM 只接控制台、且是私聊，适合开。群聊不要开（所有发言者会被改写成主人）。
+
+产品 API 用户仍用 `app:<user_id>`，不要传成控制台 FastClaw 账号 id，否则会和控制台/IM 并成一份。
