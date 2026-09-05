@@ -179,9 +179,9 @@ FastClaw **不能** 当应用的多端同步云。
    A) 先只合并本文，应用用 `params` + basic-memory，模板关 Auto-remember。  
    B) 按 §4 做 API chatter，再验收。
 
-2. **chatter 从哪读？**（若选 B）— **建议 C，待你点头**：两个都认，`X-Fastclaw-Chatter` 优先，没有再用 `params.user_id`。理由见 §8.2。
+2. **chatter 从哪读？**（若选 B）— **倾向 C，不一致则 400**（见 §8.2）：两个都认；只带一个就用那个；两个都带且字符串不同 → **直接 400**，不静默挑一边。
 
-3. **basic-memory** — **建议已写明，待确认**：应用走 HTTP/Cloud，按 `user_id` 建/查 **一个 project**，结果进 `params`。模板 Agent **不装** MCP。解决「list 到全站 project」靠的就是不让模型碰 MCP，见 §8.3。
+3. **basic-memory** — **应用自己 find-or-create**（BM 的 resolve + create，见 §8.3）。模板不装 MCP。不改 BM 上游，FastClaw 现在也不包一层 BM。
 
 4. **记忆主键** — **已选 A**：每个产品注册用户一份（客服/写作共享要点）。区分方式见 §7.4。
 
@@ -260,7 +260,7 @@ MCP 若不定死 `--project`，模型可以自己传 `project=`。理论上能�
 |---|---|---|
 | 产品注册用户（API） | 应用传入的 id，建议 `app:<user_id>` | 实际全是 `api-user` |
 | FastClaw 控制台用户 | FastClaw 账号 id | 已按账号分开 |
-| IM 发送者 | 平台 user id | 已按发送者分开 |
+| IM 发送者 | 默认平台 `u_xxx`；开 Shared identity 后 = 通道主人（控制台账号） | 默认和控制台不是一份；要同一份见 §8.4 |
 
 「非 API 的 user」不会自动和「API 传来的 user」合并。同一人既在控制台聊又在产品里聊，是两份记忆，除非你们故意用同一个字符串当 chatter。  
 产品用户之间：只看你们是否传入 **互不相同、长期稳定** 的 id（不要用 session id、不要用可被客户端伪造的值）。
@@ -280,35 +280,55 @@ MCP 若不定死 `--project`，模型可以自己传 `project=`。理论上能�
 
 ### 8. 再追问（接线建议 / BM API / IM 与控制台）
 
-### 8.2 建议：header 优先，`params.user_id` 回落
+### 8.2 两个都带且不一致：什么时候发生？应否报错？
 
-主路径仍是应用每轮带 `params`（名字、语言、`known_facts`）。  
-记忆键：后端再加 `X-Fastclaw-Chatter: app:<user_id>` 最干净（模型提示里不必出现内部 id）。  
-只带 `params.user_id` 也能工作，少写一个头。两者都有且不一致时以 header 为准。
+正常后端应只写一个来源，或两个写成同一个 `app:<user_id>`。会出现不一致的情况都是 **集成 bug**，不是合法业务：
 
-不要用 body `user` / `X-Fastclaw-End-User`。
+- 网关/中间层改了 header，旧代码还在 `params` 里留着另一个 id
+- 重试、复制请求、测试夹具只改了一边
+- 两个服务拼同一请求，各填各的
 
-### 8.3 「MCP 能 list 全站 project」怎么解决？用 API。
+静默「header 优先」会把这种 bug 吃掉，记忆写到错误的人身上还很难查。  
+**应对：两个都缺 → 回落 `api-user`；只带一个 → 用那个；两个都带且不相等 → 400，不要挑一边。**
 
-是的，靠 **应用后端调 basic-memory 的 HTTP/Cloud**，不要把 MCP 挂在共享 Agent 上。
+不要用 body `user` / `X-Fastclaw-End-User` 当 chatter。
+
+### 8.3 basic-memory 有没有「按你们 user_id 找或建 project」？我们能改吗？
+
+**BM 没有 SaaS 用户这一等公民。** 它有的是普通 project API：
+
+- `POST /v2/projects/resolve` `{ "identifier": "名字或 uuid" }`
+- `POST /v2/projects/` 用 **name** 创建（name 必须唯一）
+- 按 uuid get / list
+
+「按 user_id 找到或创建」是 **你们应用自己的两步**，不是 BM 内置 upsert：
 
 ```text
-应用后端（有 BM 的 API key）
-  → 按 user_id 找到或创建 project（只操作这一个）
-  → 只在该 project 里 search
-  → 短结果写入 params.known_facts
-  → FastClaw Agent 看不到 list_memory_projects，也不能 write_note 进别人的库
+name = "app-" + user_id
+resolve(name) → 有则用
+没有 → create(name=...) → 再用
+只在这个 project 里 search / write
 ```
 
-模型从不拿到「列出全部 project」的工具。凭证不出浏览器。  
-挂 MCP 且不锁 `--project`，模型就能 list —— 那条路关死，不是靠提示词。
+| 谁改 | 要不要 |
+|---|---|
+| 去改 basic-memory 上游，加「按外部 user 自动建库」 | 不。那是别人的项目，你们也用不到一等公民 |
+| FastClaw 里包一层 BM、按 chatter 建 project | 现在不。又绑死 BM，和「应用 HTTP + params」相反 |
+| 应用后端 5 行 find-or-create | **要。** 密钥留服务端，模型不装 MCP |
 
-### 8.4 IM 只给控制台用户时，能不能和控制台同一份记忆？
+挂 MCP 才能 list 全站 —— 这条继续关死。
 
-**默认不能。** 控制台 chatter = FastClaw 账号 id；IM 默认会把平台发送者铸成独立 `u_xxx`，USER.md 不在一起。
+### 8.4 「现在不就是 IM 和控制台同一份吗？」
 
-要同一份记忆（以及同一条会话）：在该 Agent 的 Context 打开 **Shared identity across channels**。网关会把 IM 的 `UserID` 改成通道主人（控制台用户），session 也收成虚拟 triple `shared / ownerId`。微信和控制台接着同一通聊。
+**默认不是。** 控制台 Context 页写得很清楚：Shared identity **默认关**，「each channel gets its own isolated session and memory」。
 
-注意：这个开关是「会话 + 记忆」一起合并，不能只要记忆、会话分开。你们现阶段 IM 只接控制台、且是私聊，适合开。群聊不要开（所有发言者会被改写成主人）。
+| | chatter | 会话 |
+|---|---|---|
+| 控制台网页 | 登录的 FastClaw 账号 id | `web` + 该聊窗 |
+| IM（默认） | 新铸的 app_user，external = `wechat:<openid>` 这类 | 微信/飞书自己的 chat id |
+| IM（Shared identity **开**） | 改写成通道主人 = 控制台账号 id | 虚拟 `shared` + ownerId，和控制台同一通 |
 
-产品 API 用户仍用 `app:<user_id>`，不要传成控制台 FastClaw 账号 id，否则会和控制台/IM 并成一份。
+「IM 只允许控制台用户接」只限制 **谁能绑通道**，不会把微信 openid 自动换成 FastClaw 账号 id。同一人两边聊，默认仍是两份 USER.md、两通会话。控制台侧边栏能看到 IM 会话，容易误以为已经是一份。
+
+要同一份：打开 **Shared identity across channels**。会话也会并在一起。群聊不要开。  
+产品 API 用户仍用 `app:<user_id>`，不要传控制台账号 id。
