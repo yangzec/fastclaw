@@ -53,6 +53,12 @@ type Identity struct {
 	// user's resources read-only via ?actAs=. Mutating handlers MUST
 	// 403 when this is set.
 	ActAsUserID string
+
+	// OwnerUserID is the API key's owning FastClaw account. Set on
+	// apikey auth and preserved across SwitchToAppUser so /v1/usage
+	// and /v1/quota stay on the website account when a request is
+	// rebound to an app_user via `user` / X-Fastclaw-End-User.
+	OwnerUserID string
 }
 
 // EffectiveUserID is who we read data for. For super_admin in actAs mode
@@ -62,6 +68,17 @@ func (i Identity) EffectiveUserID() string {
 		return i.ActAsUserID
 	}
 	return i.UserID
+}
+
+// BillingUserID is the usage/quota bucket for this request: the API
+// key owner when one is known, otherwise EffectiveUserID. Upstream
+// apps map one website onto one FastClaw account; token totals and
+// monthly ceilings belong to that account, not a per-request app_user.
+func (i Identity) BillingUserID() string {
+	if i.OwnerUserID != "" {
+		return i.OwnerUserID
+	}
+	return i.EffectiveUserID()
 }
 
 // IsActingAs reports whether super_admin is impersonating another user.
@@ -249,6 +266,7 @@ func (r *Resolver) ResolveBearer(ctx context.Context, token string) (Identity, e
 		APIKeyID:     res.APIKey.ID,
 		APIKeyType:   res.APIKey.Type,
 		APIKeyAgents: append([]string(nil), res.Agents...),
+		OwnerUserID:  res.Account.ID,
 	}, nil
 }
 
@@ -273,6 +291,9 @@ func (r *Resolver) SwitchToAppUser(ctx context.Context, ident Identity, external
 	}
 	// ident.UserID is the api_key's owner account here (pre-switch); key the
 	// app_user on it so rotating/replacing the api_key keeps the same user.
+	if ident.OwnerUserID == "" {
+		ident.OwnerUserID = ident.UserID
+	}
 	acc, err := r.accounts.EnsureAppUser(ctx, ident.UserID, externalID, "", ident.APIKeyID)
 	if err != nil {
 		return ident, err

@@ -21,8 +21,8 @@ record: `docs/upstream-website-model.md`.
 | Which person for USER.md / MEMORY.md | `X-Fastclaw-Chatter` and/or `params.user_id` | Not body `user`. See [Chatter](#chatter-memory-identity). |
 | Who the model should treat as the speaker | `params` this turn | Not persisted. |
 | List callable agents | `GET /v1/agents` | Respects API-key scope. |
-| Token totals | `GET /v1/usage` | On the default path, omit `user_id` → API-key owner. |
-| Site-wide cost cap | `/v1/quota` | Same authenticated owner unless you opted into app_users. |
+| Token totals | `GET /v1/usage` | Always the API-key owner. `user_id` is ignored. |
+| Site-wide cost cap | `/v1/quota` | Same owner. `user_id` optional and must match. |
 | List/download files from a chat | `GET /api/agents/{id}/files` | Always pass `?sessionId=` = session key or `session_id`. |
 | Provision a FastClaw app_user | `POST /v1/users` | **Optional. Not the default website path.** |
 | Admin / dashboard automation | `/api/*` or `fastclaw` CLI | Broader surface, not the minimal chat contract. |
@@ -240,17 +240,17 @@ with the dashboard `/api/*` or the CLI — not `/v1`.
 
 ## Usage And Quotas
 
-On the **default path** (no End-User), call these as the API-key owner.
-Omit `user_id` unless you provisioned app_users and know you need that
-row. Per registered-user spend belongs in your database (session-key
-prefix). Per-agent rollup is `daily[].agentId`.
+Usage and quota are the **API-key owner** bucket (the website FastClaw
+account). `user_id` and `X-Fastclaw-End-User` do not select another
+person's ledger. Per registered-user billing belongs in the upstream app
+(session-key prefix). Per-agent rollup is `daily[].agentId`.
 
 ### `GET /v1/usage`
 
 | Param | Required | Notes |
 |---|---|---|
 | `days` | no | Default `30`, max `90`. |
-| `user_id` | no | FastClaw user id. Default path: omit (owner). |
+| `user_id` | no | Ignored. Kept so old clients do not break. |
 
 ```http
 GET /v1/usage?days=30
@@ -259,13 +259,15 @@ Authorization: Bearer fcak_...
 
 ### `PUT /v1/quota`
 
+Sets the monthly ceiling for the API-key owner (site-wide kill switch).
+`user_id` is optional; when present it must be the owner.
+
 ```http
 PUT /v1/quota
 Authorization: Bearer fcak_...
 Content-Type: application/json
 
 {
-  "user_id": "<owner-or-app-user-id>",
   "monthly_token_limit": 5000000,
   "monthly_request_limit": 10000,
   "reset_day": 1
@@ -277,12 +279,13 @@ Content-Type: application/json
 ### `GET /v1/quota` / `DELETE /v1/quota`
 
 ```http
-GET /v1/quota?user_id=<same-as-put>
-DELETE /v1/quota?user_id=<same-as-put>
+GET /v1/quota
+DELETE /v1/quota
+Authorization: Bearer fcak_...
 ```
 
-On this tree, quota GET/DELETE still require `user_id`. Use the owner
-account id for a site-wide cap.
+Query `user_id` is optional and must match the owner when set. Removing
+quota reverts the owner to unlimited FastClaw-side quota.
 
 ## Optional: app_user (not the default)
 
@@ -307,7 +310,7 @@ that user. Chatter is still `api-user` unless you also send
    - list files with `?sessionId=` = that key or `session_id`
 4. Optional cross-session store: Basic Memory HTTP from **your** backend,
    then `params.known_facts`. See `docs/upstream-basic-memory.md`.
-5. Site-wide cap: `PUT /v1/quota` for the owner. Agent totals:
+5. Site-wide cap: `PUT /v1/quota` (owner bucket). Agent totals:
    `GET /v1/usage` and sum `daily[].agentId`. Per registered user: your DB.
 
 ## Error Shape
@@ -324,6 +327,7 @@ that user. Chatter is still `api-user` unless you also send
 | Status | Meaning |
 |---|---|
 | `400` | Bad body, no user message, chatter mismatch, `params.user_id` not a string, etc. |
+| `403` | Quota `user_id` is not the API-key owner. |
 | `401` | Missing/invalid API key. |
 | `404` | Agent not found or not on this API key. |
 | `429` | Rate limited or quota exceeded. |
