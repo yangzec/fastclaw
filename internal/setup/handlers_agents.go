@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -369,8 +370,12 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	if req.Model != "" {
-		if err := s.saveAgentScopeModel(r, id, req.Model); err != nil {
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = s.inheritAgentModel(r, uid, id)
+	}
+	if model != "" {
+		if err := s.saveAgentScopeModel(r, id, model); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
@@ -381,10 +386,58 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 			"id":     rec.ID,
 			"userId": rec.UserID,
 			"name":   rec.Name,
-			"model":  req.Model,
+			"model":  model,
 			"config": rec.Config,
 		},
 	})
+}
+
+type siblingModel struct {
+	id        string
+	model     string
+	createdAt time.Time
+}
+
+// pickInheritedModel prefers the user-scope default, then the oldest
+// sibling that already has a model. Empty means the operator still
+// has to open Models — we do not invent a provider.
+func pickInheritedModel(userDefault string, siblings []siblingModel, skipID string) string {
+	if m := strings.TrimSpace(userDefault); m != "" {
+		return m
+	}
+	sort.SliceStable(siblings, func(i, j int) bool {
+		return siblings[i].createdAt.Before(siblings[j].createdAt)
+	})
+	for _, sib := range siblings {
+		if sib.id == skipID {
+			continue
+		}
+		if m := strings.TrimSpace(sib.model); m != "" {
+			return m
+		}
+	}
+	return ""
+}
+
+func (s *Server) inheritAgentModel(r *http.Request, ownerUserID, skipID string) string {
+	userDefault := ""
+	if cfg, err := s.loadUserConfig(r); err == nil && cfg != nil {
+		userDefault = cfg.Agents.Defaults.Model
+	}
+	var siblings []siblingModel
+	if s.dataStore != nil {
+		if owned, err := s.dataStore.ListAgents(r.Context(), ownerUserID); err == nil {
+			siblings = make([]siblingModel, 0, len(owned))
+			for _, ar := range owned {
+				siblings = append(siblings, siblingModel{
+					id:        ar.ID,
+					model:     s.agentScopeModel(r, ar.ID),
+					createdAt: ar.CreatedAt,
+				})
+			}
+		}
+	}
+	return pickInheritedModel(userDefault, siblings, skipID)
 }
 
 // requireUserOrAdmin gates the /api/users/{id}/* nested routes:

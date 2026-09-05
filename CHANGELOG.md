@@ -20,6 +20,8 @@ action on upgrade — read those notes before deploying.
   that change them. Scheduler empty state says to ask in chat.
   Customize tabs hint what to write. Chat follow-up controls stay in
   English. The composer model picker no longer crashes (Base UI #31).
+  A second agent inherits the default / oldest sibling model so it
+  talks without another Models visit.
 
 ### Fixed
 
