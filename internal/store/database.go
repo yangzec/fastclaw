@@ -181,6 +181,9 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 	if err := d.migrateCronJobsTimestampTZ(ctx); err != nil {
 		return fmt.Errorf("migrate cron_jobs timestamptz: %w", err)
 	}
+	if err := d.migrateSSHHostsPersist(ctx); err != nil {
+		return fmt.Errorf("migrate ssh_hosts persist cols: %w", err)
+	}
 	return nil
 }
 
@@ -984,6 +987,33 @@ func (d *DBStore) migrateCronJobsFailureCount(ctx context.Context) error {
 	if _, err := d.db.ExecContext(ctx,
 		`ALTER TABLE cron_jobs ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return fmt.Errorf("add failure_count: %w", err)
+	}
+	return nil
+}
+
+// migrateSSHHostsPersist adds idle-timeout and tmux-persist columns to
+// ssh_hosts created before connection reuse shipped. Existing rows get
+// 2h idle and tmux-on, matching the new-install defaults.
+func (d *DBStore) migrateSSHHostsPersist(ctx context.Context) error {
+	hasIdle, err := d.tableHasColumn(ctx, "ssh_hosts", "idle_timeout_sec")
+	if err != nil {
+		return err
+	}
+	if !hasIdle {
+		if _, err := d.db.ExecContext(ctx,
+			`ALTER TABLE ssh_hosts ADD COLUMN idle_timeout_sec INTEGER NOT NULL DEFAULT 7200`); err != nil {
+			return fmt.Errorf("add idle_timeout_sec: %w", err)
+		}
+	}
+	hasTmux, err := d.tableHasColumn(ctx, "ssh_hosts", "persist_tmux")
+	if err != nil {
+		return err
+	}
+	if !hasTmux {
+		if _, err := d.db.ExecContext(ctx,
+			`ALTER TABLE ssh_hosts ADD COLUMN persist_tmux INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return fmt.Errorf("add persist_tmux: %w", err)
+		}
 	}
 	return nil
 }
@@ -2008,6 +2038,8 @@ func (d *DBStore) migrationSQL() []string {
 			host_key TEXT NOT NULL DEFAULT '',
 			default_cwd TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 1,
+			idle_timeout_sec INTEGER NOT NULL DEFAULT 7200,
+			persist_tmux INTEGER NOT NULL DEFAULT 1,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE (user_id, name)

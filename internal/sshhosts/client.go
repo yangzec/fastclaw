@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -26,16 +27,13 @@ type Result struct {
 // Run executes command on host using the saved credential. The local
 // process never puts the password on a command line.
 func Run(ctx context.Context, host store.SSHHostRecord, creds Creds, command string, timeout time.Duration) (Result, error) {
-	var zero Result
-	if strings.TrimSpace(command) == "" {
-		return zero, errors.New("command is required")
-	}
-	if timeout <= 0 {
-		timeout = 60 * time.Second
-	}
+	return DefaultPool.Run(ctx, host, creds, command, timeout)
+}
+
+func dialSSH(ctx context.Context, host store.SSHHostRecord, creds Creds) (*ssh.Client, string, error) {
 	auth, err := authMethods(host.AuthType, creds)
 	if err != nil {
-		return zero, err
+		return nil, "", err
 	}
 
 	var pinned string
@@ -45,37 +43,52 @@ func Run(ctx context.Context, host store.SSHHostRecord, creds Creds, command str
 		HostKeyCallback: hostKeyCallback(host.HostKey, &pinned),
 		Timeout:         15 * time.Second,
 	}
-	addr := net.JoinHostPort(host.Host, fmt.Sprintf("%d", host.Port))
-	if host.Port <= 0 {
-		addr = net.JoinHostPort(host.Host, "22")
+	port := host.Port
+	if port <= 0 {
+		port = 22
 	}
+	addr := net.JoinHostPort(host.Host, fmt.Sprintf("%d", port))
 
-	dialer := &net.Dialer{Timeout: 15 * time.Second}
+	dialer := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return zero, fmt.Errorf("dial %s: %w", addr, err)
+		return nil, "", fmt.Errorf("dial %s: %w", addr, err)
 	}
 	c, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
 	if err != nil {
 		_ = conn.Close()
-		return zero, fmt.Errorf("ssh handshake: %w", err)
+		return nil, "", fmt.Errorf("ssh handshake: %w", err)
 	}
-	client := ssh.NewClient(c, chans, reqs)
-	defer client.Close()
+	return ssh.NewClient(c, chans, reqs), pinned, nil
+}
 
+func wrapCommandCWD(host store.SSHHostRecord, command string) string {
+	if cwd := strings.TrimSpace(host.DefaultCWD); cwd != "" {
+		return "cd " + shellQuote(cwd) + " && " + command
+	}
+	return command
+}
+
+func runOnClient(ctx context.Context, client *ssh.Client, command string, timeout time.Duration) (Result, error) {
+	var zero Result
+	if client == nil {
+		return zero, errors.New("ssh client is closed")
+	}
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
 	session, err := client.NewSession()
 	if err != nil {
 		return zero, fmt.Errorf("ssh session: %w", err)
 	}
 	defer session.Close()
 
-	if cwd := strings.TrimSpace(host.DefaultCWD); cwd != "" {
-		command = "cd " + shellQuote(cwd) + " && " + command
-	}
-
-	var buf bytes.Buffer
-	session.Stdout = &buf
-	session.Stderr = &buf
+	// crypto/ssh copies stdout and stderr from different goroutines.
+	// bytes.Buffer is not safe for concurrent writes, so a mutex is
+	// required or remote output is silently dropped.
+	var out combinedStream
+	session.Stdout = &out
+	session.Stderr = &out
 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -90,11 +103,11 @@ func Run(ctx context.Context, host store.SSHHostRecord, creds Creds, command str
 	case runErr = <-errCh:
 	}
 
-	out := buf.String()
-	if len(out) > maxOutputBytes {
-		out = out[:maxOutputBytes] + "\n…(output truncated)"
+	outStr := out.String()
+	if len(outStr) > maxOutputBytes {
+		outStr = outStr[:maxOutputBytes] + "\n…(output truncated)"
 	}
-	res := Result{Output: out, PinnedHostKey: pinned}
+	res := Result{Output: outStr}
 	if runErr == nil {
 		return res, nil
 	}
@@ -169,4 +182,23 @@ func ValidateCreds(authType string, creds Creds) error {
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// combinedStream merges stdout and stderr. crypto/ssh copies those
+// streams from different goroutines, so writes must be serialized.
+type combinedStream struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (c *combinedStream) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+
+func (c *combinedStream) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
 }

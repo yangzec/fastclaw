@@ -7,6 +7,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"net"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 )
 
 func TestRunPasswordAndKey(t *testing.T) {
+	t.Cleanup(ResetPool)
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +107,61 @@ func TestRunPasswordAndKey(t *testing.T) {
 	}
 }
 
+func TestRunMergesStdoutAndStderr(t *testing.T) {
+	t.Cleanup(ResetPool)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = pub
+	cfg := &ssh.ServerConfig{
+		PasswordCallback: func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+			if c.User() == "deploy" && string(pass) == "s3cret" {
+				return nil, nil
+			}
+			return nil, errors.New("denied")
+		},
+	}
+	cfg.AddHostKey(signer)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go serveSSHBoth(t, ln, cfg)
+
+	host, port, _ := net.SplitHostPort(ln.Addr().String())
+	rec := store.SSHHostRecord{
+		Host:     host,
+		Port:     mustPort(port),
+		Username: "deploy",
+		AuthType: store.SSHAuthPassword,
+	}
+	res, err := Run(context.Background(), rec, Creds{Password: "s3cret"}, "ignored", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outN := strings.Count(res.Output, "OUT\n")
+	errN := strings.Count(res.Output, "ERR\n")
+	if outN != 200 || errN != 200 {
+		t.Fatalf("want 200 OUT and 200 ERR, got OUT=%d ERR=%d len=%d", outN, errN, len(res.Output))
+	}
+}
+
 func serveSSH(t *testing.T, ln net.Listener, cfg *ssh.ServerConfig) {
+	serveSSHWith(t, ln, cfg, handleSession)
+}
+
+func serveSSHBoth(t *testing.T, ln net.Listener, cfg *ssh.ServerConfig) {
+	serveSSHWith(t, ln, cfg, handleSessionStdoutStderr)
+}
+
+func serveSSHWith(t *testing.T, ln net.Listener, cfg *ssh.ServerConfig, session func(ssh.Channel, <-chan *ssh.Request)) {
 	t.Helper()
 	for {
 		nConn, err := ln.Accept()
@@ -128,7 +185,7 @@ func serveSSH(t *testing.T, ln net.Listener, cfg *ssh.ServerConfig) {
 				if err != nil {
 					return
 				}
-				go handleSession(ch, reqs)
+				go session(ch, reqs)
 			}
 		}(nConn)
 	}
@@ -147,6 +204,39 @@ func handleSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 			_ = req.Reply(true, nil)
 		}
 		_, _ = ch.Write([]byte("ok\n"))
+		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+		return
+	}
+}
+
+func handleSessionStdoutStderr(ch ssh.Channel, reqs <-chan *ssh.Request) {
+	defer ch.Close()
+	for req := range reqs {
+		if req.Type != "exec" {
+			if req.WantReply {
+				_ = req.Reply(false, nil)
+			}
+			continue
+		}
+		if req.WantReply {
+			_ = req.Reply(true, nil)
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				_, _ = ch.Write([]byte("OUT\n"))
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			stderr := ch.Stderr()
+			for i := 0; i < 200; i++ {
+				_, _ = stderr.Write([]byte("ERR\n"))
+			}
+		}()
+		wg.Wait()
 		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
 		return
 	}

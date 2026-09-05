@@ -30,7 +30,7 @@ func RegisterSSHExec(r *Registry, st store.Store, box *sshhosts.Box, ownerUserID
 		return
 	}
 	r.Register("ssh_exec",
-		"Run a shell command on a saved SSH host. Use the host alias from Settings → SSH Hosts (not a hostname or IP). FastClaw injects the saved public key or password — never ask the user for credentials, and never put a password in exec() or in chat. Only the agent owner can use this tool.",
+		"Run a shell command on a saved SSH host. Use the host alias from Settings → SSH Hosts (not a hostname or IP). FastClaw reuses the SSH connection (default 2h idle) and keeps a tmux session named fastclaw-<alias> on the server when tmux is installed. Injects the saved public key or password — never ask the user for credentials, and never put a password in exec() or in chat. Only the agent owner can use this tool.",
 		map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

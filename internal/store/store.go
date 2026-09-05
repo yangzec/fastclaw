@@ -329,19 +329,21 @@ var ErrSSHHostNameTaken = errors.New("ssh host name already exists")
 // SecretEnc and HostKey stay off the public JSON surface; handlers
 // return a sanitized view with hasSecret / hasHostKey flags.
 type SSHHostRecord struct {
-	ID         string    `json:"id"`
-	UserID     string    `json:"userId"`
-	Name       string    `json:"name"`
-	Host       string    `json:"host"`
-	Port       int       `json:"port"`
-	Username   string    `json:"username"`
-	AuthType   string    `json:"authType"`
-	SecretEnc  string    `json:"-"`
-	HostKey    string    `json:"-"`
-	DefaultCWD string    `json:"defaultCwd,omitempty"`
-	Enabled    bool      `json:"enabled"`
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+	ID             string    `json:"id"`
+	UserID         string    `json:"userId"`
+	Name           string    `json:"name"`
+	Host           string    `json:"host"`
+	Port           int       `json:"port"`
+	Username       string    `json:"username"`
+	AuthType       string    `json:"authType"`
+	SecretEnc      string    `json:"-"`
+	HostKey        string    `json:"-"`
+	DefaultCWD     string    `json:"defaultCwd,omitempty"`
+	Enabled        bool      `json:"enabled"`
+	IdleTimeoutSec int       `json:"idleTimeoutSec,omitempty"` // 0 = 2h default; <0 = until restart
+	PersistTmux    bool      `json:"persistTmux,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 // UserRecord is one row of the users table.

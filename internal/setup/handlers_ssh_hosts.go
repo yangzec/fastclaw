@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/fastclaw-ai/fastclaw/internal/auth"
 	"github.com/fastclaw-ai/fastclaw/internal/sshhosts"
@@ -15,34 +16,52 @@ import (
 var sshHostNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 type sshHostWriteReq struct {
-	Name       string `json:"name"`
-	Host       string `json:"host"`
-	Port       int    `json:"port"`
-	Username   string `json:"username"`
-	AuthType   string `json:"authType"`
-	Password   string `json:"password,omitempty"`
-	PrivateKey string `json:"privateKey,omitempty"`
-	Passphrase string `json:"passphrase,omitempty"`
-	DefaultCWD string `json:"defaultCwd,omitempty"`
-	Enabled    *bool  `json:"enabled,omitempty"`
+	Name           string `json:"name"`
+	Host           string `json:"host"`
+	Port           int    `json:"port"`
+	Username       string `json:"username"`
+	AuthType       string `json:"authType"`
+	Password       string `json:"password,omitempty"`
+	PrivateKey     string `json:"privateKey,omitempty"`
+	Passphrase     string `json:"passphrase,omitempty"`
+	DefaultCWD     string `json:"defaultCwd,omitempty"`
+	Enabled        *bool  `json:"enabled,omitempty"`
+	IdleTimeoutSec *int   `json:"idleTimeoutSec,omitempty"`
+	PersistTmux    *bool  `json:"persistTmux,omitempty"`
 }
 
 func sshHostPublicView(h store.SSHHostRecord) map[string]any {
-	return map[string]any{
-		"id":            h.ID,
-		"name":          h.Name,
-		"host":          h.Host,
-		"port":          h.Port,
-		"username":      h.Username,
-		"authType":      h.AuthType,
-		"defaultCwd":    h.DefaultCWD,
-		"enabled":       h.Enabled,
-		"hasSecret":     h.SecretEnc != "",
-		"hasHostKey":    h.HostKey != "",
-		"hasPassphrase": false, // filled by caller after decrypt is not needed — we don't store a flag
-		"createdAt":     h.CreatedAt,
-		"updatedAt":     h.UpdatedAt,
+	idle := h.IdleTimeoutSec
+	if idle == 0 {
+		idle = int(sshhosts.DefaultIdleTimeout / time.Second)
 	}
+	view := map[string]any{
+		"id":             h.ID,
+		"name":           h.Name,
+		"host":           h.Host,
+		"port":           h.Port,
+		"username":       h.Username,
+		"authType":       h.AuthType,
+		"defaultCwd":     h.DefaultCWD,
+		"enabled":        h.Enabled,
+		"idleTimeoutSec": idle,
+		"persistTmux":    h.PersistTmux,
+		"hasSecret":      h.SecretEnc != "",
+		"hasHostKey":     h.HostKey != "",
+		"hasPassphrase":  false, // filled by caller after decrypt is not needed — we don't store a flag
+		"createdAt":      h.CreatedAt,
+		"updatedAt":      h.UpdatedAt,
+	}
+	if h.PersistTmux {
+		view["tmuxSession"] = sshhosts.TmuxSessionName(h.Name)
+	}
+	if info := sshhosts.DefaultPool.Info(h.ID); info.Connected {
+		view["connected"] = true
+		view["lastUsedAt"] = info.LastUsed
+	} else {
+		view["connected"] = false
+	}
+	return view
 }
 
 func (s *Server) handleListSSHHosts(w http.ResponseWriter, r *http.Request) {
@@ -179,6 +198,10 @@ func (s *Server) handleUpdateSSHHost(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, status, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
+	if rec.Host != existing.Host || rec.Port != existing.Port || rec.Username != existing.Username ||
+		rec.AuthType != existing.AuthType || rec.SecretEnc != existing.SecretEnc || !rec.Enabled {
+		sshhosts.DefaultPool.Drop(rec.ID)
+	}
 	view := sshHostPublicView(*rec)
 	delete(view, "hasPassphrase")
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "host": view})
@@ -202,6 +225,7 @@ func (s *Server) handleDeleteSSHHost(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
+	sshhosts.DefaultPool.Drop(r.PathValue("id"))
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -239,7 +263,26 @@ func (s *Server) handleTestSSHHost(w http.ResponseWriter, r *http.Request) {
 		rec.HostKey = res.PinnedHostKey
 		_ = s.dataStore.SaveSSHHost(r.Context(), rec)
 	}
-	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "output": res.Output})
+	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "output": res.Output, "connected": true, "tmuxSession": sshhosts.TmuxSessionName(rec.Name)})
+}
+
+func (s *Server) handleDisconnectSSHHost(w http.ResponseWriter, r *http.Request) {
+	ident, ok := auth.FromContext(r.Context())
+	if !ok || ident.ReadOnly() || s.dataStore == nil {
+		jsonResponse(w, http.StatusForbidden, map[string]any{"ok": false, "error": "read-only"})
+		return
+	}
+	rec, err := s.ownedSSHHost(r, ident.EffectiveUserID(), r.PathValue("id"))
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		jsonResponse(w, status, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	sshhosts.DefaultPool.Drop(rec.ID)
+	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) ownedSSHHost(r *http.Request, userID, id string) (*store.SSHHostRecord, error) {
@@ -308,6 +351,23 @@ func buildSSHHost(userID, id string, req sshHostWriteReq, existing *store.SSHHos
 		cwd = existing.DefaultCWD
 	}
 
+	idle := 7200
+	if req.IdleTimeoutSec != nil {
+		idle = *req.IdleTimeoutSec
+		if idle < -1 {
+			return nil, sshhosts.Creds{}, errors.New("idleTimeoutSec must be -1 (until restart) or a positive number of seconds")
+		}
+	} else if existing != nil {
+		idle = existing.IdleTimeoutSec
+	}
+
+	persistTmux := true
+	if req.PersistTmux != nil {
+		persistTmux = *req.PersistTmux
+	} else if existing != nil {
+		persistTmux = existing.PersistTmux
+	}
+
 	creds := sshhosts.Creds{
 		Password:   req.Password,
 		PrivateKey: req.PrivateKey,
@@ -323,15 +383,17 @@ func buildSSHHost(userID, id string, req sshHostWriteReq, existing *store.SSHHos
 	}
 
 	rec := &store.SSHHostRecord{
-		ID:         id,
-		UserID:     userID,
-		Name:       name,
-		Host:       host,
-		Port:       port,
-		Username:   user,
-		AuthType:   authType,
-		DefaultCWD: cwd,
-		Enabled:    enabled,
+		ID:             id,
+		UserID:         userID,
+		Name:           name,
+		Host:           host,
+		Port:           port,
+		Username:       user,
+		AuthType:       authType,
+		DefaultCWD:     cwd,
+		Enabled:        enabled,
+		IdleTimeoutSec: idle,
+		PersistTmux:    persistTmux,
 	}
 	if existing != nil {
 		rec.CreatedAt = existing.CreatedAt

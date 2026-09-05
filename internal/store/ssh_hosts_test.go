@@ -43,6 +43,19 @@ func TestSSHHostCRUD(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 
+	got.IdleTimeoutSec = 7200
+	got.PersistTmux = true
+	if err := st.SaveSSHHost(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	again, err := st.GetSSHHost(ctx, got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.IdleTimeoutSec != 7200 || !again.PersistTmux {
+		t.Fatalf("persist fields: %+v", again)
+	}
+
 	dup := *h
 	dup.ID = ""
 	if err := st.SaveSSHHost(ctx, &dup); !errors.Is(err, ErrSSHHostNameTaken) {
