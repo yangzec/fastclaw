@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -14,6 +15,11 @@ import (
 )
 
 var sshHostNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+
+// sshHostProbe is the connection check run before a host is persisted
+// and again on /test. Tests replace it so handlers never dial a real
+// network.
+var sshHostProbe = sshhosts.Run
 
 type sshHostWriteReq struct {
 	Name           string `json:"name"`
@@ -49,6 +55,9 @@ func sshHostPublicView(h store.SSHHostRecord) map[string]any {
 		"hasSecret":      h.SecretEnc != "",
 		"hasHostKey":     h.HostKey != "",
 		"hasPassphrase":  false, // filled by caller after decrypt is not needed — we don't store a flag
+		"lastTestStatus": h.LastTestStatus,
+		"lastTestError":  h.LastTestError,
+		"lastTestedAt":   h.LastTestedAt,
 		"createdAt":      h.CreatedAt,
 		"updatedAt":      h.UpdatedAt,
 	}
@@ -112,12 +121,24 @@ func (s *Server) handleCreateSSHHost(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
+	if err := s.sshHostNameTaken(r.Context(), rec.UserID, rec.Name, ""); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrSSHHostNameTaken) {
+			status = http.StatusConflict
+		}
+		jsonResponse(w, status, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
 	enc, err := box.Seal(creds)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
 	rec.SecretEnc = enc
+	if _, err := probeSSHHost(r.Context(), rec, creds); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "connection failed: " + err.Error()})
+		return
+	}
 	if err := s.dataStore.SaveSSHHost(r.Context(), rec); err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, store.ErrSSHHostNameTaken) {
@@ -158,7 +179,11 @@ func (s *Server) handleUpdateSSHHost(w http.ResponseWriter, r *http.Request) {
 	}
 	rec.SecretEnc = existing.SecretEnc
 	rec.HostKey = existing.HostKey
-	if req.Password != "" || req.PrivateKey != "" || req.Passphrase != "" {
+	rec.LastTestStatus = existing.LastTestStatus
+	rec.LastTestError = existing.LastTestError
+	rec.LastTestedAt = existing.LastTestedAt
+	credsChanged := req.Password != "" || req.PrivateKey != "" || req.Passphrase != ""
+	if credsChanged {
 		box, err := sshhosts.OpenBox()
 		if err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
@@ -189,6 +214,28 @@ func (s *Server) handleUpdateSSHHost(w http.ResponseWriter, r *http.Request) {
 		}
 		rec.SecretEnc = enc
 		rec.HostKey = "" // new creds → re-TOFU
+	}
+	if rec.Host != existing.Host || rec.Port != existing.Port {
+		rec.HostKey = ""
+	}
+	if err := s.sshHostNameTaken(r.Context(), rec.UserID, rec.Name, rec.ID); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrSSHHostNameTaken) {
+			status = http.StatusConflict
+		}
+		jsonResponse(w, status, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if sshHostNeedsRetest(rec, existing, credsChanged) {
+		probeCreds, err := credsForProbe(creds, existing, credsChanged)
+		if err != nil {
+			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		if _, err := probeSSHHost(r.Context(), rec, probeCreds); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "connection failed: " + err.Error()})
+			return
+		}
 	}
 	if err := s.dataStore.SaveSSHHost(r.Context(), rec); err != nil {
 		status := http.StatusInternalServerError
@@ -254,16 +301,26 @@ func (s *Server) handleTestSSHHost(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	res, err := sshhosts.Run(r.Context(), *rec, creds, "echo ok", 0)
-	if err != nil {
-		jsonResponse(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
+	res, probeErr := probeSSHHost(r.Context(), rec, creds)
+	_ = s.dataStore.SaveSSHHost(r.Context(), rec)
+	if probeErr != nil {
+		jsonResponse(w, http.StatusBadGateway, map[string]any{
+			"ok":             false,
+			"error":          probeErr.Error(),
+			"lastTestStatus": rec.LastTestStatus,
+			"lastTestError":  rec.LastTestError,
+			"lastTestedAt":   rec.LastTestedAt,
+		})
 		return
 	}
-	if res.PinnedHostKey != "" && rec.HostKey == "" {
-		rec.HostKey = res.PinnedHostKey
-		_ = s.dataStore.SaveSSHHost(r.Context(), rec)
-	}
-	jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "output": res.Output, "connected": true, "tmuxSession": sshhosts.TmuxSessionName(rec.Name)})
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"ok":             true,
+		"output":         res.Output,
+		"connected":      true,
+		"tmuxSession":    sshhosts.TmuxSessionName(rec.Name),
+		"lastTestStatus": rec.LastTestStatus,
+		"lastTestedAt":   rec.LastTestedAt,
+	})
 }
 
 func (s *Server) handleDisconnectSSHHost(w http.ResponseWriter, r *http.Request) {
@@ -297,6 +354,69 @@ func (s *Server) ownedSSHHost(r *http.Request, userID, id string) (*store.SSHHos
 		return nil, store.ErrNotFound
 	}
 	return rec, nil
+}
+
+func (s *Server) sshHostNameTaken(ctx context.Context, userID, name, exceptID string) error {
+	existing, err := s.dataStore.GetSSHHostByName(ctx, userID, name)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if existing != nil && existing.ID != exceptID {
+		return store.ErrSSHHostNameTaken
+	}
+	return nil
+}
+
+func probeSSHHost(ctx context.Context, rec *store.SSHHostRecord, creds sshhosts.Creds) (sshhosts.Result, error) {
+	res, err := sshHostProbe(ctx, *rec, creds, "echo ok", 20*time.Second)
+	now := time.Now().UTC()
+	rec.LastTestedAt = &now
+	if err != nil {
+		rec.LastTestStatus = store.SSHTestFail
+		rec.LastTestError = clipSSHTestError(err.Error())
+		return res, err
+	}
+	rec.LastTestStatus = store.SSHTestOK
+	rec.LastTestError = ""
+	if res.PinnedHostKey != "" && rec.HostKey == "" {
+		rec.HostKey = res.PinnedHostKey
+	}
+	return res, nil
+}
+
+func credsForProbe(creds sshhosts.Creds, existing *store.SSHHostRecord, credsChanged bool) (sshhosts.Creds, error) {
+	if credsChanged {
+		return creds, nil
+	}
+	box, err := sshhosts.OpenBox()
+	if err != nil {
+		return creds, err
+	}
+	return box.Open(existing.SecretEnc)
+}
+
+func sshHostNeedsRetest(rec *store.SSHHostRecord, existing *store.SSHHostRecord, credsChanged bool) bool {
+	if existing == nil || credsChanged {
+		return true
+	}
+	if rec.Host != existing.Host || rec.Port != existing.Port || rec.Username != existing.Username || rec.AuthType != existing.AuthType {
+		return true
+	}
+	if rec.DefaultCWD != existing.DefaultCWD {
+		return true
+	}
+	return false
+}
+
+func clipSSHTestError(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > 400 {
+		return s[:400]
+	}
+	return s
 }
 
 func buildSSHHost(userID, id string, req sshHostWriteReq, existing *store.SSHHostRecord) (*store.SSHHostRecord, sshhosts.Creds, error) {
