@@ -16,6 +16,11 @@ action on upgrade — read those notes before deploying.
   `task:task` / `task:task:readonly` scopes so the bot can list
   todos it created. Existing bots still need a rescan for new
   scopes.
+- **Knowledge architecture notes.** [`docs/knowledge-architecture.md`](docs/knowledge-architecture.md)
+  records what the per-agent Knowledge page actually does (text files,
+  256KB, keyword / CJK-bigram search) and when *not* to bolt on
+  SiliconFlow embeddings, Dify, Volcengine knowledge / OpenViking /
+  Mem0. Chat models can still use SiliconFlow via a Custom provider.
 
 ### Changed
 
@@ -46,6 +51,9 @@ action on upgrade — read those notes before deploying.
   FastClaw only has the bot's tenant token, so "我负责的" was always
   empty. Listing now uses task v1 (app-created tasks) and, on Feishu
   chat, filters to the current sender's assignments.
+- **Knowledge uploads accept multiple files and keep CJK names.** The
+  picker is `multiple`; the server no longer turns `产品说明.md` into
+  `----.md`. Path separators and control characters are still stripped.
 
 - **Chat replies no longer leak literal ` ``` `.** Models often open
   a fence and never close it, wrap the whole answer in ` ```markdown `,
