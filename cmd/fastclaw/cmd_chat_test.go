@@ -116,6 +116,58 @@ func TestPlainStreamWritesDeltasAndToolProgress(t *testing.T) {
 	}
 }
 
+func TestGatewayConfigured(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		if hits == 1 {
+			_, _ = w.Write([]byte(`{"configured":false}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"configured":true}`))
+	}))
+	defer server.Close()
+
+	if gatewayConfigured(context.Background(), server.URL) {
+		t.Fatal("first status should be unconfigured")
+	}
+	if !gatewayConfigured(context.Background(), server.URL) {
+		t.Fatal("second status should be configured")
+	}
+}
+
+func TestWaitUntilConfigured(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		if hits < 2 {
+			_, _ = w.Write([]byte(`{"configured":false}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"configured":true}`))
+	}))
+	defer server.Close()
+
+	if err := waitUntilConfigured(context.Background(), server.URL, 3*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if hits < 2 {
+		t.Fatalf("expected to poll until configured, hits=%d", hits)
+	}
+}
+
+func TestWaitUntilConfiguredTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"configured":false}`))
+	}))
+	defer server.Close()
+
+	err := waitUntilConfigured(context.Background(), server.URL, 50*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout, got %v", err)
+	}
+}
+
 func TestPlainStreamErrorEvent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -337,7 +337,7 @@ func (s *Server) handleOnboard(w http.ResponseWriter, r *http.Request) {
 	agentID, _ := generateID("agt_")
 	agentName := req.AgentName
 	if agentName == "" {
-		agentName = "default"
+		agentName = "Assistant"
 	}
 	agentRec := &store.AgentRecord{
 		ID:     agentID,

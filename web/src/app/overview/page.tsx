@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
+import { buttonVariants } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { firstAgentChatPath } from "@/lib/first-chat";
+import { cn } from "@/lib/utils";
 import {
   getStatus,
   adminListChats,
@@ -71,6 +75,8 @@ export default function OverviewPage() {
   // Non-admins only need to see their agents — gateway plumbing (provider
   // config, users, chats) is admin-only.
   const isAdmin = status?.isAdmin ?? false;
+  const firstChat = firstAgentChatPath(status?.agents);
+  const firstAgentName = status?.agents?.[0]?.name || "your agent";
 
   // Pretty-print the configured fallback chain for each tool category as
   // "Web Search: Exa, Brave". A category with no configured provider is
@@ -95,9 +101,26 @@ export default function OverviewPage() {
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">Dashboard</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Monitor your FastClaw gateway
+          {firstChat ? "Your agents are ready." : "Monitor your FastClaw gateway"}
         </p>
       </div>
+
+      {firstChat && (
+        <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-5 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="font-medium">Talk to {firstAgentName}</p>
+            <p className="text-sm text-muted-foreground">
+              No extra setup — just say something.
+            </p>
+          </div>
+          <Link
+            href={firstChat}
+            className={cn(buttonVariants(), "shrink-0")}
+          >
+            Start chatting
+          </Link>
+        </div>
+      )}
 
       {/* Stats Cards — Agents shown to everyone; Users + Chats +
           Channels are gateway-management surfaces, admin-only. */}

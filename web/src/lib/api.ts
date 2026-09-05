@@ -427,7 +427,9 @@ export interface OnboardRequest {
   sandboxBoxlitePrefix?: string;
 }
 
-export async function onboard(req: OnboardRequest): Promise<{ ok: boolean; error?: string }> {
+export async function onboard(
+  req: OnboardRequest,
+): Promise<{ ok: boolean; error?: string; agentId?: string }> {
   const res = await fetch("/api/onboard", {
     method: "POST",
     credentials: "same-origin",

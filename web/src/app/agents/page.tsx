@@ -307,7 +307,7 @@ export default function AgentsPage() {
             <p className="text-sm text-muted-foreground">
               {quotaLocked
                 ? "No agent has been provisioned for your account yet — contact your admin."
-                : "No agents configured yet"}
+                : "Create an agent, then start talking."}
             </p>
             {!quotaLocked && (
               <Button

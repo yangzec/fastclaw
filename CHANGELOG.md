@@ -5,6 +5,16 @@ action on upgrade — read those notes before deploying.
 
 ## [Unreleased]
 
+### Changed
+
+- **First run no longer trains the operator.** `fastclaw` on a fresh
+  install opens the browser and waits instead of dying with
+  `finish FastClaw onboarding first`. The wizard is two screens
+  (account + API key); sandbox / agent name / API dialect stay out of
+  the way. After setup, login, and `/`, you land in chat with the
+  first agent — not the gateway dashboard. Empty chat offers three
+  click-to-send starters. The first agent is named `Assistant`.
+
 ### Fixed
 
 - **Chat replies no longer leak literal ` ``` `.** Models often open

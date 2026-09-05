@@ -2478,6 +2478,11 @@ export function ChatScreen() {
   // instead of taking over the headline, so users always know which
   // agent they're chatting with first.
   const heroTitle = "What can I do for you?";
+  const emptyChatStarters = [
+    "What can you help me with?",
+    "Write a short greeting I can send",
+    "What can you do from here?",
+  ];
 
   return (
     <div className="flex h-[calc(100dvh-3rem-env(safe-area-inset-top,0px))] min-h-0 flex-row">
@@ -2513,6 +2518,21 @@ export function ChatScreen() {
                 <h1 className="text-2xl font-semibold tracking-tight md:text-4xl">
                   {heroTitle}
                 </h1>
+                {selectedAgent && !isReadOnlyChannel && !isActAsView && (
+                  <div className="mt-5 flex flex-wrap justify-center gap-2">
+                    {emptyChatStarters.map((prompt) => (
+                      <button
+                        key={prompt}
+                        type="button"
+                        disabled={!canUseComposer || sending}
+                        onClick={() => void handleSend(prompt)}
+                        className="rounded-full border border-border bg-card px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:border-foreground/20 hover:bg-muted hover:text-foreground disabled:opacity-50"
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
