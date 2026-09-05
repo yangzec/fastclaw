@@ -212,3 +212,77 @@ FastClaw **不能** 当应用的多端同步云。
 | 会话内记忆 = 同一条 session key | 是 |
 | 账单在 owner，按人由应用汇总 | 是 |
 | 以后 API 接真实 chatter，不切 UserSpace | 是（待 §5） |
+
+---
+
+## 7. 追问（2026-09-05）
+
+### 7.1 改 API chatter 后，网页端会不会串用户？
+
+这里有两个「网页」，不要混：
+
+| 谁在聊 | 走哪条口 | 今天的 chatter | 改 API 之后 |
+|---|---|---|---|
+| 你们产品里的注册用户 | `/v1/chat/completions` | 全员 `"api-user"`（**会串** FastClaw 自带记忆） | 用后端传来的 id，A/B 分开 |
+| FastClaw 控制台（你们自己登录试 Agent） | `/api/chat/*` | 登录者的 FastClaw 账号 id；没登录是 `"web-user"` | **不动** |
+| 微信/飞书等 | 各通道 | 平台发送者 id | **不动** |
+
+改的只是 API 这一条：`msg.UserID` 从占位 `"api-user"` 换成应用后端给的稳定 id。  
+控制台登录用户之间本来就不会串（各用自己的 FastClaw 账号 id）。  
+产品用户之间：**今天** 若开 Auto-remember / 写 USER.md 会串；接上 chatter 且 id 互不相同才不串。
+
+会话（聊了什么）一直靠 session key，和 chatter 无关。两个人不要共用一条 session key。
+
+控制台里运营者试模板、和产品用户走 API，记忆默认不共享（一边是 FastClaw 账号 id，一边是 `app:u_123`）。这是对的。  
+为防撞号，API 传来的 chatter **加前缀**，例如 `app:<你们的user_id>`，不要直接拿裸数字去撞 FastClaw uuid / IM id。
+
+### 7.2 `params.user_id` 和 header 有什么区别？
+
+都是「告诉 FastClaw 这个人的 chatter id」，不是两套记忆。
+
+| | `params.user_id` | `X-Fastclaw-Chatter` |
+|---|---|---|
+| 放哪 | JSON 身体，和 display_name 一起 | HTTP 头 |
+| 模型看不看得到 | 看得到（整份 params 进提示） | 默认看不到 |
+| 和 OpenAI `user` | **不是** 同一个字段。`user` 会切 UserSpace | 也不会切 UserSpace |
+| 适用 | 应用本来就要带 params | 不想让模型看见内部 id，或和 params 里其它字段分开 |
+
+「两个都认」只是解析顺序（例如 header 优先，没有再用 params）。  
+**必须应用后端填，浏览器不能直连 FastClaw 自己填。**
+
+### 7.3 basic-memory 支不支持按用户的 project？
+
+支持 **多 project**（各有目录和索引；Cloud 还有 workspace/租户）。  
+**没有** 「你们 SaaS 注册用户」这个一等公民。不会因为 FastClaw 换了 chatter 就自动一人一库。
+
+按用户用它：应用用你们的 `user_id` 当 project 名（或先 `POST /v2/projects` 再检索）。这是应用侧 HTTP，不是挂在共享 Agent 上的那一份 MCP。
+
+MCP 若不定死 `--project`，模型可以自己传 `project=`。理论上能填用户 id，但 `list_memory_projects` 会列出所有人的库，不可靠，也等于把全站项目名暴露给模型。所以模板 Agent 仍不建议装这份 MCP。
+
+### 7.4 「每个用户一份」的用户是谁？
+
+已选：**每个产品注册用户一份**（客服/写作共享要点）。
+
+三拨人，id 空间不同：
+
+| 人群 | chatter / 记忆键 | 今天 |
+|---|---|---|
+| 产品注册用户（API） | 应用传入的 id，建议 `app:<user_id>` | 实际全是 `api-user` |
+| FastClaw 控制台用户 | FastClaw 账号 id | 已按账号分开 |
+| IM 发送者 | 平台 user id | 已按发送者分开 |
+
+「非 API 的 user」不会自动和「API 传来的 user」合并。同一人既在控制台聊又在产品里聊，是两份记忆，除非你们故意用同一个字符串当 chatter。  
+产品用户之间：只看你们是否传入 **互不相同、长期稳定** 的 id（不要用 session id、不要用可被客户端伪造的值）。
+
+### 7.5 「params 提示措辞」是什么意思？
+
+不是改记忆键。是 FastClaw 把 `params` JSON 塞进系统提示时那两句英文：
+
+> The user's client app submitted these parameters… Forward them to whichever tool / skill you call.
+
+模型可能把 `known_facts` 当成「要转给工具的设置」，而不是「已核实的事实」。
+
+- A：FastClaw 这段字不动；在该 Agent 的 SOUL.md 写「`params.known_facts` 是事实」。只影响你们的 Agent。
+- B：改 FastClaw 全局这两句。所有走 `/v1` 的调用方提示都变。
+
+推荐 A。
