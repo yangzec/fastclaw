@@ -321,6 +321,13 @@ const (
 	SSHAuthPassword = "password"
 )
 
+// Last-probe outcomes stored on SSHHostRecord.LastTestStatus.
+// Empty means the row was saved before test-on-add (or never probed).
+const (
+	SSHTestOK   = "ok"
+	SSHTestFail = "fail"
+)
+
 // ErrSSHHostNameTaken is returned when SaveSSHHost would collide on
 // the per-user unique name.
 var ErrSSHHostNameTaken = errors.New("ssh host name already exists")
@@ -340,10 +347,13 @@ type SSHHostRecord struct {
 	HostKey        string    `json:"-"`
 	DefaultCWD     string    `json:"defaultCwd,omitempty"`
 	Enabled        bool      `json:"enabled"`
-	IdleTimeoutSec int       `json:"idleTimeoutSec,omitempty"` // 0 = 2h default; <0 = until restart
-	PersistTmux    bool      `json:"persistTmux,omitempty"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	IdleTimeoutSec int        `json:"idleTimeoutSec,omitempty"` // 0 = 2h default; <0 = until restart
+	PersistTmux    bool       `json:"persistTmux,omitempty"`
+	LastTestStatus string     `json:"lastTestStatus,omitempty"`
+	LastTestError  string     `json:"lastTestError,omitempty"`
+	LastTestedAt   *time.Time `json:"lastTestedAt,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
 }
 
 // UserRecord is one row of the users table.

@@ -56,6 +56,21 @@ func TestSSHHostCRUD(t *testing.T) {
 		t.Fatalf("persist fields: %+v", again)
 	}
 
+	now := again.UpdatedAt
+	again.LastTestStatus = SSHTestOK
+	again.LastTestError = ""
+	again.LastTestedAt = &now
+	if err := st.SaveSSHHost(ctx, again); err != nil {
+		t.Fatal(err)
+	}
+	probed, err := st.GetSSHHost(ctx, got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probed.LastTestStatus != SSHTestOK || probed.LastTestedAt == nil {
+		t.Fatalf("last test fields: %+v", probed)
+	}
+
 	dup := *h
 	dup.ID = ""
 	if err := st.SaveSSHHost(ctx, &dup); !errors.Is(err, ErrSSHHostNameTaken) {

@@ -2275,6 +2275,9 @@ export interface SSHHost {
   tmuxSession?: string;
   connected?: boolean;
   lastUsedAt?: string;
+  lastTestStatus?: "ok" | "fail" | "";
+  lastTestError?: string;
+  lastTestedAt?: string;
   hasSecret?: boolean;
   hasHostKey?: boolean;
   createdAt?: string;
