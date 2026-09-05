@@ -84,7 +84,11 @@ Rules:
   - non-stream JSON also has `session_key` and `session_id`
 - Use either id as `?sessionId=` when listing or downloading files.
 - `params` is per-turn structured context. It is shown to the agent but not
-  persisted.
+  persisted. Cross-session memory (Basic Memory HTTP) is your backend:
+  resolve/create project `app-<user_id>`, search, put a short
+  `params.known_facts` list on the FastClaw call. See
+  `docs/upstream-basic-memory.md`. Do not mount BM MCP on the template
+  agent. FastClaw does not call BM.
 - Use `images` or `imageUrls` for image URLs/data URLs intended for vision
   models.
 - Use `attachments` for general files, with optional `name`.
