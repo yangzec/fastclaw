@@ -33,6 +33,10 @@ action on upgrade — read those notes before deploying.
   `docs/upstream-api.md` and the integration skill now describe the
   default website path (session key + chatter, no End-User).
 
+- **Website integration decision record.**
+  `docs/upstream-website-model.md` captures the agreed model (template
+  agents, session keys, params, billing owner, no End-User default).
+
 - **Guests cannot inventory an agent's config.** Non-owner chatters
   can no longer `exec` `cat` persona files or `SKILL.md`, see those
   names in `list_dir`, or receive `create_agent` / `configure_agent` /

@@ -9,7 +9,8 @@ usage metering, quota checks, and optional channels to FastClaw.
 
 Website-shaped products (one FastClaw account, template agents, session keys,
 chatter ids) should follow the **default path** below. Optional Basic Memory
-HTTP lives in `docs/upstream-basic-memory.md`. FastClaw does not call BM.
+HTTP: `docs/upstream-basic-memory.md` (FastClaw does not call BM). Decision
+record: `docs/upstream-website-model.md`.
 
 ## Which Interface To Use
 
