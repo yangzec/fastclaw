@@ -81,7 +81,7 @@ export default function OverviewPage() {
   // Non-admins only need to see their agents — gateway plumbing (provider
   // config, users, chats) is admin-only.
   const isAdmin = status?.isAdmin ?? false;
-  const listed = agents.length > 0 ? agents : status?.agents;
+  const listed = agents.length > 0 ? agents : status?.agents ?? [];
   const starter = firstAgent(listed);
   const firstChat = firstAgentChatPath(listed);
   const firstAgentName = starter?.name || "your agent";

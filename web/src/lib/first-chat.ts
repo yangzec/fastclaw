@@ -13,10 +13,10 @@ function createdAtMs(value: FirstChatAgent["createdAt"]): number {
 }
 
 /** Oldest created agent with an id. GET /api/agents is newest-first. */
-export function firstAgent<T extends FirstChatAgent>(
-  agents: Array<T | null | undefined> | null | undefined,
-): T | null {
-  const list = (agents ?? []).filter((agent): agent is T => Boolean(agent?.id));
+export function firstAgent(
+  agents: Array<FirstChatAgent | null | undefined> | null | undefined,
+): FirstChatAgent | null {
+  const list = (agents ?? []).filter((agent): agent is FirstChatAgent => Boolean(agent?.id));
   if (list.length === 0) return null;
   return [...list].sort((a, b) => {
     const aMs = createdAtMs(a.createdAt);
