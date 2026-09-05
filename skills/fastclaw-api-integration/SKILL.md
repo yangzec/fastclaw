@@ -46,6 +46,7 @@ POST /v1/chat/completions
 Authorization: Bearer <FASTCLAW_API_KEY>
 Content-Type: application/json
 X-Fastclaw-Session-Key: <deterministic-session-key>
+X-Fastclaw-Chatter: app:<your-user-id>
 ```
 
 Body:
@@ -54,11 +55,13 @@ Body:
 {
   "agent_id": "agt_...",
   "stream": true,
-  "user": "upstream-user-id",
   "messages": [
     { "role": "user", "content": "..." }
   ],
-  "params": {}
+  "params": {
+    "user_id": "app:<your-user-id>",
+    "display_name": "Ada"
+  }
 }
 ```
 
@@ -66,8 +69,12 @@ Rules:
 
 - `agent_id` selects the FastClaw agent. Body wins over
   `X-Fastclaw-Agent-ID`.
-- `user` is the upstream stable user ID. Body wins over
-  `X-Fastclaw-End-User`.
+- Chatter (USER.md / MEMORY.md) is `X-Fastclaw-Chatter` and/or
+  `params.user_id`. Both set and different → 400. Neither → `api-user`.
+  Not the same as `user` / `X-Fastclaw-End-User` (those switch UserSpace;
+  omit them on the website default path).
+- `user` is the upstream app_user switch. Body wins over
+  `X-Fastclaw-End-User`. Do not use it as chatter.
 - `X-Fastclaw-Session-Key` is YOUR conversation id. Use a deterministic
   key such as `<app>:<user-id>:<conversation-id>`. FastClaw stores a
   separate native `session_id` (`s-...`) for that row.

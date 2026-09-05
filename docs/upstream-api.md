@@ -112,16 +112,17 @@ POST /v1/chat/completions
 Authorization: Bearer fcak_...
 Content-Type: application/json
 X-Fastclaw-Session-Key: chat-upstream-user-123-default
+X-Fastclaw-Chatter: app:upstream-user-123
 
 {
   "agent_id": "agt_...",
   "model": "ignored-by-fastclaw-agent-config",
   "stream": true,
-  "user": "upstream-user-123",
   "messages": [
     { "role": "user", "content": "帮我总结今天的订单异常" }
   ],
   "params": {
+    "user_id": "app:upstream-user-123",
     "tenant_id": "tenant_1",
     "locale": "zh-CN"
   }
@@ -133,8 +134,8 @@ FastClaw extensions:
 | Field | Type | Purpose |
 |---|---|---|
 | `agent_id` | string | Agent to call. Body wins over header. |
-| `user` | string | Upstream end-user ID. Body wins over `X-Fastclaw-End-User`. |
-| `params` | object | Per-turn structured context shown to the agent. Not persisted. |
+| `user` | string | Switches the request to an app_user UserSpace. **Not** the chatter id. Website default path: omit this and `X-Fastclaw-End-User`. |
+| `params` | object | Per-turn structured context shown to the agent. Not persisted. Optional `params.user_id` (string) is also the chatter id when `X-Fastclaw-Chatter` is omitted. |
 | `images` | string[] | Image URLs/data URLs shown to vision models and materialized into workspace. |
 | `imageUrls` | string[] | Alias for `images`. |
 | `attachments` | array | General files materialized into workspace. Use for PDFs, docs, zips, etc. |
@@ -203,6 +204,32 @@ Streaming and non-streaming responses also set:
 
 `session_key` is your conversation address (ChatID). `session_id` is the
 stored session row. File APIs accept either as `?sessionId=`.
+
+### Chatter (memory identity)
+
+`USER.md`, `MEMORY.md`, and Auto-remember key on `(agent_id, chatter_user_id)`,
+not on the session key and not on the API-key owner.
+
+Send a stable id from your **backend** (never from the browser):
+
+- Header: `X-Fastclaw-Chatter: app:<your-user-id>`
+- and/or `params.user_id` with the same string
+
+Rules:
+
+- Neither set → chatter is `api-user` (legacy; all API visitors share one memory).
+- Only one set → that value.
+- Both set and equal → that value.
+- Both set and different → `400`.
+- `params.user_id` must be a string.
+- Body `user` / `X-Fastclaw-End-User` do **not** set chatter.
+
+Recommend prefixing (`app:u_123`) so website users do not collide with
+FastClaw console account ids or IM platform ids.
+
+This does not change billing or UserSpace. Cross-session facts for a
+website product still belong in your store (or basic-memory HTTP) and
+can be attached on `params` each turn.
 
 ### Session Key Guidance
 

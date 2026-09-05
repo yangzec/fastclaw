@@ -103,6 +103,13 @@ func (s *Session) SetChatter(uid string) {
 	s.mu.Unlock()
 }
 
+// ChatterUserID returns the last per-turn chatter bound by SetChatter.
+func (s *Session) ChatterUserID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.chatterUserID
+}
+
 // SetProviderModel binds the current LLM provider and model to this
 // Session so Append stamps them onto assistant messages. Called by the
 // agent loop alongside SetChatter.

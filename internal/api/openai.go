@@ -47,7 +47,10 @@ type chatCompletionRequest struct {
 	// a per-turn system message so the agent's LLM can honor it when
 	// calling tools (e.g. a third-party app's "model selector" +
 	// "settings" UI translate to {provider, aspect_ratio, n} here,
-	// rather than the user typing those into the prompt). Scope is
+	// rather than the user typing those into the prompt). Optional
+	// params.user_id (string) is also the chatter id for USER.md /
+	// MEMORY.md when X-Fastclaw-Chatter is omitted; if both are set
+	// they must match. Scope is
 	// per-request — params don't persist across turns. OpenAI clients
 	// that don't know about this field are unaffected (omitempty).
 	Params map[string]any `json:"params,omitempty"`
@@ -266,6 +269,14 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	chatter, chatterErr := resolveAPIChatter(r.Header.Get(ChatterHeader), req.Params)
+	if chatterErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": map[string]string{"message": chatterErr.Error(), "type": "invalid_request_error"},
+		})
+		return
+	}
+
 	// Materialize attached images into the agent's session workspace and
 	// prepend the same `[Attached: /workspace/<file>]` breadcrumb the web
 	// UI uses (web/src/app/agents/[id]/chat/page.tsx:639-645) so the wire
@@ -301,7 +312,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	msg := bus.InboundMessage{
 		Channel:   channel,
 		ChatID:    sessionKey,
-		UserID:    "api-user",
+		UserID:    chatter,
 		Text:      userText,
 		PeerKind:  "dm",
 		Params:    req.Params,
@@ -314,6 +325,7 @@ func (s *Server) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		"agent", ag.Name(),
 		"session", sessionKey,
 		"session_id", nativeSessionID,
+		"chatter", chatter,
 		"stream", req.Stream != nil && *req.Stream,
 	)
 
