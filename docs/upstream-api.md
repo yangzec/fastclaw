@@ -228,8 +228,9 @@ Recommend prefixing (`app:u_123`) so website users do not collide with
 FastClaw console account ids or IM platform ids.
 
 This does not change billing or UserSpace. Cross-session facts for a
-website product still belong in your store (or basic-memory HTTP) and
-can be attached on `params` each turn.
+website product are **not** stored by FastClaw. Use your backend plus
+optional Basic Memory HTTP, then attach a short list on `params` each
+turn. Recipe: `docs/upstream-basic-memory.md`. FastClaw does not call BM.
 
 ### Session Key Guidance
 
