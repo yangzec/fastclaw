@@ -7,6 +7,12 @@ action on upgrade — read those notes before deploying.
 
 ### Added
 
+- **SSH hosts test on add.** Creating or changing a host (address,
+  user, auth, cwd, credentials) probes with `echo ok` first. Failure
+  returns 400 and leaves the address book unchanged. Rows store
+  `last_test_status` / error / tested-at; the Settings list shows
+  live pool Connected plus last-probe Failed / Not tested. The
+  dialog primary action is **Test and save**.
 - **Feishu 待办 / 文档 read + confirm-to-edit.** Chat can list and
   get official tasks (`feishu_list_tasks`, `feishu_get_task`) and
   append text or retitle a 云文档 (`feishu_append_doc`). Completing

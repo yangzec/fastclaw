@@ -170,7 +170,7 @@ export default function SSHHostsPage() {
     const res = await testSSHHost(h.id);
     setTestingId("");
     setTestNote(res.ok ? `${h.name}: connected` : `${h.name}: ${res.error || "failed"}`);
-    if (res.ok) refresh();
+    refresh();
   }
 
   async function handleDisconnect(h: SSHHost) {
@@ -219,6 +219,12 @@ export default function SSHHostsPage() {
                     {h.authType === "key" ? "public key" : "password"}
                   </Badge>
                   {h.connected && <Badge>Connected</Badge>}
+                  {h.lastTestStatus === "fail" && (
+                    <Badge variant="destructive">Failed</Badge>
+                  )}
+                  {!h.lastTestStatus && (
+                    <Badge variant="outline">Not tested</Badge>
+                  )}
                   {h.persistTmux && (
                     <Badge variant="outline">{h.tmuxSession || "tmux"}</Badge>
                   )}
@@ -228,6 +234,9 @@ export default function SSHHostsPage() {
                   {h.username}@{h.host}:{h.port}
                   {h.defaultCwd ? ` · ${h.defaultCwd}` : ""}
                   {` · idle ${IDLE_LABELS[String(h.idleTimeoutSec ?? 7200)] || `${h.idleTimeoutSec}s`}`}
+                  {h.lastTestStatus === "fail" && h.lastTestError
+                    ? ` · ${h.lastTestError}`
+                    : ""}
                 </p>
               </div>
               <div className="flex items-center gap-1">
@@ -269,9 +278,9 @@ export default function SSHHostsPage() {
             <DialogHeader>
               <DialogTitle>{editing ? "Edit SSH host" : "Add SSH host"}</DialogTitle>
               <DialogDescription>
-                The agent calls this host by the alias and reuses the SSH
-                connection. Leave secret fields blank when editing to keep the
-                saved credential.
+                FastClaw tests the login before saving. A failed probe
+                does not add or overwrite a host. Leave secret fields
+                blank when editing to keep the saved credential.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-3 py-4">
@@ -427,7 +436,7 @@ export default function SSHHostsPage() {
             </div>
             <DialogFooter>
               <Button type="submit" disabled={saving}>
-                {saving ? "Saving…" : "Save"}
+                {saving ? "Testing…" : "Test and save"}
               </Button>
             </DialogFooter>
           </form>

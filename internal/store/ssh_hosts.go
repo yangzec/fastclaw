@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	cryptorand "crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -10,7 +11,7 @@ import (
 	"time"
 )
 
-const sshHostSelectCols = `id, user_id, name, host, port, username, auth_type, secret_enc, host_key, default_cwd, enabled, idle_timeout_sec, persist_tmux, created_at, updated_at`
+const sshHostSelectCols = `id, user_id, name, host, port, username, auth_type, secret_enc, host_key, default_cwd, enabled, idle_timeout_sec, persist_tmux, last_test_status, last_test_error, last_tested_at, created_at, updated_at`
 
 func (d *DBStore) ListSSHHosts(ctx context.Context, userID string) ([]SSHHostRecord, error) {
 	rows, err := d.db.QueryContext(ctx,
@@ -97,27 +98,37 @@ func (d *DBStore) SaveSSHHost(ctx context.Context, h *SSHHostRecord) error {
 	if h.PersistTmux {
 		tmuxInt = 1
 	}
+	var lastTested any
+	if h.LastTestedAt != nil {
+		lastTested = h.LastTestedAt.UTC()
+	}
 	if d.dialect == "postgres" {
 		_, err := d.db.ExecContext(ctx,
-			`INSERT INTO ssh_hosts (id, user_id, name, host, port, username, auth_type, secret_enc, host_key, default_cwd, enabled, idle_timeout_sec, persist_tmux, created_at, updated_at)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+			`INSERT INTO ssh_hosts (id, user_id, name, host, port, username, auth_type, secret_enc, host_key, default_cwd, enabled, idle_timeout_sec, persist_tmux, last_test_status, last_test_error, last_tested_at, created_at, updated_at)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 			 ON CONFLICT (id) DO UPDATE SET
 			   name=EXCLUDED.name, host=EXCLUDED.host, port=EXCLUDED.port, username=EXCLUDED.username,
 			   auth_type=EXCLUDED.auth_type, secret_enc=EXCLUDED.secret_enc, host_key=EXCLUDED.host_key,
 			   default_cwd=EXCLUDED.default_cwd, enabled=EXCLUDED.enabled, idle_timeout_sec=EXCLUDED.idle_timeout_sec,
-			   persist_tmux=EXCLUDED.persist_tmux, updated_at=EXCLUDED.updated_at`,
-			h.ID, h.UserID, h.Name, h.Host, h.Port, h.Username, h.AuthType, h.SecretEnc, h.HostKey, h.DefaultCWD, enabledInt, h.IdleTimeoutSec, tmuxInt, h.CreatedAt, h.UpdatedAt)
+			   persist_tmux=EXCLUDED.persist_tmux, last_test_status=EXCLUDED.last_test_status,
+			   last_test_error=EXCLUDED.last_test_error, last_tested_at=EXCLUDED.last_tested_at,
+			   updated_at=EXCLUDED.updated_at`,
+			h.ID, h.UserID, h.Name, h.Host, h.Port, h.Username, h.AuthType, h.SecretEnc, h.HostKey, h.DefaultCWD, enabledInt, h.IdleTimeoutSec, tmuxInt,
+			h.LastTestStatus, h.LastTestError, lastTested, h.CreatedAt, h.UpdatedAt)
 		return err
 	}
 	_, err := d.db.ExecContext(ctx,
-		`INSERT INTO ssh_hosts (id, user_id, name, host, port, username, auth_type, secret_enc, host_key, default_cwd, enabled, idle_timeout_sec, persist_tmux, created_at, updated_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO ssh_hosts (id, user_id, name, host, port, username, auth_type, secret_enc, host_key, default_cwd, enabled, idle_timeout_sec, persist_tmux, last_test_status, last_test_error, last_tested_at, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT (id) DO UPDATE SET
 		   name=excluded.name, host=excluded.host, port=excluded.port, username=excluded.username,
 		   auth_type=excluded.auth_type, secret_enc=excluded.secret_enc, host_key=excluded.host_key,
 		   default_cwd=excluded.default_cwd, enabled=excluded.enabled, idle_timeout_sec=excluded.idle_timeout_sec,
-		   persist_tmux=excluded.persist_tmux, updated_at=excluded.updated_at`,
-		h.ID, h.UserID, h.Name, h.Host, h.Port, h.Username, h.AuthType, h.SecretEnc, h.HostKey, h.DefaultCWD, enabledInt, h.IdleTimeoutSec, tmuxInt, h.CreatedAt, h.UpdatedAt)
+		   persist_tmux=excluded.persist_tmux, last_test_status=excluded.last_test_status,
+		   last_test_error=excluded.last_test_error, last_tested_at=excluded.last_tested_at,
+		   updated_at=excluded.updated_at`,
+		h.ID, h.UserID, h.Name, h.Host, h.Port, h.Username, h.AuthType, h.SecretEnc, h.HostKey, h.DefaultCWD, enabledInt, h.IdleTimeoutSec, tmuxInt,
+		h.LastTestStatus, h.LastTestError, lastTested, h.CreatedAt, h.UpdatedAt)
 	return err
 }
 
@@ -149,13 +160,19 @@ func scanSSHHost(row rowScanner) (*SSHHostRecord, error) {
 	var h SSHHostRecord
 	var enabledInt int
 	var tmuxInt int
+	var lastTested sql.NullTime
 	if err := row.Scan(
 		&h.ID, &h.UserID, &h.Name, &h.Host, &h.Port, &h.Username, &h.AuthType,
-		&h.SecretEnc, &h.HostKey, &h.DefaultCWD, &enabledInt, &h.IdleTimeoutSec, &tmuxInt, &h.CreatedAt, &h.UpdatedAt,
+		&h.SecretEnc, &h.HostKey, &h.DefaultCWD, &enabledInt, &h.IdleTimeoutSec, &tmuxInt,
+		&h.LastTestStatus, &h.LastTestError, &lastTested, &h.CreatedAt, &h.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
 	h.Enabled = enabledInt != 0
 	h.PersistTmux = tmuxInt != 0
+	if lastTested.Valid {
+		t := lastTested.Time.UTC()
+		h.LastTestedAt = &t
+	}
 	return &h, nil
 }

@@ -184,6 +184,9 @@ func (d *DBStore) Migrate(ctx context.Context) error {
 	if err := d.migrateSSHHostsPersist(ctx); err != nil {
 		return fmt.Errorf("migrate ssh_hosts persist cols: %w", err)
 	}
+	if err := d.migrateSSHHostsAddTestStatus(ctx); err != nil {
+		return fmt.Errorf("migrate ssh_hosts last-test cols: %w", err)
+	}
 	return nil
 }
 
@@ -1013,6 +1016,41 @@ func (d *DBStore) migrateSSHHostsPersist(ctx context.Context) error {
 		if _, err := d.db.ExecContext(ctx,
 			`ALTER TABLE ssh_hosts ADD COLUMN persist_tmux INTEGER NOT NULL DEFAULT 1`); err != nil {
 			return fmt.Errorf("add persist_tmux: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateSSHHostsAddTestStatus adds last-probe columns to existing
+// hosts that were saved before test-on-add. Empty last_test_status
+// means "never probed" so the UI can show Not tested instead of
+// inventing a green check.
+func (d *DBStore) migrateSSHHostsAddTestStatus(ctx context.Context) error {
+	exists, err := d.tableExists(ctx, "ssh_hosts")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	type col struct {
+		name string
+		ddl  string
+	}
+	for _, c := range []col{
+		{"last_test_status", `ALTER TABLE ssh_hosts ADD COLUMN last_test_status TEXT NOT NULL DEFAULT ''`},
+		{"last_test_error", `ALTER TABLE ssh_hosts ADD COLUMN last_test_error TEXT NOT NULL DEFAULT ''`},
+		{"last_tested_at", `ALTER TABLE ssh_hosts ADD COLUMN last_tested_at TIMESTAMP`},
+	} {
+		has, err := d.tableHasColumn(ctx, "ssh_hosts", c.name)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := d.db.ExecContext(ctx, c.ddl); err != nil {
+			return fmt.Errorf("add %s: %w", c.name, err)
 		}
 	}
 	return nil
@@ -2040,6 +2078,9 @@ func (d *DBStore) migrationSQL() []string {
 			enabled INTEGER NOT NULL DEFAULT 1,
 			idle_timeout_sec INTEGER NOT NULL DEFAULT 7200,
 			persist_tmux INTEGER NOT NULL DEFAULT 1,
+			last_test_status TEXT NOT NULL DEFAULT '',
+			last_test_error TEXT NOT NULL DEFAULT '',
+			last_tested_at TIMESTAMP,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE (user_id, name)
