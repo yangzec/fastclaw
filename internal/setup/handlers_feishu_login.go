@@ -443,6 +443,8 @@ var (
 		"task:task:read",
 		"task:task:write",
 		"task:task:writeonly",
+		"task:task:readonly",
+		"task:task",
 		"application:app_slash_command:read",
 		"application:app_slash_command:write",
 	}

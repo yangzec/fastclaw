@@ -226,3 +226,75 @@ func TestFeishuTaskGUID(t *testing.T) {
 		t.Fatalf("plain %q", got)
 	}
 }
+
+func TestFeishuOpenAPIListTasksUsesV1AppCreated(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "tenant_access_token") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0, "tenant_access_token": "tok_fs", "expire": 7200,
+			})
+			return
+		}
+		gotPath = r.URL.Path
+		if r.URL.Query().Get("task_completed") != "false" {
+			t.Errorf("task_completed = %q", r.URL.Query().Get("task_completed"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 0,
+			"data": map[string]any{
+				"items": []any{
+					map[string]any{
+						"id":            "guid-mine",
+						"summary":       "写周报",
+						"description":   "周五交",
+						"complete_time": "0",
+						"due":           map[string]any{"time": "1773462000", "is_all_day": true},
+						"collaborators": []any{map[string]any{"id": "ou_me"}},
+					},
+					map[string]any{
+						"id":               "guid-other",
+						"summary":          "别人的",
+						"complete_time":    "0",
+						"collaborator_ids": []any{"ou_other"},
+					},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewFeishuOpenAPI("cli_app", "sec", srv.URL)
+	open := false
+	listed, err := c.ListTasks(context.Background(), &open, 20)
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if !strings.Contains(gotPath, "/task/v1/tasks") {
+		t.Fatalf("path = %s, want v1", gotPath)
+	}
+	if len(listed) != 2 || listed[0].GUID != "guid-mine" || listed[0].DueUnix != 1773462000 {
+		t.Fatalf("listed = %#v", listed)
+	}
+	if listed[0].Completed || listed[0].Status != "todo" {
+		t.Fatalf("status = %#v", listed[0])
+	}
+	mine := FilterTasksByAssignee(listed, "ou_me")
+	if len(mine) != 1 || mine[0].GUID != "guid-mine" {
+		t.Fatalf("filter = %#v", mine)
+	}
+}
+
+func TestFilterTasksByAssigneeKeepsUnassigned(t *testing.T) {
+	items := []FeishuTaskInfo{
+		{GUID: "a", Assignees: nil},
+		{GUID: "b", Assignees: []string{"ou_x"}},
+	}
+	got := FilterTasksByAssignee(items, "ou_me")
+	if len(got) != 1 || got[0].GUID != "a" {
+		t.Fatalf("got %#v", got)
+	}
+	if got := FilterTasksByAssignee(items, ""); len(got) != 2 {
+		t.Fatalf("empty filter %#v", got)
+	}
+}

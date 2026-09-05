@@ -153,7 +153,7 @@ func RegisterFeishuOfficeTools(r *Registry, st store.Store, agentID string) {
 	)
 
 	r.Register("feishu_list_tasks",
-		"List official Feishu / Lark tasks the connected bot can see (type=my_tasks). Use this to read 待办. completed empty = all, true = done only, false = open only. Personal todos the user created in the Feishu app may not appear — use feishu_get_task with a guid or todo link.",
+		"List official Feishu / Lark todos this bot created (飞书任务中心，应用创建的待办). Use this to read 待办. completed empty = all, true = done only, false = open only. On Feishu chat, results are filtered to the current sender's assignments. Personal todos the user created themselves in the Feishu app are not visible with a bot token — use feishu_get_task with a guid or todo link.",
 		map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -444,8 +444,11 @@ func makeFeishuListTasks(st store.Store, r *Registry, agentID string) ToolFunc {
 		if err != nil {
 			return "", err
 		}
+		if me := feishuSenderOpenID(ctx, st, r); me != "" {
+			items = channels.FilterTasksByAssignee(items, me)
+		}
 		if len(items) == 0 {
-			return "No Feishu tasks visible to this bot (my_tasks). If you have a todo link or guid, use feishu_get_task.", nil
+			return "No Feishu tasks this bot created. feishu_list_tasks uses the app token and lists todos FastClaw wrote (任务中心「应用创建」). Personal Task Center items the user made in the Feishu app are not visible — paste a todo link into feishu_get_task. If listing fails with a missing-scope error, disconnect the bot on Channels and scan again.", nil
 		}
 		var b strings.Builder
 		fmt.Fprintf(&b, "%d Feishu task(s):\n", len(items))
@@ -685,6 +688,9 @@ func formatFeishuTask(t channels.FeishuTaskInfo) string {
 			when = time.Unix(t.DueUnix, 0).UTC().Format("2006-01-02 15:04")
 		}
 		line += " due " + when
+	}
+	if len(t.Assignees) > 0 {
+		line += " assignees " + strings.Join(t.Assignees, ",")
 	}
 	if u := strings.TrimSpace(t.URL); u != "" {
 		line += " " + u

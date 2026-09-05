@@ -37,6 +37,16 @@ func TestFeishuCreateEventInvitesSender(t *testing.T) {
 			})
 		case strings.Contains(r.URL.Path, "/attendees"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0})
+		case strings.HasSuffix(r.URL.Path, "/task/v1/tasks") && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{"items": []any{
+					map[string]any{
+						"id": "tg_1", "summary": "写周报", "complete_time": "0",
+						"collaborators": []any{map[string]any{"id": "ou_sender"}},
+					},
+				}},
+			})
 		case strings.HasSuffix(r.URL.Path, "/task/v2/tasks") && r.Method == http.MethodPost:
 			body, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(body, &gotTask)

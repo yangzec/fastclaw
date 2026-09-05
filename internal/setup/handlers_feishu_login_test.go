@@ -309,6 +309,8 @@ func TestFeishuRegistrationOptionsDefaults(t *testing.T) {
 		"calendar:calendar.event:create",
 		"task:task:read",
 		"task:task:write",
+		"task:task:readonly",
+		"task:task",
 		"docx:document:create",
 		"docs:permission.member:create",
 	} {

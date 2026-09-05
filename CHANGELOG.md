@@ -12,8 +12,10 @@ action on upgrade — read those notes before deploying.
   append text or retitle a 云文档 (`feishu_append_doc`). Completing
   or updating a task and modifying a doc require a two-step
   `confirm_token`: first call only previews, the second applies
-  after the user agrees. QR login now also requests `task:task:read`.
-  Existing bots still need a rescan for new scopes.
+  after the user agrees.   QR login now also requests `task:task:read` plus the v1
+  `task:task` / `task:task:readonly` scopes so the bot can list
+  todos it created. Existing bots still need a rescan for new
+  scopes.
 
 ### Changed
 
@@ -38,6 +40,12 @@ action on upgrade — read those notes before deploying.
   open the current agent. Feishu / WeCom cards stay in English.
 
 ### Fixed
+
+- **Feishu `feishu_list_tasks` no longer returns an empty 待办 list.**
+  Official task v2 list (`type=my_tasks`) requires a user token.
+  FastClaw only has the bot's tenant token, so "我负责的" was always
+  empty. Listing now uses task v1 (app-created tasks) and, on Feishu
+  chat, filters to the current sender's assignments.
 
 - **Chat replies no longer leak literal ` ``` `.** Models often open
   a fence and never close it, wrap the whole answer in ` ```markdown `,

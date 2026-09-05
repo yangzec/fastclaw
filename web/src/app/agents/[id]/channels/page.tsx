@@ -431,8 +431,9 @@ function ConnectedCard({
             </div>
             <p className="text-xs text-muted-foreground">
               Chat writes Feishu calendar events, tasks, and docs with this bot.
-              Already connected before this update? Disconnect and scan
-              again so the new scopes take effect.
+              Task lists are the todos this bot created, not the whole
+              personal Task Center. Already connected before this update?
+              Disconnect and scan again so the new scopes take effect.
             </p>
           </div>
         )}
