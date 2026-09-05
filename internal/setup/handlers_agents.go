@@ -297,7 +297,7 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 			"id":          ar.ID,
 			"name":        ar.Name,
 			"description": desc,
-			"model":       s.agentScopeModel(r, ar.ID),
+			"model":       s.effectiveAgentModel(r, uid, ar.ID),
 			"avatarUrl":   s.agentAvatarURL(r.Context(), ar.ID),
 			"createdAt":   ar.CreatedAt,
 			"userId":      ar.UserID,
@@ -438,6 +438,13 @@ func (s *Server) inheritAgentModel(r *http.Request, ownerUserID, skipID string) 
 		}
 	}
 	return pickInheritedModel(userDefault, siblings, skipID)
+}
+
+func (s *Server) effectiveAgentModel(r *http.Request, ownerUserID, agentID string) string {
+	if m := strings.TrimSpace(s.agentScopeModel(r, agentID)); m != "" {
+		return m
+	}
+	return s.inheritAgentModel(r, ownerUserID, agentID)
 }
 
 // requireUserOrAdmin gates the /api/users/{id}/* nested routes:
@@ -786,7 +793,7 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 			"description":      desc,
 			"userId":           rec.UserID,
 			"role":             role,
-			"model":            s.agentScopeModel(r, rec.ID),
+			"model":            s.effectiveAgentModel(r, rec.UserID, rec.ID),
 			"promptMode":       s.agentScopePromptMode(r, rec.ID),
 			"splitReplies":     s.agentScopeSplitReplies(r, rec.ID),
 			"autoPersist":      s.agentScopeAutoPersist(r, rec.ID),

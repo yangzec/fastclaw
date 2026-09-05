@@ -21,7 +21,11 @@ action on upgrade — read those notes before deploying.
   Customize tabs hint what to write. Chat follow-up controls stay in
   English. The composer model picker no longer crashes (Base UI #31).
   A second agent inherits the default / oldest sibling model so it
-  talks without another Models visit.
+  talks without another Models visit. Existing agents without a
+  model do the same at chat time. Settings groups into Talk / Teach
+  / Connect / Run. Empty chat has Adjust this agent. Skills empty
+  state offers three featured installs. `/cron/` and `/channels/`
+  open the current agent. Feishu / WeCom cards stay in English.
 
 ### Fixed
 

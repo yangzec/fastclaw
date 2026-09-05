@@ -72,6 +72,13 @@ const AGENT_TABS: Array<{ id: AgentSettingsTab; label: string; icon: TabIcon }> 
   { id: "usage", label: "Token Usage", icon: CoinsIcon },
 ];
 
+const AGENT_SECTIONS: Array<{ label: string; ids: AgentSettingsTab[] }> = [
+  { label: "Talk", ids: ["profile", "models"] },
+  { label: "Teach", ids: ["customize", "knowledge", "skills"] },
+  { label: "Connect", ids: ["channels", "mcp", "plugins"] },
+  { label: "Run", ids: ["scheduler", "context", "usage"] },
+];
+
 // Runtime intentionally lives only on the standalone /settings/runtime
 // page (super_admin-gated) — it's a deployment-wide knob, not the kind
 // of thing the average chatter wants in their per-agent dialog.
@@ -183,19 +190,26 @@ export function AgentSettingsDialog({
         )}
       >
         <aside className="grid shrink-0 grid-cols-3 gap-1 border-b bg-muted/40 p-2 pr-14 pt-[max(0.5rem,env(safe-area-inset-top,0px))] md:flex md:flex-col md:overflow-y-auto md:border-b-0 md:border-r md:p-3 md:pt-3 md:pr-3">
-          {agentTabs.length > 0 && (
-            <>
-              <SectionLabel>Agent</SectionLabel>
-              {agentTabs.map((t) => (
-                <TabButton
-                  key={t.id}
-                  tab={t}
-                  active={tab === t.id}
-                  onSelect={selectTab}
-                />
-              ))}
-            </>
-          )}
+          {agentTabs.length > 0 &&
+            AGENT_SECTIONS.map((section) => {
+              const tabs = agentTabs.filter((t) => section.ids.includes(t.id));
+              if (tabs.length === 0) return null;
+              return (
+                <div key={section.label} className="contents md:block">
+                  <SectionLabel className={section.label === "Talk" ? undefined : "md:mt-3"}>
+                    {section.label}
+                  </SectionLabel>
+                  {tabs.map((t) => (
+                    <TabButton
+                      key={t.id}
+                      tab={t}
+                      active={tab === t.id}
+                      onSelect={selectTab}
+                    />
+                  ))}
+                </div>
+              );
+            })}
           <SectionLabel className={agentTabs.length > 0 ? "md:mt-3" : undefined}>
             User
           </SectionLabel>

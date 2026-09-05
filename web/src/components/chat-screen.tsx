@@ -2533,6 +2533,21 @@ export function ChatScreen() {
                     ))}
                   </div>
                 )}
+                {selectedAgent && agentRole === "owner" && !isActAsView && (
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                      onClick={() => {
+                        window.dispatchEvent(
+                          new CustomEvent("fastclaw:open-settings", { detail: { tab: "profile" } }),
+                        );
+                      }}
+                    >
+                      Adjust this agent
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
