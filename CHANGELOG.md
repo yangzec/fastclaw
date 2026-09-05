@@ -21,6 +21,12 @@ action on upgrade — read those notes before deploying.
 
 ### Changed
 
+- **Website integration decision record.**
+  `docs/upstream-website-model.md` captures the agreed model (template
+  agents, session keys, params, billing owner, no End-User default) and
+  the open choices for chatter plumbing / basic-memory. Pointer from
+  `docs/upstream-api.md`.
+
 - **Guests cannot inventory an agent's config.** Non-owner chatters
   can no longer `exec` `cat` persona files or `SKILL.md`, see those
   names in `list_dir`, or receive `create_agent` / `configure_agent` /

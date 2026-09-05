@@ -7,6 +7,11 @@ Use this document when building a SaaS, bot, marketplace, or workflow product
 that owns its own users but delegates agent execution, tools, memory, usage
 metering, quota checks, and optional channels to FastClaw.
 
+Website-shaped products (one FastClaw account, template agents, session-key
+isolation, app-owned memory) should also read
+`docs/upstream-website-model.md` — that page is the decision record for
+identity, params, sync, and basic-memory. This file stays the HTTP contract.
+
 ## Which Interface To Use
 
 | Need | Interface | Notes |
