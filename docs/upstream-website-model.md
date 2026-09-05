@@ -335,6 +335,20 @@ resolve(name) → 有则用
 
 挂 MCP 才能 list 全站 —— 这条继续关死。
 
+### 8.3c 自己写个 MCP 封装，还是继续用 API？
+
+分清 **谁调用** 这个封装：
+
+| 封装挂在哪 | 行不行 | 说明 |
+|---|---|---|
+| 应用后端当客户端（stdio/HTTP 调你们的包装，或直接调 BM REST） | 行 | 和「用 API」是同一架构。模型仍只看见 `params`，list 不到全站 |
+| 挂到 **共享模板 Agent** 上，让模型 `write_note` | 现在不行 | FastClaw 每个 Agent **一份** MCP 进程，`CallTool` **不传** chatter。包装进程里若能 list/切 project，模型仍可能串库 |
+
+所以：要封装可以，封装给 **你们后端** 用（REST 或自建 MCP 当库都无所谓）。  
+**不要** 把包装 MCP 挂上模板 Agent。那不是「用 MCP 就隔离了」，除非以后 FastClaw 每次 CallTool 注入 chatter，且包装 **强制** 只用这一个 project、对模型隐藏 list——那是另开的需求，不是现在的方案。
+
+**继续用 API（应用 HTTP + `params`）。** 自己写 MCP 不增加隔离，只换了调用方式。
+
 ### 8.4 「现在不就是 IM 和控制台同一份吗？」
 
 **默认不是。** 控制台 Context 页写得很清楚：Shared identity **默认关**，「each channel gets its own isolated session and memory」。
@@ -361,3 +375,5 @@ resolve(name) → 有则用
 | 影响刚才的决策吗 | **不影响。** 产品 API、`app:<user_id>`、BM HTTP、`params`、owner 账单、不发 End-User、模板关 Auto-remember / 不装 MCP，全部不动。Shared identity 只作用于该 Agent 的 IM ↔ 控制台 |
 
 不要在 **对外模板 Agent** 上开：以后若对公众开放 IM，所有发言者会被写成主人，记忆全串。模板继续关 Shared identity、关 Auto-remember。
+
+**是的：你刚才要的「控制台和 IM 同一份记忆」，现在已经有，开开关即满足，不用改 FastClaw。** 默认关着，所以会误以为没有。运营者 Agent 打开即可；不是全局已开通。
