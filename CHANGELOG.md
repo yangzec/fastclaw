@@ -27,7 +27,8 @@ action on upgrade — read those notes before deploying.
 - **Insert cancels the in-flight provider stream.** Queue still waits
   for the turn; Insert now aborts the current completion, keeps the
   partial assistant text, and turns around in the same turn. Phones
-  show both Queue and Insert next to Stop.
+  show both Queue and Insert next to Stop. Last tokens on the cut
+  bubble are not dropped when Insert races the LLM cancel.
 
 ### Changed
 
