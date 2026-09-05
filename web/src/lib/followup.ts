@@ -1,5 +1,5 @@
 // Codex-style follow-up: while a turn is running, Enter queues by
-// default and the user can opt into same-turn steer ("插入").
+// default and the user can opt into same-turn steer ("Insert").
 
 export type FollowupBehavior = "queue" | "steer";
 

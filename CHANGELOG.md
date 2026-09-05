@@ -14,7 +14,12 @@ action on upgrade — read those notes before deploying.
   opens the browser and waits. The wizard is one screen (account +
   key) and **Start chatting** lands in the first agent. Login, `/`,
   and signup do the same. Empty chat offers three click-to-send
-  starters. The first agent is named `Assistant`.
+  starters. The first agent is named `Assistant`. Login and Overview
+  pick the **oldest** agent (API lists newest first). Overview shows
+  that agent's model and links Model / Tools / Runtime to the pages
+  that change them. Scheduler empty state says to ask in chat.
+  Customize tabs hint what to write. Chat follow-up controls stay in
+  English. The composer model picker no longer crashes (Base UI #31).
 
 ### Fixed
 

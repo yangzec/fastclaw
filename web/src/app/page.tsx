@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getStatus, getMe, login as loginApi } from "@/lib/api";
-import { firstAgentChatPath } from "@/lib/first-chat";
 import { resolveFirstChatPath } from "@/lib/first-chat-nav";
 import { logout } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
@@ -32,7 +31,7 @@ export default function RootPage() {
         }
         const me = await getMe().catch(() => null);
         if (me?.ok && me.user) {
-          router.replace(firstAgentChatPath(status.agents) ?? "/overview/");
+          router.replace(await resolveFirstChatPath());
         } else {
           setShowLogin(true);
           setLoading(false);

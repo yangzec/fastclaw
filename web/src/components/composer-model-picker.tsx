@@ -5,6 +5,7 @@ import { Check, ChevronDown } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -108,26 +109,30 @@ export function ComposerModelPicker({ agentId, canSwitch, compact, onChanged }: 
         <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-64 w-72" side="top">
-        <DropdownMenuLabel>This agent&apos;s model</DropdownMenuLabel>
+        <div className="px-1.5 py-1 text-xs font-medium text-muted-foreground">
+          This agent&apos;s model
+        </div>
         {groups.map(([group, items], gi) => (
           <div key={group}>
             {gi > 0 ? <DropdownMenuSeparator /> : null}
-            <DropdownMenuLabel>{group}</DropdownMenuLabel>
-            {items.map((opt) => (
-              <DropdownMenuItem
-                key={opt.value}
-                onClick={() => void pick(opt.value)}
-                className="justify-between gap-3"
-              >
-                <span className="flex min-w-0 items-center gap-1.5">
-                  {opt.value === model ? <Check className="h-3.5 w-3.5" /> : <span className="w-3.5" />}
-                  <span className="truncate">{opt.name || opt.id}</span>
-                </span>
-                <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground">
-                  {formatTokenCount(opt.contextWindow || presetContextWindow(opt.id))}
-                </span>
-              </DropdownMenuItem>
-            ))}
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>{group}</DropdownMenuLabel>
+              {items.map((opt) => (
+                <DropdownMenuItem
+                  key={opt.value}
+                  onClick={() => void pick(opt.value)}
+                  className="justify-between gap-3"
+                >
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    {opt.value === model ? <Check className="h-3.5 w-3.5" /> : <span className="w-3.5" />}
+                    <span className="truncate">{opt.name || opt.id}</span>
+                  </span>
+                  <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground">
+                    {formatTokenCount(opt.contextWindow || presetContextWindow(opt.id))}
+                  </span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
           </div>
         ))}
       </DropdownMenuContent>

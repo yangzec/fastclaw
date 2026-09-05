@@ -52,6 +52,7 @@ export interface AgentInfo {
   id: string;
   name?: string;
   model: string;
+  createdAt?: string;
   workspace: string;
 }
 
@@ -91,6 +92,7 @@ export interface AgentDetail {
   // own model/providers or the agent doesn't work for them.
   shareModelConfig?: boolean;
   model: string;
+  createdAt?: string;
   workspace?: string;
   maxTokens?: number;
   temperature?: number;
