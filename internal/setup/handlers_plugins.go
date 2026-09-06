@@ -2,11 +2,14 @@ package setup
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/fastclaw-ai/fastclaw/internal/config"
+	"github.com/fastclaw-ai/fastclaw/internal/plugin"
 )
 
 // --- Plugins ---
@@ -203,4 +206,91 @@ func (s *Server) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleInstallPlugin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Source string `json:"source"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Source) == "" {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "source required"})
+		return
+	}
+	source := strings.TrimSpace(req.Source)
+	if err := plugin.RejectLocalSource(source); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+
+	homeDir, err := config.HomeDir()
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	pluginsDir := filepath.Join(homeDir, "plugins")
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+
+	res, err := plugin.Install(source, pluginsDir)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"ok":           true,
+		"id":           res.ID,
+		"name":         res.Name,
+		"needsRestart": res.NeedsRestart,
+	})
+}
+
+func (s *Server) handleUploadPlugin(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(plugin.MaxUploadBytes); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	file, hdr, err := r.FormFile("file")
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "file field required"})
+		return
+	}
+	defer file.Close()
+	if hdr.Size > plugin.MaxUploadBytes {
+		jsonResponse(w, http.StatusRequestEntityTooLarge, map[string]any{"ok": false, "error": "zip too large"})
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(file, plugin.MaxUploadBytes+1))
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if int64(len(data)) > plugin.MaxUploadBytes {
+		jsonResponse(w, http.StatusRequestEntityTooLarge, map[string]any{"ok": false, "error": "zip too large"})
+		return
+	}
+
+	homeDir, err := config.HomeDir()
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	pluginsDir := filepath.Join(homeDir, "plugins")
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+
+	res, err := plugin.InstallFromZip(data, pluginsDir)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"ok":           true,
+		"id":           res.ID,
+		"name":         res.Name,
+		"needsRestart": res.NeedsRestart,
+	})
 }

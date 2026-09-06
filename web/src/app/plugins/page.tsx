@@ -4,8 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { Plug } from "lucide-react";
+import { Download, Plug, Upload } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { PluginsEmptyState } from "@/components/plugins-empty-state";
+import { InstallPluginDialog, UploadPluginDialog } from "@/components/plugins-install-dialogs";
 import {
   getConfig,
   getPlugins,
@@ -22,9 +24,12 @@ export default function GlobalPluginsPage() {
   const [masterSaving, setMasterSaving] = useState(false);
   const [saving, setSaving] = useState<Record<string, boolean>>({});
   const [inheritSaving, setInheritSaving] = useState<Record<string, boolean>>({});
+  const [installOpen, setInstallOpen] = useState(false);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [restartHint, setRestartHint] = useState(false);
 
-  const fetchAll = useCallback(async () => {
-    setLoading(true);
+  const fetchAll = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     try {
       const [list, cfg] = await Promise.all([
         getPlugins().catch(() => [] as PluginInfo[]),
@@ -33,7 +38,7 @@ export default function GlobalPluginsPage() {
       setPlugins(Array.isArray(list) ? list : []);
       setSystemEnabled(cfg?.plugins?.enabled === true);
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, []);
 
@@ -110,14 +115,31 @@ export default function GlobalPluginsPage() {
 
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
-      <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Plugins</h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          Install-wide hook and tool plugins. Enabled starts the process.
-          Share with agents attaches hooks automatically; otherwise agents
-          opt in from their Plugins tab.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-semibold tracking-tight">Plugins</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Install-wide hook and tool plugins. Enabled starts the process.
+            Share with agents attaches hooks automatically; otherwise agents
+            opt in from their Plugins tab.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <Button variant="outline" onClick={() => setUploadOpen(true)}>
+            <Upload className="h-4 w-4 mr-2" />
+            Upload
+          </Button>
+          <Button onClick={() => setInstallOpen(true)}>
+            <Download className="h-4 w-4 mr-2" />
+            Install
+          </Button>
+        </div>
       </div>
+      {restartHint && (
+        <p className="text-xs text-muted-foreground rounded-md border bg-muted/30 px-3 py-2">
+          Plugin files are on disk. Restart FastClaw if a newly installed plugin does not show as running yet.
+        </p>
+      )}
 
       <div className="flex items-center justify-between rounded-lg border bg-card p-4">
         <div className="min-w-0 pr-4">
@@ -136,7 +158,7 @@ export default function GlobalPluginsPage() {
       </div>
 
       {plugins.length === 0 ? (
-        <PluginsEmptyState title="No plugins yet" />
+        <PluginsEmptyState title="No plugins yet" onInstall={() => setInstallOpen(true)} onUpload={() => setUploadOpen(true)} />
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {plugins.map((p) => {
@@ -209,6 +231,22 @@ export default function GlobalPluginsPage() {
           })}
         </div>
       )}
+      <InstallPluginDialog
+        open={installOpen}
+        onOpenChange={setInstallOpen}
+        onInstalled={(info) => {
+          if (info?.needsRestart) setRestartHint(true);
+          fetchAll({ silent: true });
+        }}
+      />
+      <UploadPluginDialog
+        open={uploadOpen}
+        onOpenChange={setUploadOpen}
+        onInstalled={(info) => {
+          if (info?.needsRestart) setRestartHint(true);
+          fetchAll({ silent: true });
+        }}
+      />
     </div>
   );
 }
