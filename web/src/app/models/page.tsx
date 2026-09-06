@@ -48,6 +48,7 @@ import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, formContextWindow, formMaxTokens, nextContextWindowOnIdChange, nextMaxTokensOnIdChange, presetContextWindow, presetMaxTokens } from "@/lib/model-defaults";
 import { PROVIDER_PRESETS, PROVIDER_LABELS } from "@/lib/provider-presets";
 import { ModelLimitsFields } from "@/components/model-limits-fields";
+import { SAVED_BUTTON_CLASS, SAVED_FEEDBACK_MS } from "@/lib/save-feedback";
 
 const API_TYPE_LABELS: Record<string, string> = {
   "openai-chat": "OpenAI Chat Completions",
@@ -127,6 +128,7 @@ export default function ModelsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   // Caller identity drives which scope this page reads/writes:
   //   - super_admin → system scope (shared across all users)
@@ -456,8 +458,9 @@ export default function ModelsPage() {
   };
 
   const flashSaved = () => {
+    setSaveError("");
     setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    setTimeout(() => setSaved(false), SAVED_FEEDBACK_MS);
   };
 
   const handleSaveProvider = async () => {
@@ -520,10 +523,17 @@ export default function ModelsPage() {
   // without disturbing sibling fields, so it's safe to send through.
   const handleSaveAll = async () => {
     setSaving(true);
+    setSaveError("");
     try {
-      await updateConfig({ agents: { defaults: { model: model.trim() } } });
+      const res = await updateConfig({ agents: { defaults: { model: model.trim() } } });
+      if (res && typeof res === "object" && "ok" in res && res.ok === false) {
+        setSaveError((res as { error?: string }).error || "Save failed");
+        return;
+      }
       flashSaved();
       await fetchConfig(isSuperAdmin, me?.id || "");
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Save failed");
     } finally {
       setSaving(false);
     }
@@ -533,11 +543,18 @@ export default function ModelsPage() {
     setModel(value);
     if (!value.trim()) return;
     setSaving(true);
+    setSaveError("");
     try {
-      await updateConfig({ agents: { defaults: { model: value.trim() } } });
+      const res = await updateConfig({ agents: { defaults: { model: value.trim() } } });
+      if (res && typeof res === "object" && "ok" in res && res.ok === false) {
+        setSaveError((res as { error?: string }).error || "Save failed");
+        return;
+      }
       flashSaved();
       // Refresh so Inheriting/Override badge reflects the new state.
       await fetchConfig(isSuperAdmin, me?.id || "");
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Save failed");
     } finally {
       setSaving(false);
     }
@@ -549,10 +566,17 @@ export default function ModelsPage() {
   // we send a null/undefined which the backend treats as "delete row".
   const handleClearOverride = async () => {
     setSaving(true);
+    setSaveError("");
     try {
-      await updateConfig({ agents: { defaults: { model: "" } } });
+      const res = await updateConfig({ agents: { defaults: { model: "" } } });
+      if (res && typeof res === "object" && "ok" in res && res.ok === false) {
+        setSaveError((res as { error?: string }).error || "Save failed");
+        return;
+      }
       flashSaved();
       await fetchConfig(isSuperAdmin, me?.id || "");
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Save failed");
     } finally {
       setSaving(false);
     }
@@ -597,7 +621,7 @@ export default function ModelsPage() {
             onClick={handleSaveAll}
             disabled={saving}
             variant={saved ? "outline" : "default"}
-            className={saved ? "border-emerald-500/30 text-emerald-600 dark:text-emerald-400" : ""}
+            className={saved ? SAVED_BUTTON_CLASS : ""}
           >
             {saved ? (
               <>
@@ -610,6 +634,15 @@ export default function ModelsPage() {
           </Button>
         </div>
       </div>
+
+      {saveError && (
+        <p className="text-sm text-destructive">{saveError}</p>
+      )}
+      {saved && (
+        <p className="text-sm text-emerald-600 dark:text-emerald-400" role="status">
+          Saved
+        </p>
+      )}
 
       {/* Default Model — for non-admin we surface inheritance state the
           same way the agent Models page does, so users can see what

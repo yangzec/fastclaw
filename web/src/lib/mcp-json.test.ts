@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   formatMCPServersJSON,
   looksLikeServerConfig,
+  mcpFormReady,
   mcpToolPrefix,
   normalizeMCPServer,
   normalizeMCPServerType,
@@ -129,4 +130,15 @@ test("formatMCPServersJSON wraps the Cursor-style envelope", () => {
 test("mcpToolPrefix matches the runtime mcp_<server>_ tool names", () => {
   assert.equal(mcpToolPrefix("serper"), "mcp_serper_");
   assert.equal(mcpToolPrefix("my-server"), "mcp_my_server_");
+});
+
+test("mcpFormReady requires name plus url or command for the current type", () => {
+  assert.equal(mcpFormReady({ name: "", type: "stdio", url: "", command: "" }), false);
+  assert.equal(mcpFormReady({ name: "fs", type: "stdio", url: "", command: "" }), false);
+  assert.equal(mcpFormReady({ name: "fs", type: "stdio", url: "", command: "npx" }), true);
+  assert.equal(mcpFormReady({ name: "remote", type: "http", url: "", command: "npx" }), false);
+  assert.equal(
+    mcpFormReady({ name: "remote", type: "http", url: "https://example.com/mcp", command: "" }),
+    true,
+  );
 });

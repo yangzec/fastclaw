@@ -9,6 +9,7 @@ import { Save, Check, Upload, X } from "lucide-react";
 import { getMe, updateMe, changeMyPassword } from "@/lib/api";
 import { MIN_PASSWORD_LENGTH } from "@/lib/password";
 import { logout as doLogout } from "@/lib/auth";
+import { SAVED_BUTTON_CLASS, SAVED_FEEDBACK_MS } from "@/lib/save-feedback";
 
 const AVATAR_MAX_BYTES = 256 * 1024;
 
@@ -87,7 +88,7 @@ export default function AccountSettingsPage() {
       return;
     }
     setProfileSaved(true);
-    setTimeout(() => setProfileSaved(false), 2000);
+    setTimeout(() => setProfileSaved(false), SAVED_FEEDBACK_MS);
   }
 
   async function savePassword(e: React.FormEvent) {
@@ -202,16 +203,17 @@ export default function AccountSettingsPage() {
         {profileError && (
           <p className="text-sm text-destructive">{profileError}</p>
         )}
+        {profileSaved && (
+          <p className="text-sm text-emerald-600 dark:text-emerald-400" role="status">
+            Saved
+          </p>
+        )}
         <div className="flex justify-end">
           <Button
             onClick={saveProfile}
             disabled={profileSaving}
             variant={profileSaved ? "outline" : "default"}
-            className={
-              profileSaved
-                ? "border-emerald-500/30 text-emerald-600 dark:text-emerald-400"
-                : ""
-            }
+            className={profileSaved ? SAVED_BUTTON_CLASS : ""}
           >
             {profileSaved ? (
               <>
