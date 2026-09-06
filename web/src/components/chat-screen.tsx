@@ -1369,6 +1369,8 @@ export function ChatScreen() {
   const canUseComposer = !!selectedAgent;
   const canSendComposer =
     canUseComposer && (!isReadOnlyView || inputIsReadOnlySafeSlashCommand);
+  const composerHasPayload = Boolean(input.trim() || attachments.length > 0);
+  const canSend = composerHasPayload && canSendComposer;
   const canAttach = !!selectedAgent && !sending && !isReadOnlyView;
   useEffect(() => {
     if (canAttach) return;
@@ -3255,9 +3257,14 @@ export function ChatScreen() {
                           // and abort the turn as "(Stopped)".
                           onMouseDown={(e) => e.preventDefault()}
                           onClick={() => handleSend()}
-                          disabled={(!input.trim() && attachments.length === 0) || !canSendComposer}
+                          disabled={!canSend}
+                          aria-disabled={!canSend}
                           size="icon"
-                          className="h-9 w-9 shrink-0 rounded-full"
+                          variant={canSend ? "default" : "ghost"}
+                          className={cn(
+                            "h-9 w-9 shrink-0 rounded-full",
+                            !canSend && "bg-muted text-muted-foreground opacity-40 hover:bg-muted pointer-events-none",
+                          )}
                           aria-label="Send message"
                         >
                           <Send className="h-4 w-4" />
@@ -3329,9 +3336,14 @@ export function ChatScreen() {
                         type="button"
                         onMouseDown={(e) => e.preventDefault()}
                         onClick={() => handleSend()}
-                        disabled={(!input.trim() && attachments.length === 0) || !canSendComposer}
+                        disabled={!canSend}
+                        aria-disabled={!canSend}
                         size="icon"
-                        className="h-10 w-10 shrink-0 rounded-lg md:h-8 md:w-8"
+                        variant={canSend ? "default" : "ghost"}
+                        className={cn(
+                          "h-10 w-10 shrink-0 rounded-lg md:h-8 md:w-8",
+                          !canSend && "bg-muted text-muted-foreground opacity-40 hover:bg-muted pointer-events-none",
+                        )}
                         aria-label="Send message"
                       >
                         <Send className="h-4 w-4" />

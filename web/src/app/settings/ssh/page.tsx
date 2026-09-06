@@ -288,7 +288,7 @@ export default function SSHHostsPage() {
                 <Label htmlFor="ssh-name">Alias</Label>
                 <Input
                   id="ssh-name"
-                  placeholder="gpu-box"
+                  placeholder="my-server.example"
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                   required
@@ -299,7 +299,7 @@ export default function SSHHostsPage() {
                   <Label htmlFor="ssh-host">Host</Label>
                   <Input
                     id="ssh-host"
-                    placeholder="10.0.4.21"
+                    placeholder="192.0.2.10"
                     value={form.host}
                     onChange={(e) => setForm({ ...form, host: e.target.value })}
                     required
@@ -319,7 +319,7 @@ export default function SSHHostsPage() {
                 <Label htmlFor="ssh-user">Username</Label>
                 <Input
                   id="ssh-user"
-                  placeholder="deploy"
+                  placeholder="your-user"
                   value={form.username}
                   onChange={(e) => setForm({ ...form, username: e.target.value })}
                   required
@@ -388,7 +388,7 @@ export default function SSHHostsPage() {
                 <Label htmlFor="ssh-cwd">Default directory (optional)</Label>
                 <Input
                   id="ssh-cwd"
-                  placeholder="/srv/app"
+                  placeholder="/home/your-user"
                   value={form.defaultCwd}
                   onChange={(e) => setForm({ ...form, defaultCwd: e.target.value })}
                 />

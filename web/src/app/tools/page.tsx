@@ -34,6 +34,12 @@ import {
 } from "@/lib/api";
 import RuntimeSettingsPage from "@/app/settings/runtime/page";
 import { SAVED_BUTTON_CLASS, SAVED_FEEDBACK_MS } from "@/lib/save-feedback";
+import {
+  categoryDisplayName,
+  chainRefFor,
+  emptyChainMessage,
+  isProviderConfigured,
+} from "@/lib/tool-labels";
 
 // Sentinel value used as the active rail entry when Runtime is selected.
 // Real tool categories never start with "__" so this can never collide.
@@ -207,7 +213,7 @@ function CategoryRail({
           onClick={() => onSelect(c.name)}
           className={itemClass(c.name === active)}
         >
-          {c.label}
+          {categoryDisplayName(c)}
         </button>
       ))}
       {/* Runtime sits at the bottom of the rail (or rightmost on mobile);
@@ -254,12 +260,29 @@ function CategoryPanel({
     firstConfigured?.name || catalog.providers[0]?.name || "",
   );
   const selected = catalog.providers.find((p) => p.name === selectedProvider);
+  const categoryTitle = categoryDisplayName(catalog);
+  const chain = [tools.primary, ...(tools.fallbacks || [])].filter(Boolean) as string[];
+
+  const handleProviderChange = (name: string, patch: Partial<ToolProviderSettings>) => {
+    setProvider(name, patch);
+    if (chain.length > 0) return;
+    const provider = catalog.providers.find((p) => p.name === name);
+    if (!provider) return;
+    const next: ToolProviderSettings = {
+      ...(providers[name] || {}),
+      ...patch,
+      options: patch.options ?? providers[name]?.options,
+    };
+    if (!isProviderConfigured(provider, next)) return;
+    const ref = chainRefFor(provider, next);
+    if (ref) setTools({ primary: ref, fallbacks: tools.fallbacks || [] });
+  };
 
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h3 className="text-xl font-semibold tracking-tight">{catalog.label}</h3>
+          <h3 className="text-xl font-semibold tracking-tight">{categoryTitle}</h3>
           <p className="text-sm text-muted-foreground mt-1">
             Configure provider API keys and fallback order. Tools with no configured provider are hidden from agents.
           </p>
@@ -298,15 +321,15 @@ function CategoryPanel({
               <p className="text-xs text-muted-foreground pt-1">
                 No external backend. To take effect, make{" "}
                 <code className="font-mono">none/default</code> the only entry
-                in the fallback chain below — the <code className="font-mono">{catalog.name}</code>{" "}
-                tool will then be hidden from agents, and the model will fall
-                back to whatever native search capability it has (or do without).
+                in the fallback chain below — {categoryTitle} will then be
+                hidden from agents, and the model will fall back to whatever
+                native search capability it has (or do without).
               </p>
             ) : selected && (
               <ProviderFields
                 provider={selected}
                 settings={providers[selected.name] || {}}
-                onChange={(patch) => setProvider(selected.name, patch)}
+                onChange={(patch) => handleProviderChange(selected.name, patch)}
               />
             )}
           </div>
@@ -545,6 +568,17 @@ function ChainEditor({
   };
 
   const unusedOptions = refOptions.filter((o) => !chain.includes(o.value));
+  const categoryTitle = categoryDisplayName(catalog);
+  const configuredProviders = catalog.providers.filter((p) =>
+    isProviderConfigured(p, providers[p.name]),
+  );
+  const firstConfigured = configuredProviders[0];
+  const firstConfiguredRef = firstConfigured
+    ? chainRefFor(firstConfigured, providers[firstConfigured.name])
+    : null;
+  const canQuickAdd = Boolean(
+    firstConfiguredRef && !chain.includes(firstConfiguredRef),
+  );
 
   return (
     <div className="rounded-lg border border-border bg-card p-5">
@@ -563,10 +597,24 @@ function ChainEditor({
 
       <div className="space-y-1.5">
         {chain.length === 0 ? (
-          <p className="text-xs text-muted-foreground italic px-2 py-4">
-            No providers selected. The <code className="font-mono">{catalog.name}</code> tool
-            won&apos;t be available to agents until you add at least one.
-          </p>
+          <div className="px-2 py-4 space-y-3">
+            <p className="text-xs text-muted-foreground">
+              {emptyChainMessage(configuredProviders.length > 0)}{" "}
+              {categoryTitle} stays hidden from agents until the chain has
+              at least one provider.
+            </p>
+            {canQuickAdd && firstConfigured && firstConfiguredRef && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => addToChain(firstConfiguredRef)}
+              >
+                <Plus className="h-3.5 w-3.5 mr-1" />
+                Add {firstConfigured.label} to chain
+              </Button>
+            )}
+          </div>
         ) : (
           chain.map((ref, i) => {
             const label = refOptions.find((o) => o.value === ref)?.label || ref;
