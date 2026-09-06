@@ -1729,6 +1729,33 @@ export async function updatePlugin(id: string, data: Partial<PluginInfo>) {
   return res.json();
 }
 
+export interface PluginInstallResponse {
+  ok: boolean;
+  id?: string;
+  name?: string;
+  needsRestart?: boolean;
+  error?: string;
+}
+
+export async function installPlugin(source: string): Promise<PluginInstallResponse> {
+  const res = await apiFetch("/api/plugins/install", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source }),
+  });
+  return res.json();
+}
+
+export async function uploadPlugin(file: File): Promise<PluginInstallResponse> {
+  const fd = new FormData();
+  fd.append("file", file, file.name);
+  const res = await apiFetch("/api/plugins/upload", {
+    method: "POST",
+    body: fd,
+  });
+  return res.json();
+}
+
 // Channels
 export async function getChannels(): Promise<ChannelInfo[]> {
   const res = await apiFetch("/api/channels");

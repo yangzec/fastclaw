@@ -395,6 +395,8 @@ func (s *Server) Run(ctx context.Context) error {
 	// Plugins (super_admin only).
 	mux.HandleFunc("GET /api/plugins", admin(s.handleListPlugins))
 	mux.HandleFunc("PUT /api/plugins/{id}", admin(s.handleUpdatePlugin))
+	mux.HandleFunc("POST /api/plugins/install", admin(s.handleInstallPlugin))
+	mux.HandleFunc("POST /api/plugins/upload", admin(s.handleUploadPlugin))
 	// Hook plugin discovery — read-only metadata for the per-agent
 	// Plugins toggle on the Context page. Agent owners (not just
 	// admins) need this to know what plugins they can enable.
