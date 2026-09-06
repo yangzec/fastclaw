@@ -8,7 +8,7 @@ import {
   ChevronRight,
   Bot,
   User as UserIcon,
-  ExternalLink,
+  ArrowRight,
   Loader2,
   RefreshCw,
 } from "lucide-react";
@@ -203,6 +203,7 @@ export default function AdminChatsPage() {
                       {formatTime(s.updatedAt)}
                     </TableCell>
                     <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                      {/* Same-tab router.push only — target=_blank can stick on about:blank. */}
                       <button
                         type="button"
                         title="Open chat (read-only)"
@@ -210,7 +211,7 @@ export default function AdminChatsPage() {
                         onClick={() => router.push(adminChatHref(s))}
                         className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
                       >
-                        <ExternalLink className="size-4" />
+                        <ArrowRight className="size-4" />
                       </button>
                     </TableCell>
                   </TableRow>
