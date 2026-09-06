@@ -249,15 +249,18 @@ func TestProcessDueJobs_Cron(t *testing.T) {
 }
 
 func TestNextCronOccurrence(t *testing.T) {
+	// The legacy helper evaluates schedules in the server's local timezone.
+	// Construct wall-clock inputs in that same zone so the test also works
+	// on hosts whose timezone is not UTC.
 	// Test "every 2 minutes" cron
-	now := time.Date(2026, 5, 6, 10, 3, 0, 0, time.UTC)
+	now := time.Date(2026, 5, 6, 10, 3, 0, 0, time.Local)
 	next := nextCronOccurrence("*/2 * * * *", now)
 	if next.Minute() != 4 {
 		t.Errorf("expected minute=4, got %d (time=%v)", next.Minute(), next)
 	}
 
 	// Test "daily at 9:00"
-	now = time.Date(2026, 5, 6, 9, 1, 0, 0, time.UTC)
+	now = time.Date(2026, 5, 6, 9, 1, 0, 0, time.Local)
 	next = nextCronOccurrence("0 9 * * *", now)
 	if next.Day() != 7 || next.Hour() != 9 {
 		t.Errorf("expected next day 9:00, got %v", next)

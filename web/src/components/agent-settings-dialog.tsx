@@ -23,7 +23,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
 import AgentProfilePanel from "@/components/agent-profile-panel";
-import AgentCustomizePage from "@/app/agents/[id]/customize/page";
+import AgentCustomizePanel from "@/components/agent-customize-panel";
 import AgentModelsPage from "@/app/agents/[id]/models/page";
 import AgentContextPage from "@/app/agents/[id]/context/page";
 import AgentKnowledgePage from "@/app/agents/[id]/knowledge/page";
@@ -233,7 +233,7 @@ export function AgentSettingsDialog({
           )}
           {show("customize") && (
             <div hidden={tab !== "customize"}>
-              <AgentCustomizePage onDirtyChange={setCustomizeDirty} />
+              <AgentCustomizePanel onDirtyChange={setCustomizeDirty} />
             </div>
           )}
           {show("models") && (

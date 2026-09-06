@@ -137,11 +137,11 @@ test("filesForOpenBadge matches the panel default list", () => {
   ];
   const badge = filesForOpenBadge(two, {
     available: true,
-    files: [{ path: "sessions/s-1/app/page.tsx" }],
+    files: [{ path: "sessions/s-1/app/page.tsx", size: 2 }],
   });
   const panel = panelVisibleFiles(two, {
     available: true,
-    files: [{ path: "sessions/s-1/app/page.tsx" }],
+    files: [{ path: "sessions/s-1/app/page.tsx", size: 2 }],
   }, false);
   assert.deepEqual(badge.map((f) => f.path).sort(), panel.map((f) => f.path).sort());
   assert.equal(badge.length, 2);

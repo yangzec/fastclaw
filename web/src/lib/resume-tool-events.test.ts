@@ -18,7 +18,7 @@ function group(calls: ResumeChatMessage["toolCalls"]): ResumeChatMessage {
 }
 
 test("applyToolCallEvent creates a tool-group when none exists", () => {
-  const next = applyToolCallEvent([], { id: "c1", name: "exec", arguments: "{}" });
+  const next = applyToolCallEvent<ResumeChatMessage>([], { id: "c1", name: "exec", arguments: "{}" });
   assert.equal(next.length, 1);
   assert.equal(next[0].role, "tool-group");
   assert.deepEqual(next[0].toolCalls, [{ id: "c1", name: "exec", arguments: "{}" }]);
@@ -45,7 +45,7 @@ test("applyToolResultEvent fills the matching running call", () => {
 });
 
 test("applyToolResultEvent creates a group when the call was not in history yet", () => {
-  const next = applyToolResultEvent([], { id: "c1", name: "exec", result: "ok" });
+  const next = applyToolResultEvent<ResumeChatMessage>([], { id: "c1", name: "exec", result: "ok" });
   assert.equal(next[0].toolCalls?.[0].id, "c1");
   assert.equal(next[0].toolCalls?.[0].name, "exec");
   assert.equal(next[0].toolCalls?.[0].result, "ok");
