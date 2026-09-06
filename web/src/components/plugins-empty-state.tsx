@@ -37,7 +37,7 @@ export function PluginsEmptyState({
           variant="default"
           className="mt-4"
           onClick={copyPath}
-          aria-label={`Copy folder path ${path}`}
+          aria-label={copied ? "Copied folder path" : `Copy folder path ${path}`}
         >
           {copied ? (
             <>

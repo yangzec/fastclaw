@@ -3260,10 +3260,10 @@ export function ChatScreen() {
                           disabled={!canSend}
                           aria-disabled={!canSend}
                           size="icon"
-                          variant={canSend ? "default" : "secondary"}
+                          variant={canSend ? "default" : "ghost"}
                           className={cn(
                             "h-9 w-9 shrink-0 rounded-full",
-                            !canSend && "opacity-40 pointer-events-none",
+                            !canSend && "bg-muted text-muted-foreground opacity-40 hover:bg-muted pointer-events-none",
                           )}
                           aria-label="Send message"
                         >
@@ -3339,10 +3339,10 @@ export function ChatScreen() {
                         disabled={!canSend}
                         aria-disabled={!canSend}
                         size="icon"
-                        variant={canSend ? "default" : "secondary"}
+                        variant={canSend ? "default" : "ghost"}
                         className={cn(
                           "h-10 w-10 shrink-0 rounded-lg md:h-8 md:w-8",
-                          !canSend && "opacity-40 pointer-events-none",
+                          !canSend && "bg-muted text-muted-foreground opacity-40 hover:bg-muted pointer-events-none",
                         )}
                         aria-label="Send message"
                       >
