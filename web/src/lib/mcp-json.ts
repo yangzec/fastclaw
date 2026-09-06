@@ -150,6 +150,18 @@ export function mcpToolPrefix(serverName: string): string {
   return `mcp_${safe}_`;
 }
 
+/** Form-mode Add/Save is armed only when name + url|command are present. */
+export function mcpFormReady(input: {
+  name: string;
+  type: "http" | "stdio";
+  url: string;
+  command: string;
+}): boolean {
+  if (!input.name.trim()) return false;
+  if (input.type === "http") return Boolean(input.url.trim());
+  return Boolean(input.command.trim());
+}
+
 export const MCP_JSON_PLACEHOLDER = `{
   "mcpServers": {
     "filesystem": {

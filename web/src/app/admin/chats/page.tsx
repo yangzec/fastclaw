@@ -23,6 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { adminListChats, type AdminChatSessionEntry } from "@/lib/api";
+import { adminChatHref } from "@/lib/admin-chat-path";
 import { ChannelIcon, channelLabel } from "@/components/channel-icon";
 
 const PAGE_SIZE = 30;
@@ -148,11 +149,7 @@ export default function AdminChatsPage() {
                   <TableRow
                     key={`${s.agentId}:${s.id}`}
                     className="cursor-pointer"
-                    onClick={() =>
-                      router.push(
-                        `/agents/${encodeURIComponent(s.agentId)}/chat/${encodeURIComponent(s.id)}/?actAs=${encodeURIComponent(s.userId)}`,
-                      )
-                    }
+                    onClick={() => router.push(adminChatHref(s))}
                   >
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2 min-w-0">
@@ -206,15 +203,15 @@ export default function AdminChatsPage() {
                       {formatTime(s.updatedAt)}
                     </TableCell>
                     <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                      <a
-                        href={`/agents/${encodeURIComponent(s.agentId)}/chat/${encodeURIComponent(s.id)}/?actAs=${encodeURIComponent(s.userId)}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        title="Open in new tab (read-only)"
+                      <button
+                        type="button"
+                        title="Open chat (read-only)"
+                        aria-label="Open chat"
+                        onClick={() => router.push(adminChatHref(s))}
                         className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
                       >
                         <ExternalLink className="size-4" />
-                      </a>
+                      </button>
                     </TableCell>
                   </TableRow>
                 ))}

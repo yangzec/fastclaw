@@ -33,6 +33,7 @@ import {
   type ToolCategorySettings,
 } from "@/lib/api";
 import RuntimeSettingsPage from "@/app/settings/runtime/page";
+import { SAVED_BUTTON_CLASS, SAVED_FEEDBACK_MS } from "@/lib/save-feedback";
 
 // Sentinel value used as the active rail entry when Runtime is selected.
 // Real tool categories never start with "__" so this can never collide.
@@ -87,7 +88,7 @@ export default function ToolsPage() {
         setError(resp.error || "save failed");
       } else {
         setSaved(true);
-        setTimeout(() => setSaved(false), 2000);
+        setTimeout(() => setSaved(false), SAVED_FEEDBACK_MS);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "save failed");
@@ -129,6 +130,14 @@ export default function ToolsPage() {
             {error}
           </div>
         )}
+        {saved && active !== RUNTIME_ACTIVE && (
+          <div
+            className="mb-4 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-4 py-2 text-sm text-emerald-600 dark:text-emerald-400"
+            role="status"
+          >
+            Saved
+          </div>
+        )}
 
         {active === RUNTIME_ACTIVE ? (
           // Runtime is a deployment-wide knob (sandbox backend, etc.), not
@@ -152,7 +161,12 @@ export default function ToolsPage() {
             tools={tools[activeCat.name] || {}}
             setTools={(patch) => updateCategory(activeCat.name, patch)}
             saveButton={
-              <Button onClick={handleSave} disabled={saving} variant={saved ? "outline" : "default"}>
+              <Button
+                onClick={handleSave}
+                disabled={saving}
+                variant={saved ? "outline" : "default"}
+                className={saved ? SAVED_BUTTON_CLASS : ""}
+              >
                 {saved ? (
                   <><Check className="h-4 w-4 mr-2" /> Saved</>
                 ) : saving ? (

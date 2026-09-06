@@ -24,6 +24,7 @@ import { inheritsToAgents } from "@/lib/api";
 import {
   formatMCPServersJSON,
   MCP_JSON_PLACEHOLDER,
+  mcpFormReady,
   parseMCPServersJSON,
 } from "@/lib/mcp-json";
 
@@ -235,6 +236,13 @@ export function MCPEditDialog({
     }
   };
 
+  // Form mode: disable until name + url|command are present so Add never
+  // looks armed on an empty form. JSON mode stays clickable once there is
+  // text so parse errors surface via the existing inline `error` on submit.
+  const formReady = mcpFormReady({ name, type, url, command });
+  const jsonHasText = jsonText.trim().length > 0;
+  const canSubmit = !saving && (mode === "form" ? formReady : jsonHasText);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-md:inset-0 max-md:top-0 max-md:left-0 max-md:h-[100dvh] max-md:w-full max-md:max-w-none max-md:translate-x-0 max-md:translate-y-0 max-md:rounded-none sm:max-w-2xl">
@@ -391,7 +399,7 @@ export function MCPEditDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSubmit} disabled={saving}>
+          <Button onClick={handleSubmit} disabled={!canSubmit}>
             {saving ? "Saving..." : initial ? "Save" : "Add"}
           </Button>
         </div>
