@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Plug } from "lucide-react";
+import { PluginsEmptyState } from "@/components/plugins-empty-state";
 import {
   getConfig,
   getPlugins,
@@ -135,22 +136,7 @@ export default function GlobalPluginsPage() {
       </div>
 
       {plugins.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-border bg-card/30 p-12">
-          <div className="flex flex-col items-center justify-center">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 mb-4">
-              <Plug className="h-7 w-7 text-primary" />
-            </div>
-            <p className="text-sm text-muted-foreground mb-1">
-              No plugins installed
-            </p>
-            <p className="text-xs text-muted-foreground/60 max-w-sm text-center">
-              Drop a plugin directory into{" "}
-              <code className="text-[10px]">~/.fastclaw/plugins/</code>{" "}
-              with a <code className="text-[10px]">plugin.json</code>, then
-              restart the daemon.
-            </p>
-          </div>
-        </div>
+        <PluginsEmptyState title="No plugins yet" />
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {plugins.map((p) => {

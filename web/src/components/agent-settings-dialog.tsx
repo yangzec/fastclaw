@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
 import {
   BrainIcon,
   BookOpenIcon,
@@ -33,6 +34,7 @@ import AgentChannelsPage from "@/app/agents/[id]/channels/page";
 import AgentSchedulerPage from "@/app/agents/[id]/scheduler/page";
 import AgentMCPPage from "@/app/agents/[id]/mcp/page";
 import AgentUsagePage from "@/app/agents/[id]/usage/page";
+import { useAgentIdFromURL } from "@/hooks/use-agent-id";
 import AccountSettingsPage from "@/app/settings/account/page";
 import GeneralSettingsPage from "@/app/settings/general/page";
 import UserModelsPage from "@/app/models/page";
@@ -126,6 +128,8 @@ export function AgentSettingsDialog({
   // gateway version + upgrade hint is operator info, not end-user info).
   isAdmin?: boolean;
 }) {
+  const router = useRouter();
+  const agentId = useAgentIdFromURL();
   const agentTabs = userOnly
     ? []
     : role === "viewer"
@@ -175,6 +179,18 @@ export function AgentSettingsDialog({
       }
     }
     onOpenChange(next);
+  };
+
+  const handleOpenChat = () => {
+    if (customizeDirty || profileDirty) {
+      if (!window.confirm("You have unsaved changes. Close Settings anyway?")) {
+        return;
+      }
+    }
+    onOpenChange(false);
+    if (agentId) {
+      router.push(`/agents/${encodeURIComponent(agentId)}/chat/`);
+    }
   };
 
   const show = (id: AgentSettingsTab) => open && visited.has(id);
@@ -268,7 +284,7 @@ export function AgentSettingsDialog({
           )}
           {show("scheduler") && (
             <div hidden={tab !== "scheduler"}>
-              <AgentSchedulerPage />
+              <AgentSchedulerPage onOpenChat={handleOpenChat} />
             </div>
           )}
           {show("channels") && (

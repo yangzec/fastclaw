@@ -1,9 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
-import { Button, buttonVariants } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
@@ -78,7 +77,12 @@ function typeIcon(type: string) {
   }
 }
 
-export default function AgentSchedulerPage() {
+export default function AgentSchedulerPage({
+  onOpenChat,
+}: {
+  onOpenChat?: () => void;
+} = {}) {
+  const router = useRouter();
   const agentId = useAgentIdFromURL();
   const agentName = useAgentName(agentId);
 
@@ -170,12 +174,19 @@ export default function AgentSchedulerPage() {
             Tell the agent in chat — for example, “Remind me tomorrow at 9.”
           </p>
           {agentId ? (
-            <Link
-              href={`/agents/${encodeURIComponent(agentId)}/chat/`}
-              className={cn(buttonVariants(), "mt-4")}
+            <Button
+              type="button"
+              className="mt-4"
+              onClick={() => {
+                if (onOpenChat) {
+                  onOpenChat();
+                  return;
+                }
+                router.push(`/agents/${encodeURIComponent(agentId)}/chat/`);
+              }}
             >
               Open chat
-            </Link>
+            </Button>
           ) : null}
         </div>
       ) : (
