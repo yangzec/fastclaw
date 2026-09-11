@@ -188,6 +188,10 @@ type Response struct {
 	Thinking     string          // model's reasoning/thinking content (extracted for memory)
 	Usage        Usage           // token counts for metering (zero when provider didn't report)
 	RawAssistant json.RawMessage // exact API response message JSON (for cache-safe replay)
+	// LeakedToolXML is set when protocol markup was stripped from
+	// Content. The loop must not treat the leftover preamble as a
+	// finished answer, and must not execute synthesized calls.
+	LeakedToolXML bool
 }
 
 // HasToolCalls returns true if the response contains tool calls.

@@ -2352,7 +2352,7 @@ func maybeInjectIterationBudgetWarning(ctx context.Context, used, max int, messa
 // doesn't look frozen between the tool_call and tool_result events.
 // Stops cleanly via a done channel the instant the blocking call
 // returns — no goroutine leak, no event fired after the fact.
-func (a *Agent) runToolsWithProgress(ctx context.Context, toolCalls []provider.ToolCall, workspace string) []toolCallResult {
+func (a *Agent) runToolsWithProgress(ctx context.Context, toolCalls []provider.ToolCall, workspace string, allowed map[string]struct{}) []toolCallResult {
 	toolNames := make([]string, 0, len(toolCalls))
 	for _, tc := range toolCalls {
 		toolNames = append(toolNames, tc.Function.Name)
@@ -2374,9 +2374,85 @@ func (a *Agent) runToolsWithProgress(ctx context.Context, toolCalls []provider.T
 			}
 		}
 	}()
-	results := a.engine.executeToolsConcurrently(ctx, a.registry, toolCalls, workspace)
+	results := a.engine.executeToolsConcurrently(ctx, a.registry, toolCalls, workspace, allowed)
 	close(done)
 	return results
+}
+
+func allowedToolNames(callTools []provider.Tool) map[string]struct{} {
+	out := make(map[string]struct{}, len(callTools))
+	for _, t := range callTools {
+		if t.Function.Name != "" {
+			out[t.Function.Name] = struct{}{}
+		}
+	}
+	return out
+}
+
+func xmlProtocolNudge() provider.Message {
+	return provider.Message{
+		Role: "system",
+		Content: "You emitted tool-call markup in assistant content. Those calls were not executed. " +
+			"Use native tool_calls if you still need a tool, or answer the user in text. Do not repeat the XML.",
+	}
+}
+
+func emptyReplyNudge() provider.Message {
+	return provider.Message{
+		Role: "system",
+		Content: "Your last reply had no user-visible text. Tools are disabled for this follow-up. " +
+			"Answer the user directly in text.",
+	}
+}
+
+func stallWrapUpNudge(reason string) provider.Message {
+	switch reason {
+	case "loop":
+		return provider.Message{
+			Role: "system",
+			Content: "Loop detected: the same tool was called with the same arguments and the same result 3 times. " +
+				"Tools are disabled for the rest of this turn. Answer the user with what you already have. Do not call tools.",
+		}
+	default:
+		return provider.Message{
+			Role:    "system",
+			Content: "Tools are disabled for the rest of this turn. Answer the user with what you already have. Do not call tools.",
+		}
+	}
+}
+
+func refuseEnabledToolResults(toolCalls []provider.ToolCall, reason string) []toolCallResult {
+	out := make([]toolCallResult, len(toolCalls))
+	for i, tc := range toolCalls {
+		out[i] = toolCallResult{
+			toolCallID: tc.ID,
+			toolName:   tc.Function.Name,
+			result:     reason,
+			err:        fmt.Errorf("%s", reason),
+		}
+	}
+	return out
+}
+
+func appendAssistantAndToolResults(sess *session.Session, messages []provider.Message, asst provider.Message, results []toolCallResult, orig []provider.ToolCall) []provider.Message {
+	if sess != nil {
+		sess.Append(asst)
+	}
+	messages = append(messages, asst)
+	for i, r := range results {
+		tc := orig[i]
+		toolMsg := provider.Message{
+			Role:       "tool",
+			Content:    r.result,
+			ToolCallID: tc.ID,
+			Name:       r.toolName,
+		}
+		if sess != nil {
+			sess.Append(toolMsg)
+		}
+		messages = append(messages, toolMsg)
+	}
+	return messages
 }
 
 // HandleMessage processes an inbound message through the ReAct loop.
@@ -2574,6 +2650,9 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 	softDeadlineFired := false
 	iterBudgetWarned := false
 	todoReconciled := false
+	wrapUp := ""
+	forceToolsNil := false
+	formatRecoveryUsed := false
 
 	// replyParts accumulates every non-empty assistant text segment
 	// emitted across iterations (preamble lines before tool calls + the
@@ -2628,9 +2707,13 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		// specific signal) so the two nudges don't both fire the same
 		// round.
 		callTools := toolDefs
-		if streakState.streak >= sameToolFailStreakLimit {
+		if wrapUp != "" || forceToolsNil {
+			callTools = nil
+			forceToolsNil = false
+		} else if streakState.streak >= sameToolFailStreakLimit {
 			slog.Warn("same tool failed repeatedly — forcing convergence",
 				"agent", a.name, "tool", streakState.lastFailedTool, "streak", streakState.streak)
+			wrapUp = "streak"
 			callTools = nil
 			llmMessages = append(llmMessages, provider.Message{
 				Role: "system",
@@ -2642,6 +2725,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		} else if allFailedRounds >= failedRoundsLimit {
 			slog.Warn("disabling tools after consecutive failed rounds",
 				"agent", a.name, "failed_rounds", allFailedRounds)
+			wrapUp = "all_failed"
 			callTools = nil
 			llmMessages = append(llmMessages, provider.Message{
 				Role: "system",
@@ -2703,12 +2787,65 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 		a.meterTokens(ctx, sess.Key(), resp.Usage, 0)
 		a.maybeRecoverToolCalls(resp)
 
-		if !resp.HasToolCalls() {
-			if strings.TrimSpace(resp.Content) == "" {
+		if wrapUp != "" || callTools == nil {
+			content := strings.TrimSpace(resp.Content)
+			if resp.HasToolCalls() {
+				asst := provider.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls, Thinking: resp.Thinking, Metadata: knowledgeMeta, Timestamp: time.Now().UnixMilli(), RawAssistant: resp.RawAssistant}
+				refused := refuseEnabledToolResults(resp.ToolCalls, toolNotEnabledResult)
+				messages = appendAssistantAndToolResults(sess, messages, asst, refused, resp.ToolCalls)
+			}
+			if content == "" {
 				emptyMsg := "model returned an empty response"
 				emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": emptyMsg}})
 				emitDone(ctx)
 				return emptyMsg
+			}
+			asst := provider.Message{Role: "assistant", Content: resp.Content, Thinking: resp.Thinking, Metadata: knowledgeMeta, Timestamp: time.Now().UnixMilli(), RawAssistant: resp.RawAssistant}
+			if !resp.HasToolCalls() {
+				sess.Append(asst)
+				messages = append(messages, asst)
+			}
+			emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{"content": resp.Content, "metadata": knowledgeMeta}})
+			replyParts = append(replyParts, resp.Content)
+			emitDone(ctx)
+			a.runPostTurn(ctx, msg, messages, totalToolCalls, chatterMem)
+			return joinReplyParts(replyParts)
+		}
+
+		if resp.LeakedToolXML {
+			if formatRecoveryUsed {
+				failMsg := "model leaked tool-call markup that was not executed"
+				emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": failMsg}})
+				emitDone(ctx)
+				return failMsg
+			}
+			formatRecoveryUsed = true
+			nudge := xmlProtocolNudge()
+			if strings.TrimSpace(resp.Content) != "" {
+				asst := provider.Message{Role: "assistant", Content: resp.Content, Thinking: resp.Thinking, RawAssistant: resp.RawAssistant, Timestamp: time.Now().UnixMilli()}
+				sess.Append(asst)
+				messages = append(messages, asst)
+			}
+			sess.Append(nudge)
+			messages = append(messages, nudge)
+			continue
+		}
+
+		if !resp.HasToolCalls() {
+			if strings.TrimSpace(resp.Content) == "" {
+				emptyMsg := "model returned an empty response"
+				if formatRecoveryUsed {
+					emitEvent(ctx, ChatEvent{Type: "error", Data: map[string]any{"message": emptyMsg}})
+					emitDone(ctx)
+					return emptyMsg
+				}
+				formatRecoveryUsed = true
+				forceToolsNil = true
+				nudge := emptyReplyNudge()
+				sess.Append(nudge)
+				messages = append(messages, nudge)
+				i--
+				continue
 			}
 			asst := provider.Message{Role: "assistant", Content: resp.Content, Thinking: resp.Thinking, Metadata: knowledgeMeta, Timestamp: time.Now().UnixMilli(), RawAssistant: resp.RawAssistant}
 
@@ -2819,7 +2956,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			"agent", a.name,
 			"count", len(executeCalls),
 		)
-		results := a.runToolsWithProgress(ctx, executeCalls, a.workspacePath)
+		results := a.runToolsWithProgress(ctx, executeCalls, a.workspacePath, allowedToolNames(callTools))
 		// Append synthetic deferred results so every original tool_use
 		// id has a paired tool_result. The deferred message tells the
 		// model exactly why it didn't run — it can re-issue next
@@ -2953,7 +3090,8 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			}
 		}
 		if loopDetected {
-			warnMsg := repeatedToolCallWarning("Loop detected: you called the same tool with the same arguments and received the same result 3 times. Please try a different approach.")
+			wrapUp = "loop"
+			warnMsg := stallWrapUpNudge("loop")
 			sess.Append(warnMsg)
 			messages = append(messages, warnMsg)
 		}
@@ -2967,7 +3105,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 			allFailedRounds = 0
 		}
 		if loopDetected {
-			break
+			continue
 		}
 
 		// Steering: messages that arrived while this tool round ran are
@@ -2983,6 +3121,31 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				replyParts = append(replyParts, notice)
 			}
 		}
+	}
+
+	if wrapUp != "" {
+		slog.Warn("turn wrap-up after stall — forcing text delivery", "agent", a.name, "reason", wrapUp)
+		nudge := stallWrapUpNudge(wrapUp)
+		finalMessages := append(messages, nudge)
+		if a.piiScrubEnabled {
+			finalMessages = privacy.ScrubMessages(finalMessages)
+		}
+		finalResp, finalErr := a.streamChatToResponseQuiet(ctx, finalMessages, nil)
+		finalContent := ""
+		if finalErr == nil && finalResp != nil {
+			a.maybeRecoverToolCalls(finalResp)
+			finalContent = strings.TrimSpace(finalResp.Content)
+			a.meterTokens(ctx, sess.Key(), finalResp.Usage, 0)
+		}
+		if finalContent == "" {
+			finalContent = "I had to stop calling tools and could not produce a final answer."
+		}
+		sess.Append(provider.Message{Role: "assistant", Content: finalContent, Timestamp: time.Now().UnixMilli()})
+		emitEvent(ctx, ChatEvent{Type: "content", Data: map[string]any{"content": finalContent, "metadata": knowledgeMeta}})
+		replyParts = append(replyParts, finalContent)
+		emitDone(ctx)
+		a.runPostTurn(ctx, msg, messages, totalToolCalls, chatterMem)
+		return joinReplyParts(replyParts)
 	}
 
 	slog.Warn("max tool iterations reached — forcing final delivery", "agent", a.name, "max", a.maxToolIterations)
@@ -3146,7 +3309,7 @@ func isFailedToolResult(err error, content string) bool {
 	if strings.HasPrefix(c, "HTTP 4") || strings.HasPrefix(c, "HTTP 5") {
 		return true
 	}
-	if strings.Contains(c, "[Analyze the error above and try a different approach.]") {
+	if strings.Contains(c, tools.ErrorAnalyzeHint) {
 		return true
 	}
 	return false
@@ -3453,6 +3616,11 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 	softDeadlineFired := false
 	iterBudgetWarned := false
 	todoReconciled := false
+	wrapUp := ""
+	forceToolsNil := false
+	formatRecoveryUsed := false
+	allFailedRounds := 0
+	const failedRoundsLimit = 3
 
 	// ReAct loop - use Chat for tool iterations
 	for i := 0; i < a.maxToolIterations; i++ {
@@ -3464,19 +3632,32 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		// Read back messages that may have been modified by sync hooks (e.g., mem0)
 		messages = hcBefore.Messages
 
-		// callTools mirrors HandleMessage's disable-tools-after-
-		// repeated-failure gate (P0.1). sameToolFailStreakLimit is
-		// checked first (tighter threshold, more specific signal).
 		callTools := toolDefs
-		if streakState.streak >= sameToolFailStreakLimit {
+		if wrapUp != "" || forceToolsNil {
+			callTools = nil
+			forceToolsNil = false
+		} else if streakState.streak >= sameToolFailStreakLimit {
 			slog.Warn("same tool failed repeatedly — forcing convergence",
 				"agent", a.name, "tool", streakState.lastFailedTool, "streak", streakState.streak)
+			wrapUp = "streak"
 			callTools = nil
 			messages = append(messages, provider.Message{
 				Role: "system",
 				Content: fmt.Sprintf(
 					"The tool %q has failed %d times in a row (even with different arguments). Stop retrying it. Either explain to the user what's blocking it, or answer with what you already know.",
 					streakState.lastFailedTool, streakState.streak,
+				),
+			})
+		} else if allFailedRounds >= failedRoundsLimit {
+			slog.Warn("disabling tools after consecutive failed rounds",
+				"agent", a.name, "failed_rounds", allFailedRounds)
+			wrapUp = "all_failed"
+			callTools = nil
+			messages = append(messages, provider.Message{
+				Role: "system",
+				Content: fmt.Sprintf(
+					"The last %d rounds of tool calls all failed (HTTP errors or empty results). Stop calling tools and answer the user directly with what you know — explain that authoritative sources weren't reachable and provide your best-effort response based on training knowledge, clearly marked as unverified.",
+					allFailedRounds,
 				),
 			})
 		}
@@ -3505,12 +3686,54 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		a.meterTokens(ctx, sess.Key(), resp.Usage, 0)
 		a.maybeRecoverToolCalls(resp)
 
+		if wrapUp != "" || callTools == nil {
+			content := strings.TrimSpace(resp.Content)
+			if resp.HasToolCalls() {
+				asst := provider.Message{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls, Thinking: resp.Thinking, Metadata: knowledgeMeta, Timestamp: time.Now().UnixMilli(), RawAssistant: resp.RawAssistant}
+				refused := refuseEnabledToolResults(resp.ToolCalls, toolNotEnabledResult)
+				messages = appendAssistantAndToolResults(sess, messages, asst, refused, resp.ToolCalls)
+			}
+			if content == "" {
+				return a.stringStream("model returned an empty response")
+			}
+			finalMsg := provider.Message{Role: "assistant", Content: resp.Content, Thinking: resp.Thinking, Metadata: knowledgeMeta, Timestamp: time.Now().UnixMilli(), RawAssistant: resp.RawAssistant}
+			if !resp.HasToolCalls() {
+				sess.Append(finalMsg)
+				messages = append(messages, finalMsg)
+			}
+			a.runPostTurn(ctx, msg, messages, totalToolCalls, chatterMem)
+			return a.stringStream(resp.Content)
+		}
+
+		if resp.LeakedToolXML {
+			if formatRecoveryUsed {
+				return a.stringStream("model leaked tool-call markup that was not executed")
+			}
+			formatRecoveryUsed = true
+			nudge := xmlProtocolNudge()
+			if strings.TrimSpace(resp.Content) != "" {
+				asst := provider.Message{Role: "assistant", Content: resp.Content, Thinking: resp.Thinking, RawAssistant: resp.RawAssistant, Timestamp: time.Now().UnixMilli()}
+				sess.Append(asst)
+				messages = append(messages, asst)
+			}
+			sess.Append(nudge)
+			messages = append(messages, nudge)
+			continue
+		}
+
 		if !resp.HasToolCalls() {
-			// Reconcile the checklist before re-issuing as a stream. This
-			// path decides tool-calls-or-not with a non-streaming call
-			// first, which is the last moment nothing has been sent to the
-			// user yet — and this is the path the web UI uses, where the
-			// todo panel the answer would contradict is actually rendered.
+			if strings.TrimSpace(resp.Content) == "" {
+				if formatRecoveryUsed {
+					return a.stringStream("model returned an empty response")
+				}
+				formatRecoveryUsed = true
+				forceToolsNil = true
+				nudge := emptyReplyNudge()
+				sess.Append(nudge)
+				messages = append(messages, nudge)
+				i--
+				continue
+			}
 			if !todoReconciled {
 				if pending := a.pendingTodoItems(ctx); len(pending) > 0 {
 					todoReconciled = true
@@ -3522,88 +3745,17 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 				todoReconciled = true
 			}
 
-			// Final response - use streaming
-			sr, err := a.provider.ChatStream(ctx, messages, toolDefs, a.model, a.maxTokens, a.temperature)
-			if err != nil {
-				slog.Error("LLM stream failed, falling back", "agent", a.name, "error", err)
-				fallbackMsg := provider.Message{Role: "assistant", Content: resp.Content, Metadata: knowledgeMeta}
-				sess.Append(fallbackMsg)
-				a.runPostTurn(ctx, msg, append(messages, fallbackMsg), totalToolCalls, chatterMem)
-				return a.stringStream(resp.Content)
+			finalMsg := provider.Message{
+				Role:         "assistant",
+				Content:      resp.Content,
+				Thinking:     resp.Thinking,
+				Metadata:     knowledgeMeta,
+				Timestamp:    time.Now().UnixMilli(),
+				RawAssistant: resp.RawAssistant,
 			}
-
-			// Collect content in background for session storage.
-			// Capture inbound msg + per-turn state out here — the goroutine
-			// below shadows `msg` with the local assistant Message, and
-			// runPostTurn needs the inbound (channel / chat_id / source).
-			inboundMsg := msg
-			messagesAtTurnStart := messages
-			capturedToolCalls := totalToolCalls
-			capturedChatterMem := chatterMem
-			outCh := make(chan provider.StreamChunk, 64)
-			outReader := provider.NewStreamReader(outCh)
-			go func() {
-				defer close(outCh)
-				var full strings.Builder
-				var thinking, thinkingSig string
-				var rawAssistant json.RawMessage
-				var streamUsage provider.Usage
-				for {
-					chunk, ok := sr.Next()
-					if !ok {
-						break
-					}
-					if chunk.Content != "" {
-						full.WriteString(chunk.Content)
-					}
-					if chunk.Thinking != "" {
-						thinking = chunk.Thinking
-					}
-					if chunk.ThinkingSignature != "" {
-						thinkingSig = chunk.ThinkingSignature
-					}
-					if len(chunk.RawAssistant) > 0 {
-						rawAssistant = chunk.RawAssistant
-					}
-					if chunk.Usage.InputTokens > 0 || chunk.Usage.OutputTokens > 0 ||
-						chunk.Usage.CacheReadTokens > 0 || chunk.Usage.CacheCreationTokens > 0 {
-						streamUsage = chunk.Usage
-					}
-					select {
-					case outCh <- chunk:
-					case <-ctx.Done():
-						return
-					}
-				}
-				a.meterTokens(ctx, sess.Key(), streamUsage, 0)
-				msg := provider.Message{Role: "assistant", Content: full.String(), Thinking: thinking, Metadata: knowledgeMeta}
-				switch {
-				case len(rawAssistant) > 0:
-					// Provider already serialized the assistant message
-					// in its wire format (e.g. OpenAI/DeepSeek with
-					// reasoning_content). Persist verbatim so the next
-					// turn replays it byte-identically — required for
-					// DeepSeek thinking mode.
-					msg.RawAssistant = rawAssistant
-				case thinking != "":
-					// Anthropic extended thinking: pack {thinking, signature}
-					// as a content-block so the next turn can echo it back.
-					if raw, err := json.Marshal(map[string]string{
-						"type":      "thinking",
-						"thinking":  thinking,
-						"signature": thinkingSig,
-					}); err == nil {
-						msg.RawAssistant = raw
-					}
-				}
-				sess.Append(msg)
-				// Fire PostTurn now that the assistant message is
-				// persisted. Auto-persist (memory.go) lives behind
-				// runPostTurn; without this call the streaming path
-				// silently skipped it — see the FIXME at runPostTurn.
-				a.runPostTurn(ctx, inboundMsg, append(messagesAtTurnStart, msg), capturedToolCalls, capturedChatterMem)
-			}()
-			return outReader
+			sess.Append(finalMsg)
+			a.runPostTurn(ctx, msg, append(messages, finalMsg), totalToolCalls, chatterMem)
+			return a.stringStream(resp.Content)
 		}
 
 		// Tool calls - process concurrently via SDK engine
@@ -3625,9 +3777,10 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 		}
 
 		// Execute tools concurrently via SDK engine
-		results := a.runToolsWithProgress(ctx, resp.ToolCalls, a.workspacePath)
+		results := a.runToolsWithProgress(ctx, resp.ToolCalls, a.workspacePath, allowedToolNames(callTools))
 		totalToolCalls += len(results)
 		loopDetected := false
+		roundAllFailed := len(results) > 0
 
 		for idx, r := range results {
 			tc := resp.ToolCalls[idx]
@@ -3646,6 +3799,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 				summary := failedToolSummary(r.err, resultContent)
 				streakState = updateSameToolFailStreak(streakState, r.toolName, true, summary)
 			} else {
+				roundAllFailed = false
 				streakState = updateSameToolFailStreak(streakState, r.toolName, false, "")
 			}
 
@@ -3663,17 +3817,45 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			}
 		}
 		if loopDetected {
-			warnMsg := repeatedToolCallWarning("Loop detected: you called the same tool with the same arguments and received the same result 3 times. Please try a different approach.")
+			wrapUp = "loop"
+			warnMsg := stallWrapUpNudge("loop")
 			sess.Append(warnMsg)
 			messages = append(messages, warnMsg)
 		}
+		if roundAllFailed {
+			allFailedRounds++
+		} else {
+			allFailedRounds = 0
+		}
 		if loopDetected {
-			break
+			continue
 		}
 		if rebuilt, hint, _, did := a.maybeCompactMidTurn(ctx, sess, chatterUID, systemPrompt, msg, chatterMem); did {
 			messages = rebuilt
 			compactHint = hint
 		}
+	}
+
+	if wrapUp != "" {
+		slog.Warn("turn wrap-up after stall — streaming text delivery", "agent", a.name, "reason", wrapUp)
+		nudge := stallWrapUpNudge(wrapUp)
+		finalMessages := append(messages, nudge)
+		finalResp, finalErr := llmRetry(ctx, a.name, func(ctx context.Context) (*provider.Response, error) {
+			return a.provider.Chat(ctx, finalMessages, nil, a.model, a.maxTokens, a.temperature)
+		})
+		finalContent := ""
+		if finalErr == nil && finalResp != nil {
+			a.maybeRecoverToolCalls(finalResp)
+			finalContent = strings.TrimSpace(finalResp.Content)
+			a.meterTokens(ctx, sess.Key(), finalResp.Usage, 0)
+		}
+		if finalContent == "" {
+			finalContent = "I had to stop calling tools and could not produce a final answer."
+		}
+		finalMsg := provider.Message{Role: "assistant", Content: finalContent, Timestamp: time.Now().UnixMilli()}
+		sess.Append(finalMsg)
+		a.runPostTurn(ctx, msg, append(messages, finalMsg), totalToolCalls, chatterMem)
+		return a.stringStream(finalContent)
 	}
 
 	slog.Warn("max tool iterations reached — streaming forced final delivery", "agent", a.name, "max", a.maxToolIterations)

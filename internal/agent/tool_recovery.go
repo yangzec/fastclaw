@@ -10,26 +10,9 @@ import (
 	"github.com/fastclaw-ai/fastclaw/internal/provider"
 )
 
-// maybeRecoverToolCalls runs recoverToolCallsFromContent on the
-// response when the model returned no native tool_calls but did emit
-// text. On a successful recovery it mutates the response in place:
-// splices the parsed calls into resp.ToolCalls, replaces resp.Content
-// with the residual (any human-readable preamble before the XML), and
-// clears RawAssistant so the next round's history replay rebuilds the
-// assistant message from the now-recovered fields instead of replaying
-// the bad XML payload back into the model's context.
-//
-// Even when no calls are recoverable, if recoverToolCallsFromContent
-// scrubbed leaked special-token noise (DeepSeek/Qwen `<｜…｜>` style
-// delimiters that detokenize as visible `<| … |>` / `< | DSML | … >`
-// garbage), we still replace resp.Content with the scrubbed version so
-// the UI doesn't render the leaked tokens.
-//
-// Logs once at info level with the agent + model + recovered tool names
-// so an operator can see how often the path triggers and for which
-// (model, prompt) combinations — without this signal the recovery
-// silently papers over genuine prompt/tool-definition bugs that should
-// surface.
+// maybeRecoverToolCalls scrubs leaked tool-call XML / DSML tokens from
+// assistant content. It never copies recovered calls onto resp.ToolCalls
+// — protocol text is not a native tool_use and must not be executed.
 func (a *Agent) maybeRecoverToolCalls(resp *provider.Response) {
 	if resp == nil || resp.HasToolCalls() || resp.Content == "" {
 		return
@@ -48,10 +31,10 @@ func (a *Agent) maybeRecoverToolCalls(resp *provider.Response) {
 	for _, tc := range recovered {
 		names = append(names, tc.Function.Name)
 	}
-	slog.Info("recovered_tool_calls from assistant content",
+	slog.Info("stripped XML tool markup; not executing",
 		"agent", a.name, "model", a.model, "count", len(recovered),
 		"tools", names)
-	resp.ToolCalls = recovered
+	resp.LeakedToolXML = true
 	resp.Content = residual
 	resp.RawAssistant = nil
 }

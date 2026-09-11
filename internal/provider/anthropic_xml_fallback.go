@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"regexp"
 	"strings"
 )
@@ -38,6 +39,27 @@ var (
 	leakedParameterRe     = regexp.MustCompile(`(?s)<` + tagPrefixPattern + `parameter\s+name="([^"]+)"([^>]*)>(.*?)</` + tagPrefixPattern + `parameter>`)
 	leakedStringAttrRe    = regexp.MustCompile(`string="(true|false)"`)
 )
+
+// scrubLeakedToolXML strips leaked function-call XML from resp.Content.
+// Parsed calls are never copied onto resp.ToolCalls — the agent loop
+// must not execute protocol text as native tools.
+func scrubLeakedToolXML(resp *Response) {
+	if resp == nil || resp.Content == "" {
+		return
+	}
+	cleaned, calls := extractLeakedToolCalls(resp.Content)
+	if cleaned == resp.Content {
+		return
+	}
+	resp.Content = cleaned
+	if len(calls) > 0 {
+		resp.LeakedToolXML = true
+		if len(resp.ToolCalls) == 0 {
+			slog.Warn("stripped leaked tool-call XML from text content; not executing",
+				"count", len(calls))
+		}
+	}
+}
 
 func extractLeakedToolCalls(text string) (cleaned string, calls []ToolCall) {
 	if text == "" || (!strings.Contains(text, "function_calls") && !strings.Contains(text, "tool_calls")) {

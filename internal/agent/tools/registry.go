@@ -950,11 +950,17 @@ func (r *Registry) Execute(ctx context.Context, name string, args string) (strin
 	}
 
 	result, err := tool.fn(ctx, json.RawMessage(args))
-	result = clipToolResult(result)
 	if err != nil {
-		return result + "\n[Analyze the error above and try a different approach.]", err
+		text := result
+		if msg := err.Error(); msg != "" && msg != "<nil>" && !strings.Contains(text, msg) {
+			if text != "" {
+				text += "\n"
+			}
+			text += msg
+		}
+		return appendErrorHint(clipToolResult(text)), err
 	}
-	return result, nil
+	return clipToolResult(result), nil
 }
 
 // SetSandboxConfig updates the exec tool to use sandbox mode.

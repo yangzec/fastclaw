@@ -175,7 +175,7 @@ func (a *Agent) runSubagentLoop(ctx context.Context, task string, maxIterations 
 			"tools":     toolNames,
 		}})
 
-		results := a.engine.executeToolsConcurrently(ctx, a.registry, resp.ToolCalls, a.workspacePath)
+		results := a.engine.executeToolsConcurrently(ctx, a.registry, resp.ToolCalls, a.workspacePath, allowedToolNames(callTools))
 		roundAllFailed := true
 		loopDetected := false
 		for idx, r := range results {

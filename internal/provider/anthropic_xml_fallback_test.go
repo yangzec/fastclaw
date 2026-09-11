@@ -18,6 +18,29 @@ const (
 	closP   = "<" + "/parameter>"
 )
 
+func TestScrubLeakedToolXMLDoesNotInstallToolCalls(t *testing.T) {
+	in := "Let me check the docs.\n" +
+		openFC + "\n" +
+		openInv + `"web_fetch">` + "\n" +
+		openP + `"url" string="true">https://example.com/` + closP + "\n" +
+		closInv + "\n" +
+		closeFC
+	resp := &Response{Content: in}
+	scrubLeakedToolXML(resp)
+	if len(resp.ToolCalls) != 0 {
+		t.Fatalf("scrub installed tool calls: %+v", resp.ToolCalls)
+	}
+	if !resp.LeakedToolXML {
+		t.Fatal("expected LeakedToolXML")
+	}
+	if strings.Contains(resp.Content, "function_calls") || strings.Contains(resp.Content, "invoke name") {
+		t.Fatalf("xml not stripped: %q", resp.Content)
+	}
+	if !strings.Contains(resp.Content, "Let me check the docs") {
+		t.Fatalf("preface lost: %q", resp.Content)
+	}
+}
+
 func TestExtractLeakedToolCalls_NoLeak(t *testing.T) {
 	in := "Sure, here is the answer to your question."
 	cleaned, calls := extractLeakedToolCalls(in)

@@ -783,17 +783,7 @@ func (p *AnthropicProvider) parseSSE(body io.Reader) (*Response, error) {
 	//
 	// So strip the XML from content unconditionally; only synthesize
 	// tool calls when there aren't already structured ones to dispatch.
-	if cleaned, calls := extractLeakedToolCalls(result.Content); cleaned != result.Content {
-		result.Content = cleaned
-		if len(result.ToolCalls) == 0 && len(calls) > 0 {
-			slog.Warn("recovered leaked tool-call XML from text content",
-				"count", len(calls))
-			result.ToolCalls = calls
-		} else if len(calls) > 0 {
-			slog.Debug("stripped leaked tool-call XML echoing a structured tool_use",
-				"echo_count", len(calls), "structured_count", len(result.ToolCalls))
-		}
-	}
+	scrubLeakedToolXML(result)
 
 	return result, nil
 }
