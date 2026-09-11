@@ -441,18 +441,19 @@ function ConnectedCard({
           <div className="rounded-md border bg-muted/20 p-2 space-y-1.5">
             <div className="flex items-center gap-1.5 text-xs font-medium">
               <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
-              Official calendar
+              Official calendar / docs
             </div>
+            <p className="text-xs text-muted-foreground">
+              Chat can create WeCom 日程 and 文档 with this robot. Authorize
+              those under 可使用权限 on the robot in WeCom admin (same BotID
+              as chat — no extra Corp ID).
+            </p>
             {channel.oaEnabled ? (
               <p className="text-xs text-muted-foreground truncate">
-                自建应用 {channel.corpId}
+                Optional 自建应用 {channel.corpId}
                 {channel.callbackReady ? " · receive URL ready" : ""}
               </p>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                Chat is live. Add one self-built app (Corp ID + Secret) to create WeCom calendar events from chat.
-              </p>
-            )}
+            ) : null}
           </div>
         )}
       </div>
@@ -464,12 +465,12 @@ function ConnectedCard({
               Unlock trusted IP
             </Button>
             <Button size="sm" variant="outline" onClick={onDisableWeComOA} className="w-full">
-              Disconnect calendar
+              Disconnect 自建应用
             </Button>
           </>
         ) : (
           <Button size="sm" variant="outline" onClick={onEnableWeComOA} className="w-full">
-            Enable official calendar
+            Optional 自建应用
           </Button>
         )
       )}
@@ -1973,7 +1974,9 @@ function ConnectWeComOADialog({
             Enable official WeCom calendar
           </DialogTitle>
           <DialogDescription>
-            One 自建应用 is enough for calendar (and later approval / contacts).
+            Optional. Calendar and docs use the robot&apos;s 可使用权限,
+            not this app. Keep a 自建应用 only if you still need OA
+            callbacks / trusted IP.
             This does not replace the AI bot — chat stays on the long-connection.
           </DialogDescription>
         </DialogHeader>

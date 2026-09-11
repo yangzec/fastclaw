@@ -37,9 +37,12 @@ import (
 //	accountID                = BotID
 //	AccountConfig.BotToken   = long-conn Secret
 //	AccountConfig.BaseURL    = optional private-deploy WS URL
-//	AccountConfig.CorpID     = 自建应用 CorpID (official calendar / OA)
-//	AccountConfig.CorpSecret = 自建应用 Secret
+//	AccountConfig.CorpID     = optional 自建应用 CorpID (legacy OA)
+//	AccountConfig.CorpSecret = optional 自建应用 Secret
 //	AccountConfig.CorpAgentID = optional 自建应用 AgentId
+//
+// Calendar / docs use the same BotID + Secret against the official
+// CLI gateway (qyapi /cli), not CorpID. Grant 可使用权限 on the robot.
 const (
 	wecomDefaultWSURL   = "wss://openws.work.weixin.qq.com"
 	wecomHeartbeatEvery = 30 * time.Second

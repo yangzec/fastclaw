@@ -265,10 +265,10 @@ func (m *Manager) buildAgent(rc config.ResolvedAgent, prov provider.Provider, mb
 		// at execute time (bindSession stamps them per-turn) so the
 		// fired message routes back to the originating chat.
 		tools.RegisterCronTools(ag.registry, m.opts.dataStore, m.uid, rc.ID)
-		// Official 企业微信日程 (自建应用 OA). Reads CorpID/Secret off
-		// the wecom channel row at execute time — registering always
-		// means enabling calendar on Channels does not need a rebuild.
-		tools.RegisterWeComScheduleTools(ag.registry, m.opts.dataStore, rc.ID)
+		// Official 企业微信日程 / 文档 via the intelligent-robot CLI
+		// gateway (same BotID + Secret as IM). Reads the wecom channel
+		// row at execute time — reconnecting a bot does not need a rebuild.
+		tools.RegisterWeComOfficeTools(ag.registry, m.opts.dataStore, rc.ID)
 		// Official Feishu 日程 / 待办 / 文档. Same QR bot tenant token
 		// as the IM channel — registering always means a reconnect
 		// (new scopes) does not need an agent rebuild.

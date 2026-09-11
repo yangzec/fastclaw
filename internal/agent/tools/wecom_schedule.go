@@ -2,14 +2,11 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/fastclaw-ai/fastclaw/internal/channels"
-	"github.com/fastclaw-ai/fastclaw/internal/scope"
 	"github.com/fastclaw-ai/fastclaw/internal/store"
 )
 
@@ -26,160 +23,6 @@ type wecomCreateScheduleArgs struct {
 
 type wecomGetScheduleArgs struct {
 	ScheduleID string `json:"schedule_id"`
-}
-
-// wecomOAFromChannel is swapped in tests so schedule/add hits httptest.
-var wecomOAFromChannel = channels.WeComOAFromChannel
-
-// RegisterWeComScheduleTools exposes official 企业微信日程 APIs as
-// IM-native tools. Credentials come from the WeCom channel's 自建应用
-// (CorpID + Secret), not the AI-bot long-conn secret.
-func RegisterWeComScheduleTools(r *Registry, st store.Store, agentID string) {
-	r.Register("wecom_create_schedule",
-		"Create an official 企业微信 calendar event (appears in WeCom 日程, can invite colleagues). Use this when the user wants something written into the WeCom calendar — a meeting, invite, or calendar block. Do NOT use create_cron_job for that: cron only pings this agent later; it does not create a WeCom schedule. start/end are the chatter's local time unless they include an offset. attendees are WeCom userids (comma-separated). When chatting on WeCom, the current sender is invited automatically if attendees is empty.",
-		map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"summary": map[string]interface{}{
-					"type":        "string",
-					"description": "Event title, e.g. 项目例会.",
-				},
-				"start": map[string]interface{}{
-					"type":        "string",
-					"description": "Start as ISO-8601 (2026-09-02T15:00:00), 'YYYY-MM-DD HH:MM', a date-only day, or unix seconds.",
-				},
-				"end": map[string]interface{}{
-					"type":        "string",
-					"description": "End in the same formats as start. Defaults to start+1h (or +1 day for all-day events).",
-				},
-				"description": map[string]interface{}{
-					"type":        "string",
-					"description": "Optional event body.",
-				},
-				"location": map[string]interface{}{
-					"type":        "string",
-					"description": "Optional location / meeting room name.",
-				},
-				"attendees": map[string]interface{}{
-					"type":        "string",
-					"description": "Comma-separated WeCom userids to invite. Empty = current WeCom sender when the turn is on wecom.",
-				},
-				"whole_day": map[string]interface{}{
-					"type":        "boolean",
-					"description": "All-day event. Also implied when start is a date without a time.",
-				},
-				"remind_before_secs": map[string]interface{}{
-					"type":        "integer",
-					"description": "WeCom popup reminder seconds before start (e.g. 900 = 15 minutes). 0 = none.",
-				},
-			},
-			"required": []string{"summary", "start"},
-		},
-		makeWeComCreateSchedule(st, r, agentID),
-	)
-
-	r.Register("wecom_get_schedule",
-		"Fetch an official 企业微信 schedule by schedule_id returned from wecom_create_schedule.",
-		map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"schedule_id": map[string]interface{}{
-					"type":        "string",
-					"description": "The schedule_id from wecom_create_schedule.",
-				},
-			},
-			"required": []string{"schedule_id"},
-		},
-		makeWeComGetSchedule(st, r, agentID),
-	)
-}
-
-func makeWeComCreateSchedule(st store.Store, r *Registry, agentID string) ToolFunc {
-	return func(ctx context.Context, rawArgs json.RawMessage) (string, error) {
-		var args wecomCreateScheduleArgs
-		if err := json.Unmarshal(rawArgs, &args); err != nil {
-			return "", fmt.Errorf("parse args: %w", err)
-		}
-		if strings.TrimSpace(args.Summary) == "" || strings.TrimSpace(args.Start) == "" {
-			return "", fmt.Errorf("summary and start are required")
-		}
-		client, err := wecomOAClient(ctx, st, r, agentID)
-		if err != nil {
-			return "", err
-		}
-		tzName := scope.Timezone(ctx, st, r.ChatterUserID(), agentID)
-		loc := scope.LoadLocationOrLocal(tzName)
-		startUnix, startDay, err := parseWeComWhen(args.Start, loc)
-		if err != nil {
-			return "", fmt.Errorf("start: %w", err)
-		}
-		wholeDay := args.WholeDay || (startDay && strings.TrimSpace(args.End) == "")
-		endUnix := startUnix
-		if strings.TrimSpace(args.End) != "" {
-			endUnix, _, err = parseWeComWhen(args.End, loc)
-			if err != nil {
-				return "", fmt.Errorf("end: %w", err)
-			}
-		} else if wholeDay {
-			endUnix = startUnix + 24*60*60
-		} else {
-			endUnix = startUnix + 60*60
-		}
-		atts := splitWeComUserIDs(args.Attendees)
-		if len(atts) == 0 {
-			if me := wecomSenderUserID(ctx, st, r); me != "" {
-				atts = []string{me}
-			}
-		}
-		id, err := client.AddSchedule(ctx, channels.WeComSchedule{
-			Summary:     args.Summary,
-			Description: args.Description,
-			Location:    args.Location,
-			StartUnix:   startUnix,
-			EndUnix:     endUnix,
-			WholeDay:    wholeDay,
-			Attendees:   atts,
-			RemindSecs:  args.RemindSecs,
-		})
-		if err != nil {
-			return "", err
-		}
-		msg := fmt.Sprintf("Created WeCom schedule %s (%s).", id, strings.TrimSpace(args.Summary))
-		if len(atts) > 0 {
-			msg += " Invited: " + strings.Join(atts, ", ") + "."
-		}
-		return msg, nil
-	}
-}
-
-func makeWeComGetSchedule(st store.Store, r *Registry, agentID string) ToolFunc {
-	return func(ctx context.Context, rawArgs json.RawMessage) (string, error) {
-		var args wecomGetScheduleArgs
-		if err := json.Unmarshal(rawArgs, &args); err != nil {
-			return "", fmt.Errorf("parse args: %w", err)
-		}
-		id := strings.TrimSpace(args.ScheduleID)
-		if id == "" {
-			return "", fmt.Errorf("schedule_id required")
-		}
-		client, err := wecomOAClient(ctx, st, r, agentID)
-		if err != nil {
-			return "", err
-		}
-		raw, err := client.GetSchedules(ctx, []string{id})
-		if err != nil {
-			return "", err
-		}
-		return string(raw), nil
-	}
-}
-
-func wecomOAClient(ctx context.Context, st store.Store, r *Registry, agentID string) (*channels.WeComOA, error) {
-	ch, err := lookupWeComChannel(ctx, st, r, agentID)
-	if err != nil {
-		return nil, err
-	}
-	return wecomOAFromChannel(ch)
 }
 
 func lookupWeComChannel(ctx context.Context, st store.Store, r *Registry, agentID string) (*store.ChannelRecord, error) {

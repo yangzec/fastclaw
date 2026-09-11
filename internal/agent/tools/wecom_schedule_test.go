@@ -33,20 +33,40 @@ func TestParseWeComWhen(t *testing.T) {
 	}
 }
 
-func TestWeComCreateScheduleUsesOAAndInvitesSender(t *testing.T) {
-	var gotAdd map[string]any
+func wecomCLITestEnvelope(inner any) []byte {
+	raw, _ := json.Marshal(inner)
+	outer, _ := json.Marshal(map[string]any{
+		"errcode": 0, "errmsg": "ok",
+		"results_json": string(func() []byte {
+			b, _ := json.Marshal(map[string]any{"result": string(raw), "error": nil})
+			return b
+		}()),
+	})
+	return outer
+}
+
+func TestWeComCreateScheduleUsesCLIAndInvitesSender(t *testing.T) {
+	var gotCreate map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
 		switch {
-		case strings.Contains(r.URL.Path, "gettoken"):
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"errcode": 0, "access_token": "tok", "expires_in": 7200,
-			})
-		case strings.Contains(r.URL.Path, "schedule/add"):
-			body, _ := io.ReadAll(r.Body)
-			_ = json.Unmarshal(body, &gotAdd)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"errcode": 0, "schedule_id": "sid_9",
-			})
+		case strings.Contains(r.URL.Path, "get_cli_config"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"errcode": 0, "token": "cli_tok"})
+		case strings.HasSuffix(r.URL.Path, "/service/discovery"):
+			_, _ = w.Write(wecomCLITestEnvelope(map[string]any{
+				"resources": map[string]any{
+					"schedules": map[string]any{
+						"methods": map[string]any{"create": map[string]any{"path": "/schedules/create"}},
+					},
+				},
+			}))
+		case strings.HasSuffix(r.URL.Path, "/schedules/create"):
+			var wrap struct {
+				Payload string `json:"payload"`
+			}
+			_ = json.Unmarshal(body, &wrap)
+			_ = json.Unmarshal([]byte(wrap.Payload), &gotCreate)
+			_, _ = w.Write(wecomCLITestEnvelope(map[string]any{"schedule_id": "sid_9"}))
 		default:
 			http.NotFound(w, r)
 		}
@@ -63,41 +83,29 @@ func TestWeComCreateScheduleUsesOAAndInvitesSender(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.SaveChannel(ctx, &store.ChannelRecord{
-		UserID:    "user-1",
-		AgentID:   "agent-1",
-		Type:      "wecom",
-		AccountID: "bot_1",
-		Enabled:   true,
-		BotToken:  "long-conn",
-		Data: map[string]any{
-			"accounts": map[string]any{
-				"bot_1": map[string]any{
-					"botToken":   "long-conn",
-					"corpId":     "ww_corp",
-					"corpSecret": "sec_1",
-				},
-			},
-		},
+		UserID: "user-1", AgentID: "agent-1", Type: "wecom",
+		AccountID: "bot_1", Enabled: true, BotToken: "long-conn",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	orig := wecomOAFromChannel
-	wecomOAFromChannel = func(ch *store.ChannelRecord) (*channels.WeComOA, error) {
-		c, err := channels.WeComOAFromChannel(ch)
+	orig := wecomCLIFromChannel
+	wecomCLIFromChannel = func(ch *store.ChannelRecord) (*channels.WeComCLI, error) {
+		c, err := channels.WeComCLIFromChannel(ch)
 		if err != nil {
 			return nil, err
 		}
+		c.AuthURL = srv.URL + "/cgi-bin/aibot/cli/get_cli_config"
 		c.BaseURL = srv.URL
 		return c, nil
 	}
-	t.Cleanup(func() { wecomOAFromChannel = orig })
+	t.Cleanup(func() { wecomCLIFromChannel = orig })
 
 	r := NewRegistry(t.TempDir(), t.TempDir())
 	r.SetOwnerUserID("user-1")
 	r.SetChatterUserID("user-1")
 	r.SetMessageContext("wecom", "bot_1", "zhangsan")
-	RegisterWeComScheduleTools(r, db, "agent-1")
+	RegisterWeComOfficeTools(r, db, "agent-1")
 
 	out, err := r.Execute(ctx, "wecom_create_schedule", `{
 		"summary":"项目例会",
@@ -111,14 +119,53 @@ func TestWeComCreateScheduleUsesOAAndInvitesSender(t *testing.T) {
 	if !strings.Contains(out, "sid_9") || !strings.Contains(out, "zhangsan") {
 		t.Fatalf("result = %s", out)
 	}
-	sched, _ := gotAdd["schedule"].(map[string]any)
-	if sched["summary"] != "项目例会" {
-		t.Fatalf("payload = %#v", gotAdd)
+	if gotCreate["subject"] != "项目例会" {
+		t.Fatalf("payload = %#v", gotCreate)
 	}
 }
 
-func TestWeComCreateScheduleRequiresOA(t *testing.T) {
-	db, err := store.NewDBStore("sqlite", "file:wecom-oa-missing?mode=memory&cache=shared")
+func TestWeComCreateScheduleRequiresBot(t *testing.T) {
+	db, err := store.NewDBStore("sqlite", "file:wecom-cli-missing?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRegistry(t.TempDir(), t.TempDir())
+	r.SetOwnerUserID("user-1")
+	r.SetMessageContext("wecom", "bot_1", "u1")
+	RegisterWeComOfficeTools(r, db, "agent-1")
+	_, err = r.Execute(ctx, "wecom_create_schedule", `{"summary":"x","start":"2026-09-02T15:00:00Z"}`)
+	if err == nil || !strings.Contains(err.Error(), "not connected") && !strings.Contains(err.Error(), "no WeCom bot") {
+		t.Fatalf("want missing bot error, got %v", err)
+	}
+}
+
+func TestWeComCreateDocAndCancelConfirm(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "get_cli_config"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"errcode": 0, "token": "cli_tok"})
+		case strings.HasSuffix(r.URL.Path, "/service/discovery"):
+			_, _ = w.Write(wecomCLITestEnvelope(map[string]any{}))
+		case strings.HasSuffix(r.URL.Path, "/create"):
+			_, _ = w.Write(wecomCLITestEnvelope(map[string]any{
+				"docid": "doc_1", "url": "https://doc.weixin.qq.com/doc/doc_1", "name": "纪要",
+			}))
+		case strings.Contains(r.URL.Path, "/members/update"):
+			_, _ = w.Write(wecomCLITestEnvelope(map[string]any{}))
+		case strings.HasSuffix(r.URL.Path, "/schedules/cancel"):
+			_, _ = w.Write(wecomCLITestEnvelope(map[string]any{}))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	db, err := store.NewDBStore("sqlite", "file:wecom-office?mode=memory&cache=shared")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,16 +177,44 @@ func TestWeComCreateScheduleRequiresOA(t *testing.T) {
 	if err := db.SaveChannel(ctx, &store.ChannelRecord{
 		UserID: "user-1", AgentID: "agent-1", Type: "wecom",
 		AccountID: "bot_1", Enabled: true, BotToken: "long-conn",
-		Data: map[string]any{"accounts": map[string]any{"bot_1": map[string]any{"botToken": "long-conn"}}},
 	}); err != nil {
 		t.Fatal(err)
 	}
+	orig := wecomCLIFromChannel
+	wecomCLIFromChannel = func(ch *store.ChannelRecord) (*channels.WeComCLI, error) {
+		c, err := channels.WeComCLIFromChannel(ch)
+		if err != nil {
+			return nil, err
+		}
+		c.AuthURL = srv.URL + "/cgi-bin/aibot/cli/get_cli_config"
+		c.BaseURL = srv.URL
+		return c, nil
+	}
+	t.Cleanup(func() { wecomCLIFromChannel = orig })
+
 	r := NewRegistry(t.TempDir(), t.TempDir())
 	r.SetOwnerUserID("user-1")
-	r.SetMessageContext("wecom", "bot_1", "u1")
-	RegisterWeComScheduleTools(r, db, "agent-1")
-	_, err = r.Execute(ctx, "wecom_create_schedule", `{"summary":"x","start":"2026-09-02T15:00:00Z"}`)
-	if err == nil || !strings.Contains(err.Error(), "not enabled") {
-		t.Fatalf("want OA missing error, got %v", err)
+	r.SetMessageContext("wecom", "bot_1", "zhangsan")
+	RegisterWeComOfficeTools(r, db, "agent-1")
+
+	out, err := r.Execute(ctx, "wecom_create_doc", `{"title":"纪要","content":"hello"}`)
+	if err != nil {
+		t.Fatalf("create doc: %v", err)
+	}
+	if !strings.Contains(out, "doc.weixin.qq.com") {
+		t.Fatalf("doc result = %s", out)
+	}
+
+	out, err = r.Execute(ctx, "wecom_cancel_schedule", `{"schedule_id":"sid_1"}`)
+	if err != nil || !strings.Contains(out, "NOT APPLIED") || !strings.Contains(out, "confirm_token=") {
+		t.Fatalf("preview = %q err=%v", out, err)
+	}
+	const mark = "confirm_token="
+	i := strings.Index(out, mark)
+	tok := strings.Fields(out[i+len(mark):])[0]
+	tok = strings.TrimRight(tok, "().")
+	out, err = r.Execute(ctx, "wecom_cancel_schedule", `{"schedule_id":"sid_1","confirm_token":"`+tok+`"}`)
+	if err != nil || !strings.Contains(out, "Cancelled") {
+		t.Fatalf("cancel = %q err=%v", out, err)
 	}
 }
