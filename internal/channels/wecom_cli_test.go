@@ -155,6 +155,60 @@ func TestWeComCLIFromChannelUsesBotSecret(t *testing.T) {
 	}
 }
 
+func TestWeComCLIKey(t *testing.T) {
+	cases := map[string]string{
+		"sheet rows append":                   "sheet.rows.append",
+		"wecom-cli calendar schedules create": "calendar.schedules.create",
+		"todo create":                         "todo.create",
+		"message aibot sessions list":         "message.aibot.sessions.list",
+		"calendar.schedules.free.list":        "calendar.schedules.free.list",
+	}
+	for in, want := range cases {
+		if got := WeComCLIKey(in); got != want {
+			t.Fatalf("%q -> %q want %q", in, got, want)
+		}
+	}
+}
+
+func TestWeComCLICreateSheet(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch {
+		case strings.Contains(r.URL.Path, "get_cli_config"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"errcode": 0, "token": "cli_tok"})
+		case strings.HasSuffix(r.URL.Path, "/service/discovery"):
+			_, _ = w.Write(wecomCLIEnvelope(t, map[string]any{}))
+		case strings.HasSuffix(r.URL.Path, "/create"):
+			var wrap struct {
+				Payload string `json:"payload"`
+			}
+			_ = json.Unmarshal(body, &wrap)
+			_ = json.Unmarshal([]byte(wrap.Payload), &got)
+			_, _ = w.Write(wecomCLIEnvelope(t, map[string]any{
+				"docid": "sheet_1", "url": "https://doc.weixin.qq.com/sheet/sheet_1", "name": "名单",
+			}))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := NewWeComCLI("bot_1", "secret_1")
+	c.AuthURL = srv.URL + "/cgi-bin/aibot/cli/get_cli_config"
+	c.BaseURL = srv.URL
+	raw, err := c.CreateSheet(context.Background(), "名单", [][]string{{"姓名", "分"}, {"张三", "90"}})
+	if err != nil {
+		t.Fatalf("CreateSheet: %v", err)
+	}
+	id, url, _ := WeComCLIPickDoc(raw)
+	if id != "sheet_1" || !strings.Contains(url, "/sheet/") {
+		t.Fatalf("pick = %s %s %s", id, url, raw)
+	}
+	if got["doc_name"] != "名单" {
+		t.Fatalf("payload = %#v", got)
+	}
+}
+
 func TestWeComCLIDocIDFromURL(t *testing.T) {
 	got := wecomCLIDocIDFromURL("https://doc.weixin.qq.com/doc/abcDEF?scode=x")
 	if got != "abcDEF" {

@@ -382,7 +382,7 @@ func (c *WeComCLI) ensureMethods(ctx context.Context) error {
 		return nil
 	}
 	c.mu.Unlock()
-	for _, svc := range []string{"calendar", "doc", "contact"} {
+	for _, svc := range wecomCLIServices {
 		if err := c.discoverService(ctx, svc); err != nil {
 			// Keep going; fallbacks fill gaps.
 			_ = err
@@ -395,26 +395,143 @@ func (c *WeComCLI) ensureMethods(ctx context.Context) error {
 	return nil
 }
 
-func (c *WeComCLI) seedFallbacksLocked() {
-	fallbacks := map[string]string{
-		"calendar.schedules.create": "/schedules/create",
-		"calendar.schedules.get":    "/schedules/get",
-		"calendar.schedules.list":   "/schedules/list",
-		"calendar.schedules.search": "/schedules/search",
-		"calendar.schedules.update": "/schedules/update",
-		"calendar.schedules.cancel": "/schedules/cancel",
-		"doc.create":                "/create",
-		"doc.contents.get":          "/contents/get",
-		"doc.contents.append":       "/contents/append",
-		"doc.search":                "/search",
-		"doc.members.update":        "/members/update",
-		"contact.users.search":      "/users/search",
+// wecomCLIServices is every CLI prefix in
+// https://developer.work.weixin.qq.com/document/path/101750
+var wecomCLIServices = []string{
+	"calendar", "doc", "contact", "sheet", "smartsheet", "smartpage",
+	"todo", "meeting", "mail", "disk", "message", "media", "identity",
+}
+
+func wecomCLIFallbackPaths() map[string]string {
+	return map[string]string{
+		"calendar.schedules.create":    "/schedules/create",
+		"calendar.schedules.get":       "/schedules/get",
+		"calendar.schedules.list":      "/schedules/list",
+		"calendar.schedules.search":    "/schedules/search",
+		"calendar.schedules.update":    "/schedules/update",
+		"calendar.schedules.cancel":    "/schedules/cancel",
+		"calendar.schedules.free.list": "/schedules/free/list",
+		"doc.create":                   "/create",
+		"doc.import":                   "/import",
+		"doc.search":                   "/search",
+		"doc.contents.get":             "/contents/get",
+		"doc.contents.append":          "/contents/append",
+		"doc.contents.overwrite":       "/contents/overwrite",
+		"doc.members.update":           "/members/update",
+		"doc.names.update":             "/names/update",
+		"doc.rules.update":             "/rules/update",
+		"sheet.create":                 "/create",
+		"sheet.get":                    "/get",
+		"sheet.import":                 "/import",
+		"sheet.contents.update":        "/contents/update",
+		"sheet.ranges.get":             "/ranges/get",
+		"sheet.rows.append":            "/rows/append",
+		"sheet.subsheets.add":          "/subsheets/add",
+		"sheet.subsheets.delete":       "/subsheets/delete",
+		"smartsheet.create":            "/create",
+		"smartsheet.get":               "/get",
+		"smartsheet.import":            "/import",
+		"smartsheet.charts.add":        "/charts/add",
+		"smartsheet.charts.delete":     "/charts/delete",
+		"smartsheet.charts.list":       "/charts/list",
+		"smartsheet.charts.update":     "/charts/update",
+		"smartsheet.fields.add":        "/fields/add",
+		"smartsheet.fields.delete":     "/fields/delete",
+		"smartsheet.fields.list":       "/fields/list",
+		"smartsheet.fields.update":     "/fields/update",
+		"smartsheet.files.upload":      "/files/upload",
+		"smartsheet.images.upload":     "/images/upload",
+		"smartsheet.records.add":       "/records/add",
+		"smartsheet.records.delete":    "/records/delete",
+		"smartsheet.records.list":      "/records/list",
+		"smartsheet.records.query":     "/records/query",
+		"smartsheet.records.update":    "/records/update",
+		"smartsheet.sheets.add":        "/sheets/add",
+		"smartsheet.sheets.delete":     "/sheets/delete",
+		"smartsheet.sheets.list":       "/sheets/list",
+		"smartsheet.sheets.update":     "/sheets/update",
+		"smartsheet.views.add":         "/views/add",
+		"smartsheet.views.delete":      "/views/delete",
+		"smartsheet.views.list":        "/views/list",
+		"smartsheet.views.update":      "/views/update",
+		"smartpage.create":             "/create",
+		"smartpage.import":             "/import",
+		"smartpage.blocks.update":      "/blocks/update",
+		"smartpage.databases.get":      "/databases/get",
+		"smartpage.files.upload":       "/files/upload",
+		"smartpage.images.upload":      "/images/upload",
+		"smartpage.pages.append":       "/pages/append",
+		"smartpage.pages.get":          "/pages/get",
+		"smartpage.pages.overwrite":    "/pages/overwrite",
+		"smartpage.pages.update":       "/pages/update",
+		"todo.create":                  "/create",
+		"todo.delete":                  "/delete",
+		"todo.finish":                  "/finish",
+		"todo.get":                     "/get",
+		"todo.list":                    "/list",
+		"todo.update":                  "/update",
+		"meeting.cancel":               "/cancel",
+		"meeting.create":               "/create",
+		"meeting.get":                  "/get",
+		"meeting.list":                 "/list",
+		"meeting.search":               "/search",
+		"meeting.update":               "/update",
+		"meeting.original.get":         "/original/get",
+		"meeting.rooms.search":         "/rooms/search",
+		"meeting.rooms.buildings.list": "/rooms/buildings/list",
+		"mail.get":                     "/get",
+		"mail.search":                  "/search",
+		"mail.send":                    "/send",
+		"disk.files.download":          "/files/download",
+		"disk.files.get":               "/files/get",
+		"disk.files.list":              "/files/list",
+		"disk.files.rename":            "/files/rename",
+		"disk.files.search":            "/files/search",
+		"disk.files.upload":            "/files/upload",
+		"disk.folders.create":          "/folders/create",
+		"message.aibot.send":           "/aibot/send",
+		"message.aibot.sessions.list":  "/aibot/sessions/list",
+		"contact.users.search":         "/users/search",
+		"media.download":               "/download",
+		"media.upload":                 "/upload",
+		"identity.whoami":              "/whoami",
 	}
-	for k, p := range fallbacks {
+}
+
+func (c *WeComCLI) seedFallbacksLocked() {
+	for k, p := range wecomCLIFallbackPaths() {
 		if _, ok := c.methods[k]; !ok {
 			c.methods[k] = wecomCLIRoute{Path: p}
 		}
 	}
+}
+
+// WeComCLIKey maps a CLI command ("sheet rows append" or
+// "wecom-cli calendar schedules create") onto the discovery key.
+func WeComCLIKey(command string) string {
+	s := strings.TrimSpace(command)
+	s = strings.TrimPrefix(s, "wecom-cli")
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "/", ".")
+	s = strings.ReplaceAll(s, "_", ".")
+	parts := strings.Fields(s)
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.Trim(p, ".")
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, ".")
+}
+
+// CallCommand runs a 101750 CLI command, e.g. "sheet rows append".
+func (c *WeComCLI) CallCommand(ctx context.Context, command string, payload any) (json.RawMessage, error) {
+	key := WeComCLIKey(command)
+	if key == "" {
+		return nil, fmt.Errorf("wecom cli: empty command")
+	}
+	return c.Call(ctx, key, payload)
 }
 
 func (c *WeComCLI) discoverService(ctx context.Context, name string) error {
@@ -587,6 +704,89 @@ func (c *WeComCLI) ShareDoc(ctx context.Context, docID, userid string) error {
 
 func (c *WeComCLI) SearchUsers(ctx context.Context, keywords []string) (json.RawMessage, error) {
 	return c.Call(ctx, "contact.users.search", map[string]any{"keywords": keywords})
+}
+
+func (c *WeComCLI) OverwriteDoc(ctx context.Context, docID, content string) error {
+	_, err := c.Call(ctx, "doc.contents.overwrite", map[string]any{"docid": docID, "content": content})
+	return err
+}
+
+func (c *WeComCLI) RenameDoc(ctx context.Context, docID, name string) error {
+	_, err := c.Call(ctx, "doc.names.update", map[string]any{"docid": docID, "name": name})
+	return err
+}
+
+func (c *WeComCLI) UpdateSchedule(ctx context.Context, body map[string]any) (json.RawMessage, error) {
+	return c.Call(ctx, "calendar.schedules.update", body)
+}
+
+func (c *WeComCLI) FreeBusy(ctx context.Context, body map[string]any) (json.RawMessage, error) {
+	return c.Call(ctx, "calendar.schedules.free.list", body)
+}
+
+func WeComSheetTextRow(values []string) map[string]any {
+	cells := make([]map[string]any, 0, len(values))
+	for _, v := range values {
+		cells = append(cells, map[string]any{
+			"cell_value":  map[string]any{"text": v},
+			"cell_format": map[string]any{},
+		})
+	}
+	return map[string]any{"values": cells}
+}
+
+func WeComSheetGrid(rows [][]string) map[string]any {
+	out := make([]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, WeComSheetTextRow(row))
+	}
+	return map[string]any{"start_row": 0, "start_column": 0, "rows": out}
+}
+
+func (c *WeComCLI) CreateSheet(ctx context.Context, title string, rows [][]string) (json.RawMessage, error) {
+	body := map[string]any{"doc_name": title, "doc_type": "sheet"}
+	if len(rows) > 0 {
+		body["grid_data"] = WeComSheetGrid(rows)
+	}
+	return c.Call(ctx, "sheet.create", body)
+}
+
+func (c *WeComCLI) GetSheet(ctx context.Context, docID string) (json.RawMessage, error) {
+	return c.Call(ctx, "sheet.get", map[string]any{"docid": docID})
+}
+
+func (c *WeComCLI) GetSheetRange(ctx context.Context, docID, sheetID, rng string) (json.RawMessage, error) {
+	body := map[string]any{"docid": docID, "sheet_id": sheetID, "mode": "default"}
+	if strings.TrimSpace(rng) != "" {
+		body["range"] = rng
+	}
+	return c.Call(ctx, "sheet.ranges.get", body)
+}
+
+func (c *WeComCLI) UpdateSheetRange(ctx context.Context, docID, sheetID string, startRow, startCol int, rows [][]string) (json.RawMessage, error) {
+	grid := WeComSheetGrid(rows)
+	grid["start_row"] = startRow
+	grid["start_column"] = startCol
+	return c.Call(ctx, "sheet.contents.update", map[string]any{
+		"docid": docID, "sheet_id": sheetID, "grid_data": grid,
+	})
+}
+
+func (c *WeComCLI) AppendSheetRow(ctx context.Context, docID, sheetID string, values []string) (json.RawMessage, error) {
+	return c.Call(ctx, "sheet.rows.append", map[string]any{
+		"docid": docID, "sheet_id": sheetID, "row": WeComSheetTextRow(values),
+	})
+}
+
+func (c *WeComCLI) AddSubsheet(ctx context.Context, docID, title string) (json.RawMessage, error) {
+	return c.Call(ctx, "sheet.subsheets.add", map[string]any{
+		"docid": docID, "sheet": map[string]any{"title": title},
+	})
+}
+
+func (c *WeComCLI) DeleteSubsheet(ctx context.Context, docID, sheetID string) error {
+	_, err := c.Call(ctx, "sheet.subsheets.delete", map[string]any{"docid": docID, "sheet_id": sheetID})
+	return err
 }
 
 // WeComCLIDocID extracts a docid from a raw id or https://doc.weixin.qq.com/doc/… URL.

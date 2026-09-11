@@ -262,6 +262,8 @@ func RegisterWeComOfficeTools(r *Registry, st store.Store, agentID string) {
 		},
 		makeWeComLookupContact(st, r, agentID),
 	)
+
+	registerWeComCLITools(r, st, agentID)
 }
 
 // RegisterWeComScheduleTools is the historical name; office tools include

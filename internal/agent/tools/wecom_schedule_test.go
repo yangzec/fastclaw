@@ -218,3 +218,88 @@ func TestWeComCreateDocAndCancelConfirm(t *testing.T) {
 		t.Fatalf("cancel = %q err=%v", out, err)
 	}
 }
+
+func TestWeComCreateSheetAndCLI(t *testing.T) {
+	var gotCreate, gotSearch map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var wrap struct {
+			Payload string `json:"payload"`
+		}
+		_ = json.Unmarshal(body, &wrap)
+		switch {
+		case strings.Contains(r.URL.Path, "get_cli_config"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"errcode": 0, "token": "cli_tok"})
+		case strings.HasSuffix(r.URL.Path, "/service/discovery"):
+			_, _ = w.Write(wecomCLITestEnvelope(map[string]any{}))
+		case strings.HasSuffix(r.URL.Path, "/create"):
+			_ = json.Unmarshal([]byte(wrap.Payload), &gotCreate)
+			_, _ = w.Write(wecomCLITestEnvelope(map[string]any{
+				"docid": "s_1", "url": "https://doc.weixin.qq.com/sheet/s_1", "name": "表",
+			}))
+		case strings.HasSuffix(r.URL.Path, "/users/search"):
+			_ = json.Unmarshal([]byte(wrap.Payload), &gotSearch)
+			_, _ = w.Write(wecomCLITestEnvelope(map[string]any{
+				"users": []map[string]any{{"userid": "zhangsan", "name": "张三"}},
+			}))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	db, err := store.NewDBStore("sqlite", "file:wecom-sheet?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveChannel(ctx, &store.ChannelRecord{
+		UserID: "user-1", AgentID: "agent-1", Type: "wecom",
+		AccountID: "bot_1", Enabled: true, BotToken: "long-conn",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	orig := wecomCLIFromChannel
+	wecomCLIFromChannel = func(ch *store.ChannelRecord) (*channels.WeComCLI, error) {
+		c, err := channels.WeComCLIFromChannel(ch)
+		if err != nil {
+			return nil, err
+		}
+		c.AuthURL = srv.URL + "/cgi-bin/aibot/cli/get_cli_config"
+		c.BaseURL = srv.URL
+		return c, nil
+	}
+	t.Cleanup(func() { wecomCLIFromChannel = orig })
+
+	reg := NewRegistry(t.TempDir(), t.TempDir())
+	reg.SetOwnerUserID("user-1")
+	reg.SetMessageContext("wecom", "bot_1", "zhangsan")
+	RegisterWeComOfficeTools(reg, db, "agent-1")
+
+	out, err := reg.Execute(ctx, "wecom_create_sheet", `{"title":"名单","rows":[["姓名","分"],["张三","90"]]}`)
+	if err != nil {
+		t.Fatalf("create sheet: %v", err)
+	}
+	if !strings.Contains(out, "/sheet/") {
+		t.Fatalf("sheet result = %s", out)
+	}
+	if gotCreate["doc_name"] != "名单" {
+		t.Fatalf("create payload = %#v", gotCreate)
+	}
+
+	out, err = reg.Execute(ctx, "wecom_cli", `{"command":"contact users search","args":{"keywords":["张三"]}}`)
+	if err != nil {
+		t.Fatalf("wecom_cli: %v", err)
+	}
+	if !strings.Contains(out, "zhangsan") {
+		t.Fatalf("cli result = %s", out)
+	}
+	kws, _ := gotSearch["keywords"].([]any)
+	if len(kws) != 1 {
+		t.Fatalf("search payload = %#v", gotSearch)
+	}
+}

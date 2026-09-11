@@ -13,12 +13,16 @@ const wecomConfirmTTL = 15 * time.Minute
 
 type wecomPending struct {
 	AgentID   string
-	Kind      string // "cancel_schedule" | "append_doc"
+	Kind      string // "cancel_schedule" | "append_doc" | "write_sheet"
 	Preview   string
 	Expires   time.Time
 	SchedID   string
 	DocID     string
 	DocAppend string
+	SheetID   string
+	StartRow  int
+	StartCol  int
+	Rows      [][]string
 }
 
 var (

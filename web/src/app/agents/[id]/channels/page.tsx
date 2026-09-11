@@ -444,9 +444,10 @@ function ConnectedCard({
               Official calendar / docs
             </div>
             <p className="text-xs text-muted-foreground">
-              Chat can create WeCom 日程 and 文档 with this robot. Authorize
-              those under 可使用权限 on the robot in WeCom admin (same BotID
-              as chat — no extra Corp ID).
+              Chat can use this robot&apos;s CLI capabilities (日程, 文档,
+              表格, 待办, 会议, 邮件, 微盘, …). Authorize them under
+              可使用权限 in WeCom admin — same BotID as chat, no extra
+              Corp ID.
             </p>
             {channel.oaEnabled ? (
               <p className="text-xs text-muted-foreground truncate">
