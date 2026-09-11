@@ -175,41 +175,62 @@ func TestUpdateSameToolFailStreak(t *testing.T) {
 		// but the tool name is the same both times — this is exactly
 		// the pattern the old byte-identical-args loop detector missed.
 		s := sameToolFailStreakState{}
-		s = updateSameToolFailStreak(s, "exec", true, "exit status 127: browser-use not found")
+		s = updateSameToolFailStreak(s, "exec", `{"command":"browser-use --doctor"}`, true, "exit status 127: browser-use not found")
 		if s.streak != 1 || s.lastFailedTool != "exec" {
 			t.Fatalf("after 1st failure: got streak=%d tool=%q, want streak=1 tool=%q", s.streak, s.lastFailedTool, "exec")
 		}
-		s = updateSameToolFailStreak(s, "exec", true, "FAIL chrome running / FAIL daemon alive")
+		s = updateSameToolFailStreak(s, "exec", `{"command":"export PATH=/usr/local/bin:$PATH; browser-use --doctor"}`, true, "FAIL chrome running / FAIL daemon alive")
 		if s.streak != 2 {
 			t.Fatalf("after 2nd failure of the same tool (different args): got streak=%d, want 2", s.streak)
 		}
 		if s.lastFailureText != "FAIL chrome running / FAIL daemon alive" {
 			t.Errorf("lastFailureText should track the most recent failure, got %q", s.lastFailureText)
 		}
+		if s.lastFailedKey != "exec:browser-use" {
+			t.Errorf("lastFailedKey=%q, want exec:browser-use", s.lastFailedKey)
+		}
 		if s.streak < sameToolFailStreakLimit {
 			t.Errorf("streak=%d should already meet sameToolFailStreakLimit=%d after 2 failures — this is the case that should have converged before the 300s wall in the real incident", s.streak, sameToolFailStreakLimit)
 		}
 	})
 
+	t.Run("exec python3 then pip3 does not trip the streak", func(t *testing.T) {
+		s := sameToolFailStreakState{}
+		s = updateSameToolFailStreak(s, "exec", `{"command":"python3 -c \"import openpyxl\""}`, true, "No module named 'openpyxl'")
+		s = updateSameToolFailStreak(s, "exec", `{"command":"pip3 install openpyxl && python3 -c \"import openpyxl\""}`, true, "PEP 668")
+		if s.streak != 1 || s.lastFailedKey != "exec:pip3" {
+			t.Fatalf("got streak=%d key=%q, want streak=1 key=exec:pip3", s.streak, s.lastFailedKey)
+		}
+	})
+
+	t.Run("two python3 failures still converge", func(t *testing.T) {
+		s := sameToolFailStreakState{}
+		s = updateSameToolFailStreak(s, "exec", `{"command":"cd /workspace && python3 -c \"import openpyxl\""}`, true, "missing")
+		s = updateSameToolFailStreak(s, "exec", `{"command":"python3 -c \"import pandas\""}`, true, "missing")
+		if s.streak != 2 || s.lastFailedKey != "exec:python3" {
+			t.Fatalf("got streak=%d key=%q, want 2 exec:python3", s.streak, s.lastFailedKey)
+		}
+	})
+
 	t.Run("a different tool failing resets the streak to the new tool", func(t *testing.T) {
-		s := sameToolFailStreakState{streak: 2, lastFailedTool: "exec"}
-		s = updateSameToolFailStreak(s, "web_fetch", true, "connection refused")
+		s := sameToolFailStreakState{streak: 2, lastFailedTool: "exec", lastFailedKey: "exec:python3"}
+		s = updateSameToolFailStreak(s, "web_fetch", "", true, "connection refused")
 		if s.streak != 1 || s.lastFailedTool != "web_fetch" {
 			t.Fatalf("got streak=%d tool=%q, want streak=1 tool=%q", s.streak, s.lastFailedTool, "web_fetch")
 		}
 	})
 
 	t.Run("the tracked tool succeeding clears the streak", func(t *testing.T) {
-		s := sameToolFailStreakState{streak: 2, lastFailedTool: "exec", lastFailureText: "boom"}
-		s = updateSameToolFailStreak(s, "exec", false, "")
+		s := sameToolFailStreakState{streak: 2, lastFailedTool: "exec", lastFailedKey: "exec", lastFailureText: "boom"}
+		s = updateSameToolFailStreak(s, "exec", "", false, "")
 		if s.streak != 0 || s.lastFailedTool != "" {
 			t.Fatalf("got streak=%d tool=%q, want streak=0 tool=\"\"", s.streak, s.lastFailedTool)
 		}
 	})
 
 	t.Run("an unrelated tool succeeding does not disturb an active streak", func(t *testing.T) {
-		s := sameToolFailStreakState{streak: 2, lastFailedTool: "exec", lastFailureText: "boom"}
-		s = updateSameToolFailStreak(s, "read_file", false, "")
+		s := sameToolFailStreakState{streak: 2, lastFailedTool: "exec", lastFailedKey: "exec", lastFailureText: "boom"}
+		s = updateSameToolFailStreak(s, "read_file", "", false, "")
 		if s.streak != 2 || s.lastFailedTool != "exec" {
 			t.Fatalf("unrelated success should not affect the streak: got streak=%d tool=%q, want streak=2 tool=%q", s.streak, s.lastFailedTool, "exec")
 		}
@@ -219,7 +240,7 @@ func TestUpdateSameToolFailStreak(t *testing.T) {
 		s := sameToolFailStreakState{}
 		seq := []bool{true, false, true, false, true}
 		for _, failed := range seq {
-			s = updateSameToolFailStreak(s, "flaky_tool", failed, "err")
+			s = updateSameToolFailStreak(s, "flaky_tool", "", failed, "err")
 		}
 		// Last op in seq is failed=true, so streak should be exactly 1
 		// (reset then incremented once), not accumulated across the
@@ -230,6 +251,36 @@ func TestUpdateSameToolFailStreak(t *testing.T) {
 	})
 }
 
+func TestShellCommandStem(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{`python3 -c "import openpyxl"`, "python3"},
+		{`pip3 install openpyxl`, "pip3"},
+		{`cd /workspace && python3 -c "x"`, "python3"},
+		{`export PATH=/usr/bin:$PATH; browser-use --doctor`, "browser-use"},
+		{`PATH=/usr/bin browser-use --doctor`, "browser-use"},
+		{`/usr/bin/python3 -c x`, "python3"},
+	}
+	for _, tc := range cases {
+		if got := shellCommandStem(tc.in); got != tc.want {
+			t.Errorf("shellCommandStem(%q)=%q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestStreakWrapUpNudgeForbidsFakeSandbox(t *testing.T) {
+	got := streakWrapUpNudge("exec", 2).Content
+	if !strings.Contains(got, "Tools are disabled") {
+		t.Fatalf("missing tools-disabled: %s", got)
+	}
+	if !strings.Contains(got, "do not pretend") {
+		t.Fatalf("missing pretend-exec ban: %s", got)
+	}
+	if strings.Contains(got, "even with different arguments") {
+		t.Fatal("old streak copy still present")
+	}
+}
 
 // The tool-call budget is the limit that actually fires in practice, yet
 // it warned nobody until now — only the wall-clock budget did. A turn

@@ -2105,12 +2105,11 @@ func llmAPIErrorStatus(err error) int {
 // sameToolFailStreakLimit and softDeadlineFraction gate the two stall-
 // prevention mechanisms added per fastclaw-timeout-error-root-cause-
 // analysis.md (P0.1 / P1). sameToolFailStreakLimit is intentionally
-// tighter than the pre-existing allFailedRounds/failedRoundsLimit (3):
-// "the same tool failed twice in a row, even with different arguments"
-// is a stronger unproductive-loop signal than "some tool in the round
-// failed", and should trip sooner. softDeadlineFraction leaves ~20% of
-// the turn's wall-time budget as headroom for one more full LLM
-// round-trip + response after the wrap-up nudge fires.
+// tighter than the pre-existing allFailedRounds/failedRoundsLimit (3).
+// For most tools the identity is the tool name. For exec / host_exec it
+// is tool name + command stem (argv0 after cd/env prefixes) so
+// `python3 …openpyxl` then `pip3 install` does not ban every shell,
+// while two `browser-use --doctor` wrappers still converge.
 const sameToolFailStreakLimit = 2
 const softDeadlineFraction = 0.20
 
@@ -2131,6 +2130,7 @@ const toolProgressInterval = 8 * time.Second
 type sameToolFailStreakState struct {
 	streak          int
 	lastFailedTool  string
+	lastFailedKey   string
 	lastFailureText string
 }
 
@@ -2140,29 +2140,157 @@ type sameToolFailStreakState struct {
 // to remember for buildFallbackReply (ignored when failed is false).
 //
 // Rules:
-//   - Same tool, still failing: streak increments.
-//   - A different tool starts failing: streak resets to 1, the
-//     tracked tool switches to this one.
-//   - The tool whose streak we're tracking now succeeds: streak resets
-//     to 0, tracked tool cleared.
-//   - Some other (not currently tracked) tool succeeds: no change —
-//     this call doesn't concern the tool we're tracking.
-func updateSameToolFailStreak(state sameToolFailStreakState, toolName string, failed bool, summary string) sameToolFailStreakState {
+//   - Same identity, still failing: streak increments.
+//   - A different identity starts failing: streak resets to 1.
+//   - The tracked identity succeeding: streak resets to 0.
+//   - Some other identity succeeding: no change.
+func updateSameToolFailStreak(state sameToolFailStreakState, toolName, rawArgs string, failed bool, summary string) sameToolFailStreakState {
+	key := failStreakKey(toolName, rawArgs)
 	if failed {
-		if toolName == state.lastFailedTool {
+		if key == state.lastFailedKey {
 			state.streak++
 		} else {
 			state.streak = 1
+			state.lastFailedKey = key
 			state.lastFailedTool = toolName
 		}
 		state.lastFailureText = summary
 		return state
 	}
-	if toolName == state.lastFailedTool {
+	if key == state.lastFailedKey {
 		state.streak = 0
+		state.lastFailedKey = ""
 		state.lastFailedTool = ""
 	}
 	return state
+}
+
+func failStreakKey(toolName, rawArgs string) string {
+	switch toolName {
+	case "exec", tools.HostExecToolName:
+		if stem := execCommandStem(rawArgs); stem != "" {
+			return toolName + ":" + stem
+		}
+	}
+	return toolName
+}
+
+func execCommandStem(rawArgs string) string {
+	var parsed struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(rawArgs), &parsed); err != nil || strings.TrimSpace(parsed.Command) == "" {
+		return ""
+	}
+	return shellCommandStem(parsed.Command)
+}
+
+func shellCommandStem(cmd string) string {
+	s := strings.TrimSpace(cmd)
+	for {
+		next := strings.TrimSpace(s)
+		if rest, ok := stripLeadingShellPrefix(next); ok {
+			s = rest
+			continue
+		}
+		s = next
+		break
+	}
+	token := firstShellToken(s)
+	if token == "" {
+		return ""
+	}
+	return filepath.Base(token)
+}
+
+func stripLeadingShellPrefix(s string) (string, bool) {
+	if s == "" {
+		return s, false
+	}
+	if strings.HasPrefix(s, "export ") || strings.HasPrefix(s, "export\t") {
+		rest := strings.TrimSpace(s[len("export"):])
+		if i := strings.IndexAny(rest, " \t"); i > 0 && strings.Contains(rest[:i], "=") {
+			rest = strings.TrimSpace(rest[i:])
+			return trimShellConnector(rest), true
+		}
+		if i := strings.IndexAny(rest, ";&"); i >= 0 {
+			return trimShellConnector(rest[i:]), true
+		}
+		return s, false
+	}
+	if strings.HasPrefix(s, "cd ") || strings.HasPrefix(s, "cd\t") {
+		rest := strings.TrimSpace(s[len("cd"):])
+		if i := strings.IndexAny(rest, " \t;&"); i >= 0 {
+			return trimShellConnector(rest[i:]), true
+		}
+		return s, false
+	}
+	if i := strings.IndexByte(s, '='); i > 0 && isShellIdent(s[:i]) {
+		rest := s[i+1:]
+		if j := strings.IndexAny(rest, " \t"); j >= 0 {
+			return strings.TrimSpace(rest[j:]), true
+		}
+	}
+	return s, false
+}
+
+func trimShellConnector(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimLeft(s, ";|&")
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "&&") {
+		s = strings.TrimSpace(s[2:])
+	}
+	return s
+}
+
+func isShellIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if r == '_' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' {
+			continue
+		}
+		if i > 0 && r >= '0' && r <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func firstShellToken(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if s[0] == '\'' || s[0] == '"' {
+		q := s[0]
+		if i := strings.IndexByte(s[1:], q); i >= 0 {
+			return s[1 : 1+i]
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case ' ', '\t', '\n', ';', '|', '&':
+			return s[:i]
+		}
+	}
+	return s
+}
+
+func streakWrapUpNudge(tool string, streak int) provider.Message {
+	return provider.Message{
+		Role: "system",
+		Content: fmt.Sprintf(
+			"The tool %q has failed %d times in a row. Tools are disabled for the rest of this turn — "+
+				"do not call tools, do not emit XML tool markup, and do not pretend to run commands in a sandbox using natural language. "+
+				"Tell the user what is blocked (missing library, PEP 668 / no pip, sandbox image limits) and what you already know. "+
+				"Do not repeat sandbox/execution filler.",
+			tool, streak,
+		),
+	}
 }
 
 // buildFallbackReply assembles a context-aware message when a turn is
@@ -2415,10 +2543,18 @@ func stallWrapUpNudge(reason string) provider.Message {
 		}
 	default:
 		return provider.Message{
-			Role:    "system",
-			Content: "Tools are disabled for the rest of this turn. Answer the user with what you already have. Do not call tools.",
+			Role: "system",
+			Content: "Tools are disabled for the rest of this turn. Answer the user with what you already have. " +
+				"Do not call tools, do not emit XML, and do not pretend to run sandbox commands in natural language.",
 		}
 	}
+}
+
+func wrapUpNudge(reason string, state sameToolFailStreakState) provider.Message {
+	if reason == "streak" {
+		return streakWrapUpNudge(state.lastFailedTool, state.streak)
+	}
+	return stallWrapUpNudge(reason)
 }
 
 func refuseEnabledToolResults(toolCalls []provider.ToolCall, reason string) []toolCallResult {
@@ -2715,13 +2851,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				"agent", a.name, "tool", streakState.lastFailedTool, "streak", streakState.streak)
 			wrapUp = "streak"
 			callTools = nil
-			llmMessages = append(llmMessages, provider.Message{
-				Role: "system",
-				Content: fmt.Sprintf(
-					"The tool %q has failed %d times in a row (even with different arguments). Stop retrying it. Either explain to the user what's blocking it, or answer with what you already know.",
-					streakState.lastFailedTool, streakState.streak,
-				),
-			})
+			llmMessages = append(llmMessages, streakWrapUpNudge(streakState.lastFailedTool, streakState.streak))
 		} else if allFailedRounds >= failedRoundsLimit {
 			slog.Warn("disabling tools after consecutive failed rounds",
 				"agent", a.name, "failed_rounds", allFailedRounds)
@@ -3046,12 +3176,12 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 				// arguments, independent of roundAllFailed (which
 				// requires the whole round to fail). See
 				// updateSameToolFailStreak for the tested counting rules.
-				streakState = updateSameToolFailStreak(streakState, r.toolName, true, summary)
+				streakState = updateSameToolFailStreak(streakState, r.toolName, tc.Function.Arguments, true, summary)
 			} else {
 				// One call in this round produced a real result —
 				// the round as a whole isn't "all failed".
 				roundAllFailed = false
-				streakState = updateSameToolFailStreak(streakState, r.toolName, false, "")
+				streakState = updateSameToolFailStreak(streakState, r.toolName, tc.Function.Arguments, false, "")
 			}
 
 			// Index in FTS if available
@@ -3125,7 +3255,7 @@ func (a *Agent) HandleMessage(ctx context.Context, msg bus.InboundMessage) strin
 
 	if wrapUp != "" {
 		slog.Warn("turn wrap-up after stall — forcing text delivery", "agent", a.name, "reason", wrapUp)
-		nudge := stallWrapUpNudge(wrapUp)
+		nudge := wrapUpNudge(wrapUp, streakState)
 		finalMessages := append(messages, nudge)
 		if a.piiScrubEnabled {
 			finalMessages = privacy.ScrubMessages(finalMessages)
@@ -3641,13 +3771,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 				"agent", a.name, "tool", streakState.lastFailedTool, "streak", streakState.streak)
 			wrapUp = "streak"
 			callTools = nil
-			messages = append(messages, provider.Message{
-				Role: "system",
-				Content: fmt.Sprintf(
-					"The tool %q has failed %d times in a row (even with different arguments). Stop retrying it. Either explain to the user what's blocking it, or answer with what you already know.",
-					streakState.lastFailedTool, streakState.streak,
-				),
-			})
+			messages = append(messages, streakWrapUpNudge(streakState.lastFailedTool, streakState.streak))
 		} else if allFailedRounds >= failedRoundsLimit {
 			slog.Warn("disabling tools after consecutive failed rounds",
 				"agent", a.name, "failed_rounds", allFailedRounds)
@@ -3797,10 +3921,10 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 			// updateSameToolFailStreak for the tested counting rules.
 			if isFailedToolResult(r.err, resultContent) {
 				summary := failedToolSummary(r.err, resultContent)
-				streakState = updateSameToolFailStreak(streakState, r.toolName, true, summary)
+				streakState = updateSameToolFailStreak(streakState, r.toolName, tc.Function.Arguments, true, summary)
 			} else {
 				roundAllFailed = false
-				streakState = updateSameToolFailStreak(streakState, r.toolName, false, "")
+				streakState = updateSameToolFailStreak(streakState, r.toolName, tc.Function.Arguments, false, "")
 			}
 
 			if mediaPaths := extractMediaPaths(resultContent); len(mediaPaths) > 0 {
@@ -3838,7 +3962,7 @@ func (a *Agent) HandleMessageStream(ctx context.Context, msg bus.InboundMessage)
 
 	if wrapUp != "" {
 		slog.Warn("turn wrap-up after stall — streaming text delivery", "agent", a.name, "reason", wrapUp)
-		nudge := stallWrapUpNudge(wrapUp)
+		nudge := wrapUpNudge(wrapUp, streakState)
 		finalMessages := append(messages, nudge)
 		finalResp, finalErr := llmRetry(ctx, a.name, func(ctx context.Context) (*provider.Response, error) {
 			return a.provider.Chat(ctx, finalMessages, nil, a.model, a.maxTokens, a.temperature)
