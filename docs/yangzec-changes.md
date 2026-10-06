@@ -14,7 +14,7 @@
 
 ## 一、修原有问题
 
-> 仅「修」的详细条目（现象 + 解决思路）见 [`yangzec-fixes.md`](./yangzec-fixes.md)。
+> **修原项目完整清单**（含 bug + 产品债，现象 + 解决思路）见 [`yangzec-fixes.md`](./yangzec-fixes.md)。本文「二、新功能」含扩展能力；与修原项目重叠项以 fixes 清单为准。
 
 ### Agent / 网关运行时
 
